@@ -223,6 +223,8 @@ export interface Policy {
   rules: Rule[];
   /** Optional; absent from policies written before slots existed. */
   select?: Record<string, SelectSlot>;
+  /** Absent means no cap. Enforced per run against `telemetry_path` — see costCap.ts. */
+  hard_cost_cap_usd?: number;
 }
 
 export interface RoutingDecision {

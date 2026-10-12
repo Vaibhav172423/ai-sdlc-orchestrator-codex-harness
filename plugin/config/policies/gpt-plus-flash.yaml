@@ -1,9 +1,9 @@
 # The official codex harness policy (D9): GPT for judgment phases, Gemini 3.7
 # Flash for mechanical. Same rule grammar, select-slot shape, and cost cap as
 # the carried opus-plus-flash-v37.yaml this is modeled on — only the judgment
-# tier's adapter and model changed. This is the default, and one of three
-# policies the terminal picker offers alongside gpt-seat-plus-flash and
-# flash-agsdk-only. The opus-* presets name an Anthropic adapter and are
+# tier's adapter and model changed. This is the default, and one of four
+# policies the terminal picker offers alongside gpt-plus-flash-38,
+# gpt-seat-plus-flash and flash-agsdk-only. The opus-* presets name an Anthropic adapter and are
 # carried as non-selectable replay fixtures (no Anthropic credential exists
 # in this harness's setup).
 #
@@ -41,11 +41,11 @@ models:
     # Flat global/AI-Studio rates. Vertex adds +10% on every token class for
     # REGIONAL endpoints (Gemini 3+, effective 2026-07-01). Do not hand-edit a
     # x1.10 in — geminiTransports.ts::applyVertexSurcharge does it at dispatch.
-    # TODO(pricing): confirm Gemini 3.7 Flash rates — carried from
-    # opus-plus-flash-v37.yaml, itself a gemini-3.5-flash placeholder.
-    pricing: { input: 1.50, input_cached: 0.15, output: 9.00 }
+    # Introductory rate through 2026-12-31; Google lists 1.50 / 0.15 / 7.50
+    # from 2027-01-01. TODO(pricing): re-pin on 2027-01-01.
+    pricing: { input: 0.75, input_cached: 0.075, output: 3.75 }
     pricing_source: https://ai.google.dev/gemini-api/docs/pricing (AI Studio + Vertex global); https://cloud.google.com/vertex-ai/generative-ai/pricing (regional +10%)
-    pricing_last_verified: 2026-08-19
+    pricing_last_verified: 2026-10-12
     # AI Studio door. Unset → adapter falls through to Vertex ADC, same rates.
     auth: { env: GEMINI_API_KEY }
     max_output_tokens_absolute: 8192
@@ -58,9 +58,9 @@ models:
     adapter: antigravity-worker
     model_name: gemini-3.7-flash
     display_name: gemini-3.7-flash (Antigravity agent)
-    pricing: { input: 1.50, input_cached: 0.15, output: 9.00 }
+    pricing: { input: 0.75, input_cached: 0.075, output: 3.75 }
     pricing_source: https://ai.google.dev/gemini-api/docs/pricing (AI Studio + Vertex global); https://cloud.google.com/vertex-ai/generative-ai/pricing (regional +10%)
-    pricing_last_verified: 2026-08-19
+    pricing_last_verified: 2026-10-12
     # `region:` deliberately unpinned so this leaf follows GOOGLE_CLOUD_LOCATION
     # and hits the flat global endpoint by default, same as flash-completion.
     # Vertex-only: the Antigravity SDK is ADC-only and has no API-key door, so

@@ -65,6 +65,12 @@ function validatePolicy(raw: any): Policy {
   if (!Array.isArray(raw.rules) || raw.rules.length === 0) {
     throw new Error("Policy: 'rules' (non-empty array) required");
   }
+  if (
+    raw.hard_cost_cap_usd !== undefined &&
+    !(typeof raw.hard_cost_cap_usd === "number" && Number.isFinite(raw.hard_cost_cap_usd) && raw.hard_cost_cap_usd > 0)
+  ) {
+    throw new Error("Policy: 'hard_cost_cap_usd' must be a positive number, or omitted for no cap");
+  }
   for (const m of raw.models) validateModel(m);
   const modelIds = new Set<string>(raw.models.map((m: ModelConfig) => m.id));
   const slotNames = validateSelect(raw, modelIds);

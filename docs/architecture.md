@@ -69,7 +69,7 @@ The `openai` and `codex-cli` adapters reach the same model. They are separate be
 
 Routing is data, not code. Each policy declares `models:` (id, adapter, model name, pricing, auth) and `rules:` (a `when:` clause matched against phase and retry count, and the model to `use:`). First match wins; a bare `when:` is the fallback.
 
-Two guardrails ship on: a mechanical packet that fails validation twice escalates to the judgment tier on the third attempt, and `hard_cost_cap_usd` aborts the run cleanly if accumulated cost crosses it.
+Two guardrails ship on: a mechanical packet that fails validation twice escalates to the judgment tier on the third attempt, and `hard_cost_cap_usd` stops the run once the cost recorded in `telemetry.jsonl` reaches it. The bridge refuses every dispatch after that point (`src/costCap.ts`), and `run.mjs` stops resuming the session and records `cost_cap_stop` in `driver-manifest.json`. The cap counts dispatched work only. Driver cost is modeled after the run from the `codex exec --json` stream, so it is not known while the run is in progress.
 
 The three selectable policies are described in [running.md](running.md#policies).
 

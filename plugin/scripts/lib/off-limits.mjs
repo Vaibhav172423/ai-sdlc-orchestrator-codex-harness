@@ -3,15 +3,16 @@
  *   - plugin/scripts/setup-policy.mjs writes OFF_LIMITS_DEFAULT to
  *     `.sdlc/project.json` so Gate 0 can name them once and skip repeating
  *     the constants each ticket.
- *   - plugin/scripts/write-contract-check.mjs uses HARDCODED_OFF_LIMITS as
+ *   - plugin/codex/hooks/write-contract-check.mjs uses HARDCODED_OFF_LIMITS as
  *     the pre-contract safety net: even without an active brownfield contract,
  *     always-sensitive paths (credentials, MCP config, plugin bookkeeping,
  *     other-AI-tool state) are refused.
  *
- * HARDCODED_OFF_LIMITS is a subset that MUST match the entries in
- * OFF_LIMITS_DEFAULT — this file exists so the two never drift again.
- * Everything in this file is a pattern the shared matchesAtAnyDepth() below
- * will match against a target at any nesting depth.
+ * HARDCODED_OFF_LIMITS must stay a subset of OFF_LIMITS_DEFAULT: a path the
+ * hook refuses before a contract exists must also be off-limits once one does.
+ * Today the two are the same list; tools/test/off-limits.test.mjs pins the
+ * subset relation if they are ever split. Every entry is a pattern the hook's
+ * matchesAtAnyDepth() matches against a target at any nesting depth.
  */
 
 /** The full project-wide default list, written to project.json by setup. */

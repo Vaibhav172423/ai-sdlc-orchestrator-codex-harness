@@ -63,6 +63,7 @@ const events = readJsonl(telemetryPath);
 const modeledEvents = readJsonl(modeledPath);
 const manifest = readJson(manifestPath);
 const driverManifest = readJson(driverManifestPath);
+const driverMeasured = existsSync(modeledPath);
 
 if (events.length === 0 && modeledEvents.length === 0) {
   console.error(`No telemetry found in ${runDir}.`);
@@ -248,7 +249,10 @@ if (events.length > 0) {
 if (asMarkdown) {
   p(`## Driver loop — modeled, not measured`);
   p();
-  if (modeledEvents.length === 0) {
+  if (!driverMeasured) {
+    p(`_Not measured. There is no \`driver-cost-modeled.jsonl\`: only runs started with \`run.mjs\` record`);
+    p(`the conductor's cost. A run started from an interactive \`$mmo-codex:*\` skill does not._`);
+  } else if (modeledEvents.length === 0) {
     p(`_No driver turns recorded._`);
   } else {
     p(`| Turns | Tokens (in / out) | Modeled cost |`);
@@ -264,7 +268,10 @@ if (asMarkdown) {
 } else {
   p(`  Driver loop — modeled, not measured`);
   p();
-  if (modeledEvents.length === 0) {
+  if (!driverMeasured) {
+    p(`  Not measured. There is no driver-cost-modeled.jsonl: only runs started with`);
+    p(`  run.mjs record the conductor's cost. An interactive $mmo-codex:* skill run does not.`);
+  } else if (modeledEvents.length === 0) {
     p(`  No driver turns recorded.`);
   } else {
     p(`  ${"Turns".padEnd(24)}${String(modeledEvents.length).padStart(13)}`);
@@ -343,12 +350,20 @@ if (asMarkdown) {
     p();
     p(`> **Pin rejected during this run:** ${driverManifest.pin_rejection}`);
   }
+  if (driverManifest.cost_cap_stop) {
+    p();
+    p(`> **Stopped at the cost cap:** ${driverManifest.cost_cap_stop}`);
+  }
 } else {
   p(`  Provenance key: V vendor-metered · E estimated · M modeled · – no model call · ~ mixed · ? unlabelled`);
   if (provLine) p(`  Dispatched events: ${provLine}`);
   if (driverManifest.pin_rejection) {
     p();
     p(`  ! Pin rejected during this run: ${driverManifest.pin_rejection}`);
+  }
+  if (driverManifest.cost_cap_stop) {
+    p();
+    p(`  ! Stopped at the cost cap: ${driverManifest.cost_cap_stop}`);
   }
   p();
 }

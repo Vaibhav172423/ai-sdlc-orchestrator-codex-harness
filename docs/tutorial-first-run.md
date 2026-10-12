@@ -129,7 +129,7 @@ curl -i localhost:3000/nope     # 404, JSON error
 node '<path-to-harness>/tools/report.mjs' .sdlc --markdown
 ```
 
-The observed run above cost **$0.5287**, vendor-metered, on `gpt-plus-flash`. That is one run of
+The observed run above cost **$0.5287**, vendor-metered, on `gpt-plus-flash`. It was priced at Gemini rates of $1.50 / $0.15 / $9.00 per 1M tokens, which overstate Gemini 3.7 Flash by about 2×. The policies now carry $0.75 / $0.075 / $3.75, so the same run re-priced would cost less. The GPT share is unaffected. That is one run of
 one small brief, not a guarantee — cost scales with how much code the brief implies and how many
 times a phase has to be revised.
 

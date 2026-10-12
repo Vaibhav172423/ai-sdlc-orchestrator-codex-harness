@@ -50,10 +50,13 @@ node '{{PLUGIN_ROOT}}/scripts/setup-policy.mjs' --list-json --project-root '{{PR
 Parse the JSON — one entry per policy in `plugin/config/policies/`. Malformed YAMLs surface as
 `{ name, error }` and should still appear in the list (the user can skip past them).
 
-**Only offer the selectable ones.** Three policies are meant to be chosen here:
+**Only offer the selectable ones.** Four policies are meant to be chosen here:
 
 - **`gpt-plus-flash`** — the default and the one of record. Judgment work goes to the vendor API,
   mechanical work to Gemini Flash. Every figure on the cost report is vendor-metered.
+- **`gpt-plus-flash-38`** — `gpt-plus-flash` with the mechanical tier on `gemini-3.8-flash`. Google
+  deprecated `gemini-3.7-flash` on 2026-10-08 and serves it from 3.8, so this policy names the model
+  that actually runs. Same credentials, same rates, vendor-metered.
 - **`gpt-seat-plus-flash`** — the same routing, but judgment work goes through the local
   `codex exec` binary on a ChatGPT subscription seat. No API key needed for that tier; the
   trade-off is that the seat reports token counts and no money, so its judgment cost is **modeled**
@@ -68,7 +71,7 @@ earlier harness. They are not selectable here and must not be offered.
 
 ## 2c — Ask which policy
 
-Ask the user which policy they want as this project's default. Offer the three selectable policies
+Ask the user which policy they want as this project's default. Offer the four selectable policies
 above with their one-line summaries, plus a final `Author a new policy (opens browser)` option
 described as `Opens the local policy console to create a custom YAML.`.
 
@@ -132,7 +135,7 @@ node '{{PLUGIN_ROOT}}/scripts/setup-policy.mjs' --policy=<name> --project-root '
 
 No browser. The script validates `<name>` against files in `plugin/config/policies/`, writes it to
 `.sdlc/project.json.default_policy`, and exits. It fails if `<name>` does not exist on disk — offer
-`$mmo-codex:policy change` to author it, or name the three selectable presets.
+`$mmo-codex:policy change` to author it, or name the four selectable presets.
 
 # Notes
 

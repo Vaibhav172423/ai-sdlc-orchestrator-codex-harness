@@ -46,6 +46,7 @@ import { parse as parseYaml } from "yaml";
 
 import { parseEventStream, modeledDriverCostEvents } from "./telemetry/event-reader.mjs";
 import { readPin, assertPinnedInvocation, findPinRejection } from "./telemetry/fairnessPin.mjs";
+import { assertUnderCostCap, COST_CAP_EXCEEDED } from "../mcp/model-dispatch/dist/costCap.js";
 
 const CODEX_DIR = dirname(fileURLToPath(import.meta.url));
 const PLUGIN_ROOT = dirname(CODEX_DIR);
@@ -315,6 +316,21 @@ export function runIsComplete(outputDir, exists = existsSync) {
   return exists(join(outputDir, "SUMMARY.md"));
 }
 
+/**
+ * Null while dispatched spend is under the policy's hard_cost_cap_usd. Once it
+ * is not, the bridge refuses every dispatch, so a resumed session could only
+ * spend conductor tokens being refused — the reason to stop resuming.
+ */
+export function costCapStop(policy, telemetryPath) {
+  try {
+    assertUnderCostCap(policy, telemetryPath);
+    return null;
+  } catch (err) {
+    if (err?.code === COST_CAP_EXCEEDED) return err.message;
+    throw err;
+  }
+}
+
 /** Session id to resume, from the `thread.started` event codex emits first. */
 export function threadIdFrom(stdout) {
   for (const line of String(stdout ?? "").split("\n")) {
@@ -486,12 +502,15 @@ async function main(args) {
   // we resumed from — otherwise the loop cannot resume a second time.
   const threadId = threadIdFrom(result.stdout) ?? resumeFrom;
   let invocations = 1;
+  const telemetryPath = join(outputDir, "telemetry.jsonl");
+  let capStop = null;
 
   while (
     invocations < maxTurns &&
     result.status === 0 &&
     threadId &&
-    !runIsComplete(outputDir)
+    !runIsComplete(outputDir) &&
+    !(capStop = costCapStop(policy, telemetryPath))
   ) {
     console.log(
       `run ${runId}: session incomplete after invocation ${invocations} ` +
@@ -510,10 +529,12 @@ async function main(args) {
   if (!runIsComplete(outputDir)) {
     console.log(
       `run ${runId}: stopped after ${invocations} invocation(s) without SUMMARY.md — ` +
-        (invocations >= maxTurns
-          ? `hit --max-turns=${maxTurns}.`
-          : `codex exited ${result.status}.`) +
-        " Artifacts so far are in the output directory; re-run to continue.",
+        (capStop
+          ? `cost cap reached. ${capStop}`
+          : (invocations >= maxTurns
+              ? `hit --max-turns=${maxTurns}.`
+              : `codex exited ${result.status}.`) +
+            " Artifacts so far are in the output directory; re-run to continue."),
     );
   }
 
@@ -556,6 +577,7 @@ async function main(args) {
     // out of turns still exits 0 with useful artifacts, so this is the field
     // that distinguishes "finished" from "stopped partway".
     completed: runIsComplete(outputDir),
+    cost_cap_stop: capStop,
     driver_cost_usd_modeled: Math.round(totalModeled * 1e6) / 1e6,
     pin_rejection: rejection,
     events_captured: events.length,
@@ -575,7 +597,7 @@ async function main(args) {
   // stdout here is a summary line the caller may be parsing.
   console.log(`\n  Cost report:  node tools/report.mjs '${outputDir}'`);
   console.log(`                add --markdown to paste it somewhere.`);
-  return result.status === 0 ? 0 : 1;
+  return result.status === 0 && !capStop ? 0 : 1;
 }
 
 if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {

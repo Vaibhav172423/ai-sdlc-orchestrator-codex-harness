@@ -15,13 +15,13 @@ models:
     adapter: antigravity-worker
     model_name: gemini-3.7-flash
     display_name: gemini-3.7-flash (Antigravity agent)
-    # TODO(pricing): confirm Gemini 3.7 Flash rates. Values below carried over
-    # from gemini-3.5-flash as a placeholder. Vertex adds +10% on REGIONAL
-    # endpoints; the geminiTransports.ts::applyVertexSurcharge applies it at
-    # dispatch — do not hand-edit x1.10 in.
-    pricing: { input: 1.50, input_cached: 0.15, output: 9.00 }
+    # Introductory rate through 2026-12-31; Google lists 1.50 / 0.15 / 7.50
+    # from 2027-01-01. TODO(pricing): re-pin on 2027-01-01. Vertex adds +10% on
+    # REGIONAL endpoints; geminiTransports.ts::applyVertexSurcharge applies it
+    # at dispatch — do not hand-edit x1.10 in.
+    pricing: { input: 0.75, input_cached: 0.075, output: 3.75 }
     pricing_source: https://ai.google.dev/gemini-api/docs/pricing (AI Studio + Vertex global); https://cloud.google.com/vertex-ai/generative-ai/pricing (regional +10%)
-    pricing_last_verified: 2026-08-19
+    pricing_last_verified: 2026-10-12
     # `region:` unpinned so this leaf follows GOOGLE_CLOUD_LOCATION and hits
     # the flat global endpoint by default. Vertex-only: the Antigravity SDK is
     # ADC-only and has no API-key door, so no `auth:` block.

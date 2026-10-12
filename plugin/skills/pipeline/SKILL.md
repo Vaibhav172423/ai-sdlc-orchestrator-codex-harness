@@ -51,6 +51,10 @@ Write the TaskPacket to a JSON file first, run the command, then **read the resu
 `--out` file**. Stdout carries only a one-line summary — do not parse it for anything beyond a
 quick success check. A non-zero exit means the dispatch failed.
 
+If stderr contains `COST_CAP_EXCEEDED`, the run has spent its policy's `hard_cost_cap_usd`.
+Do not retry and do not dispatch anything else: the bridge refuses every further call this run.
+Stop, print the message verbatim, and do not write `SUMMARY.md` — the run did not finish.
+
 Keep the single quotes around paths. They can contain spaces, and an unquoted one splits into
 separate arguments.
 
@@ -296,9 +300,11 @@ Phase 6.
 
 ### Phase 9 — generate_final_report
 
-Read all events in `<telemetry_path>`. Build rollup manifest using the `buildManifest` shape (see `plugin/mcp/model-dispatch/src/telemetry.ts`). Write `<output_dir>/manifest.json`. Also write a brief `<output_dir>/SUMMARY.md` with: total cost, breakdown, links to key artifacts.
+Read all events in `<telemetry_path>`. Build rollup manifest using the `buildManifest` shape (see `plugin/mcp/model-dispatch/src/telemetry.ts`). Write `<output_dir>/manifest.json`. Also write a brief `<output_dir>/SUMMARY.md` with: total cost of dispatched work, breakdown, links to key artifacts, and this line verbatim under the total:
 
-The driver's own loop cost is recorded separately and automatically — see the telemetry contract below. Do not try to account for it yourself.
+> Conductor (driver) cost is not included. A run started with `run.mjs` models it after the run into `driver-cost-modeled.jsonl`; a run started from an interactive `$mmo-codex:*` skill does not measure it at all.
+
+Do not try to account for the driver's cost yourself — see the telemetry contract below.
 
 ---
 
@@ -482,10 +488,11 @@ Event shape:
 }
 ```
 
-**Your own loop cost is recorded for you.** The driver reads the `codex exec --json` event stream
-after the run and derives the conductor's token usage from it, writing those events with
+**Your own loop cost is recorded for you only on the `run.mjs` route.** There, the driver reads the
+`codex exec --json` event stream after the run and derives the conductor's token usage from it, writing those events with
 `provenance: "modeled"` — modeled from token counts at the pinned rates, because this runtime
-reports no wallet figures. Never invent token counts or cost for your own work: a guessed figure
+reports no wallet figures. On the interactive skill route nothing reads that stream, so the
+conductor's cost goes unmeasured — say so in `SUMMARY.md` rather than estimating it. Never invent token counts or cost for your own work: a guessed figure
 sitting beside measured ones is worse than no figure.
 
 **But a phase that made no model call must still leave a row.** Two cases produce one:

@@ -88,6 +88,7 @@ which one you pick decides whether you need a key at all.
 | Policy (see §5) | Judgment tier reaches GPT via | `OPENAI_API_KEY` |
 |---|---|---|
 | `gpt-plus-flash` (default) | the OpenAI API, metered per call | **required** — runs halt at preflight without it |
+| `gpt-plus-flash-38` | the OpenAI API, metered per call | **required** — runs halt at preflight without it |
 | `gpt-seat-plus-flash` | a local `codex exec` on your ChatGPT seat | not used at all |
 
 On the metered path, export the key:
@@ -137,10 +138,15 @@ node plugin/scripts/setup-policy.mjs --policy=gpt-plus-flash
 | Policy | Judgment tier | Mechanical tier | Cost reporting |
 |---|---|---|---|
 | `gpt-plus-flash` | GPT via the OpenAI API | Gemini Flash | Vendor-metered throughout — the policy of record |
+| `gpt-plus-flash-38` | GPT via the OpenAI API | Gemini 3.8 Flash | Vendor-metered throughout |
 | `gpt-seat-plus-flash` | GPT via your local `codex exec` (ChatGPT seat) | Gemini Flash | Judgment cost is **modeled**, not metered |
 | `flash-agsdk-only` | — | Gemini Flash via the agent worker | Mechanical only |
 
 `gpt-plus-flash` is the default and the one every published cost figure comes from.
+
+`gpt-plus-flash-38` is `gpt-plus-flash` with the mechanical tier on `gemini-3.8-flash`. Google
+deprecated `gemini-3.7-flash` on 2026-10-08 and serves requests for it from 3.8, so this policy
+records the model that actually runs. The rates are the same.
 
 `gpt-seat-plus-flash` bills judgment work against your ChatGPT seat instead of an API key. Codex
 reports token counts but no money, so cost for that tier is derived from tokens and labelled

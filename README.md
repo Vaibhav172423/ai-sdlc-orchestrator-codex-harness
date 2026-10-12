@@ -117,13 +117,14 @@ Source: [plugin/config/policies/gpt-plus-flash.yaml](plugin/config/policies/gpt-
 Two guardrails ship on:
 
 - **Escalation** — a mechanical-tier packet that fails validation twice auto-routes to GPT on the third attempt. Prevents infinite retries when Flash cannot solve a particular puzzle.
-- **Hard cost cap** — `$50` per run (`hard_cost_cap_usd` in the policy). The driver aborts cleanly if accumulated cost crosses it. Raise or remove in your own policy.
+- **Hard cost cap** — `$50` per run (`hard_cost_cap_usd` in the policy). Once the cost recorded in the run's `telemetry.jsonl` reaches the cap, the bridge refuses every further dispatch and `run.mjs` stops resuming. The call that crosses the cap still completes. The cap counts dispatched work only: the conductor's own driver cost is priced after the run and is not included. Raise the cap, or delete the key for no cap, in your own policy.
 
-Three policies ship as selectable:
+Four policies ship as selectable:
 
 | Policy | Judgment tier | Mechanical tier | Cost reporting |
 |---|---|---|---|
 | `gpt-plus-flash` (default) | GPT via the OpenAI API | Gemini Flash | Vendor-metered throughout — the policy of record |
+| `gpt-plus-flash-38` | GPT via the OpenAI API | Gemini 3.8 Flash | Vendor-metered throughout |
 | `gpt-seat-plus-flash` | GPT via local `codex exec` on a ChatGPT seat | Gemini Flash | Judgment cost is **modeled**, not metered |
 | `flash-agsdk-only` | — | Gemini Flash via the agent worker | Mechanical only |
 
@@ -298,6 +299,8 @@ Recorded cost: $0.5287, vendor-metered
 Result:        a working app — GET /ping returns 200, unknown routes 404
 ```
 
+The recorded figure was priced at Gemini rates of $1.50 / $0.15 / $9.00 per 1M tokens, which overstate Gemini 3.7 Flash by about 2×. The policies now carry $0.75 / $0.075 / $3.75, so the same run re-priced would cost less. The GPT share is unaffected.
+
 That is one run of one small brief, not a guarantee — cost scales with how much code the brief implies and how many times a phase has to be revised. Render the cost report yourself:
 
 ```bash
@@ -355,7 +358,7 @@ Every part of the port is built and tested. What is outstanding is a metered ref
 | P2 | Repository skeleton, carried engine and support scripts | Done |
 | P3 | OpenAI adapter, Codex policy, driver-bridge client, write-contract enforcement | Done |
 | P4 | Telemetry reader, denied-call sidecar, fairness pin, setup rebuild, plugin packaging, cost report | Done |
-| P5 | Quick-demo run end to end | Done — 20m 47s, working app, $0.5287 metered |
+| P5 | Quick-demo run end to end | Done — 20m 47s, working app, $0.5287 metered (at the superseded Gemini rate) |
 | P6 | Command surface (15 skills), agent roles, discovery, docs, plugin install | Done |
 | P7 | Full Workforce Ops reference run | Running on the seat; **metered** run still needs `OPENAI_API_KEY` |
 | P8 | Walkthroughs, console study | Not started |

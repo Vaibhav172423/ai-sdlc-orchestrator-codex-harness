@@ -27,6 +27,7 @@ import {
   renderHandover,
   validIntents,
   runIsComplete,
+  costCapStop,
   threadIdFrom,
   RESUME_PROMPT,
   DEFAULT_MAX_TURNS,
@@ -523,6 +524,19 @@ test("runIsComplete keys on SUMMARY.md, the artifact only the final phase writes
     assert.equal(runIsComplete(dir), false, "mid-pipeline artifacts are not completion");
     writeFileSync(join(dir, "SUMMARY.md"), "done");
     assert.equal(runIsComplete(dir), true);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("costCapStop lets the run resume under the cap and stops it once the cap is spent", () => {
+  const dir = mkdtempSync(join(tmpdir(), "mmo-cap-"));
+  try {
+    const policy = { ...loadPolicyFile("gpt-plus-flash"), hard_cost_cap_usd: 0.5 };
+    const telemetry = join(dir, "telemetry.jsonl");
+    assert.equal(costCapStop(policy, telemetry), null, "no telemetry yet is under any cap");
+    writeFileSync(telemetry, JSON.stringify({ cost_usd: 0.3 }) + "\n");
+    assert.equal(costCapStop(policy, telemetry), null);
+    writeFileSync(telemetry, JSON.stringify({ cost_usd: 0.3 }) + "\n" + JSON.stringify({ cost_usd: 0.2 }) + "\n");
+    assert.match(costCapStop(policy, telemetry), /COST_CAP_EXCEEDED/);
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 

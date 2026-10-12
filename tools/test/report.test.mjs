@@ -174,6 +174,28 @@ test("a pin rejection recorded by the driver is surfaced, not buried", () => {
   } finally { cleanup(dir); }
 });
 
+test("a cost-cap stop recorded by the driver is surfaced", () => {
+  const dir = makeRun({
+    telemetry: [event({ cost_usd: 0.6 })],
+    driverManifest: { run_id: "r", cost_cap_stop: "COST_CAP_EXCEEDED: $0.6000 is already recorded" },
+  });
+  try {
+    const out = runReport(dir).stdout;
+    assert.match(out, /Stopped at the cost cap/);
+    assert.match(out, /COST_CAP_EXCEEDED/);
+  } finally { cleanup(dir); }
+});
+
+test("a run with no driver file says the conductor's cost was not measured, rather than zero turns", () => {
+  const dir = makeRun({ telemetry: [event()] });
+  try {
+    for (const out of [runReport(dir).stdout, runReport(dir, ["--markdown"]).stdout]) {
+      assert.match(out, /Not measured/);
+      assert.doesNotMatch(out, /No driver turns recorded/);
+    }
+  } finally { cleanup(dir); }
+});
+
 // ── robustness ───────────────────────────────────────────────────────
 
 test("a run with only driver turns still reports, rather than erroring", () => {

@@ -62,7 +62,7 @@ Symptom → cause → fix. Where the fix is a command, it is copy-paste-runnable
 | Symptom | Cause | Fix |
 |---|---|---|
 | `policy '<name>' not found` | Typo, or a policy that was never shipped. | `node plugin/scripts/setup-policy.mjs --list-json` prints every policy this install can see. |
-| An `opus-*` policy is visible in the files but not the picker | Deliberate. Those are replay fixtures carried from the Claude harness; no run in this harness dispatches to an Anthropic model. | Pick one of `gpt-plus-flash`, `gpt-seat-plus-flash`, or `flash-agsdk-only`. |
+| An `opus-*` policy is visible in the files but not the picker | Deliberate. Those are replay fixtures carried from the Claude harness; no run in this harness dispatches to an Anthropic model. | Pick one of `gpt-plus-flash`, `gpt-plus-flash-38`, `gpt-seat-plus-flash`, or `flash-agsdk-only`. |
 | Cost figures for a run are lower than expected, or absent for the judgment tier | The run used `gpt-seat-plus-flash`, where judgment cost is modeled from token counts rather than metered. | Expected. `M` marks those rows in the report, and they are kept out of the vendor total. Use `gpt-plus-flash` for figures that get published. See [methodology.md](methodology.md). |
 
 ## Agent path (Antigravity SDK)

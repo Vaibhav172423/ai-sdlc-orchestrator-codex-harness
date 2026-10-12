@@ -43,6 +43,10 @@ whether to retry with a refined packet, and say plainly what happened. Never fal
 writing the content yourself — a phase that silently becomes your own prose is exactly the
 failure this architecture exists to prevent.
 
+If stderr contains `COST_CAP_EXCEEDED`, the run has spent its policy's `hard_cost_cap_usd`.
+Do not retry and do not dispatch anything else: the bridge refuses every further call this run.
+Stop, print the message verbatim, and do not write `SUMMARY.md` — the run did not finish.
+
 ## Rule 0 — preflight, before anything else
 
 Your first action, before reading the brief:

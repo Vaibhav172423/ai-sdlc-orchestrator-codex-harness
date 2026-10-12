@@ -8,7 +8,7 @@ Two ways to run the pipeline, what the gates ask you, and what lands on disk.
 
 ## Policies
 
-A policy decides which model each phase is routed to, and what the run costs. Three ship as
+A policy decides which model each phase is routed to, and what the run costs. Four ship as
 selectable. `$mmo-codex:policy` prints the current one; `$mmo-codex:policy change` swaps it.
 
 ### `gpt-plus-flash` — the policy of record
@@ -24,6 +24,16 @@ application-default credentials.
 
 **When to pick it:** anything whose cost figures get published or compared. This is the default,
 and every published number for this harness comes from it.
+
+### `gpt-plus-flash-38` — the policy of record, on Gemini 3.8 Flash
+
+Identical to `gpt-plus-flash` except that mechanical phases name `gemini-3.8-flash`. Google
+deprecated `gemini-3.7-flash` on 2026-10-08 and serves requests for it from 3.8, so this policy
+records the model that actually ran. The rates are the same.
+
+**Credentials:** the same as `gpt-plus-flash`.
+
+**When to pick it:** you want telemetry and reports to name the Gemini model that ran.
 
 ### `gpt-seat-plus-flash` — the same models, without an API key
 

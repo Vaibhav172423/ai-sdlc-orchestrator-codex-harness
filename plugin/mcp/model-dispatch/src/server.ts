@@ -28,6 +28,7 @@ import {
 } from "./routing.js";
 import { assessModels, parseAuthMode, type AuthMode } from "./preflight.js";
 import { appendEvent, normalizeDirectTierEvent } from "./telemetry.js";
+import { assertUnderCostCap, CostCapExceededError } from "./costCap.js";
 import { createAdapter } from "./adapters/index.js";
 import {
   defaultAdcPath,
@@ -280,6 +281,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
         properties: {
           events: { type: "array" },
           policy_name: { type: "string" },
+          project_root: { type: "string" },
           policy_path: { type: "string" },
         },
         required: ["events"],
@@ -388,6 +390,20 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
           select_chosen: decision.selection?.chosen,
           select_overridden: decision.selection?.overridden,
         });
+
+        try {
+          assertUnderCostCap(policy, a.telemetry_path);
+        } catch (err) {
+          if (err instanceof CostCapExceededError) {
+            log("warn", "cost_cap.refused", {
+              packet_id: packet.id,
+              recorded_usd: err.recordedUsd,
+              cap_usd: err.capUsd,
+              policy_name: err.policyName,
+            });
+          }
+          throw err;
+        }
 
         const adapter = adapterFor(policy, decision.modelId);
         const dispatchStarted = Date.now();
@@ -521,7 +537,7 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
       }
       case "simulate_policy": {
         const a = args as any;
-        const policy = ensurePolicy(a.policy_name, undefined, a.policy_path);
+        const policy = ensurePolicy(a.policy_name, a.project_root, a.policy_path);
         // Replay against the same slot choices the real run uses.
         const out = simulatePolicyCost(a.events, policy, selectOverrides());
         return { content: [{ type: "text", text: JSON.stringify(out, null, 2) }] };

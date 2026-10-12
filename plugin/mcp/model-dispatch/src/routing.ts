@@ -14,6 +14,7 @@ import type {
   RuleMatcher,
   SelectOverrides,
 } from "./types.js";
+import { computeCostUsd } from "./pricing.js";
 
 export interface TaskContext {
   phase: string;
@@ -207,6 +208,7 @@ export interface ReplayEvent {
   task_type: string;
   module: string;
   retry_count: number;
+  /** Fresh input, disjoint from `input_tokens_cached` — as telemetry events store it. */
   input_tokens: number;
   input_tokens_cached: number;
   output_tokens: number;
@@ -225,11 +227,10 @@ export function simulatePolicyCost(
     const decision = pickModel(ev, policy, overrides);
     const model = policy.models.find((m) => m.id === decision.modelId);
     if (!model) continue;
-    const inputFresh = ev.input_tokens - ev.input_tokens_cached;
-    const cost =
-      (inputFresh / 1_000_000) * model.pricing.input +
-      (ev.input_tokens_cached / 1_000_000) * model.pricing.input_cached +
-      (ev.output_tokens / 1_000_000) * model.pricing.output;
+    const cost = computeCostUsd(
+      { input: ev.input_tokens, input_cached: ev.input_tokens_cached, output: ev.output_tokens },
+      model.pricing
+    );
     perModel[model.id] = (perModel[model.id] ?? 0) + cost;
     total += cost;
   }
