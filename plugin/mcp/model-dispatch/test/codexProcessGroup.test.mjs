@@ -7,7 +7,7 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -18,6 +18,8 @@ import { CodexCliAdapter } from "../dist/adapters/CodexCliAdapter.js";
 const SERVER = new URL("../dist/server.js", import.meta.url).pathname;
 const FIXTURE = new URL("./fixtures/codex-0.160.1/drop.jsonl", import.meta.url).pathname;
 const SLOW_MS = 2500;
+/** Under SLOW_MS, so the native stand-in can never answer before the deadline fires. */
+const DEADLINE_SEC = 2;
 
 const LEAF = {
   id: "gpt",
@@ -58,6 +60,7 @@ setTimeout(() => {
   writeFileSync(
     wrapper,
     `#!/usr/bin/env node
+if (process.argv[2] === "--warm") process.exit(0);
 const { spawn } = require("child_process");
 const child = spawn(process.execPath, [${JSON.stringify(native)}, ...process.argv.slice(2)], { stdio: "inherit" });
 for (const sig of ["SIGINT", "SIGTERM", "SIGHUP"]) process.on(sig, () => child.kill(sig));
@@ -65,6 +68,9 @@ child.on("exit", (code) => process.exit(code ?? 1));
 `,
   );
   chmodSync(wrapper, 0o755);
+  // macOS checks a freshly written executable on its first exec, which takes seconds when other
+  // suites run at once. Paying that here keeps it out of every dispatch's deadline.
+  spawnSync(wrapper, ["--warm"]);
   return wrapper;
 }
 
@@ -126,10 +132,10 @@ test("an abandoned dispatch kills the native codex behind the npm wrapper, and r
 
 test("a dispatch at its deadline kills the native codex behind the npm wrapper", withStub(async ({ marker, codexBin }) => {
   const started = Date.now();
-  const out = await new CodexCliAdapter(LEAF, { codexBin, timeoutSec: 1 }).execute(PACKET);
+  const out = await new CodexCliAdapter(LEAF, { codexBin, timeoutSec: DEADLINE_SEC }).execute(PACKET);
   assert.ok(existsSync(`${marker}.pid`), "the native stand-in had not started by the deadline");
   assert.equal(out.success, false);
-  assert.match(out.error, /timeout after 1s/);
+  assert.match(out.error, new RegExp(`timeout after ${DEADLINE_SEC}s`));
   assert.equal(out.attempts[0].cost_provenance, "estimated");
   assert.equal(out.attempts[0].usage_complete, false);
   await assertNativeKilled(marker, started);
