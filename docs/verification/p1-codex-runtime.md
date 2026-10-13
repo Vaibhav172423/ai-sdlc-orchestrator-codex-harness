@@ -49,7 +49,7 @@ setup docs either way.
 | 8 | Dispatch one Gemini packet through the bridge | **PENDING** — needs Vertex ADC or `GEMINI_API_KEY` (Q13(c) in the track doc) | Mechanical tier |
 | 9 | Spawn a subagent | **INCONCLUSIVE — live.** `multi_agent` is wired: a `collab_tool_call` item type exists and fired (`tool: "wait"`). But the spawn itself failed in headless `exec` mode — `stderr`: `collab spawn failed: no thread with id: <thread_id>` — and the model answered the test question directly rather than proving real delegation. Native subagent hosting is not provably usable from `codex exec` on this version; the fallback (fold agent roles into the driver prompt, dispatch every model call through the bridge) is the safer default, consistent with the track doc's D1 note that bridge-dispatch is required regardless | Role hosting mechanism |
 | 10 | Fresh session vs. install session registration | **PASS — reasoned, not a live re-test.** `codex doctor` reports the background app-server as "not running (ephemeral mode)" — there is no long-lived daemon in the default setup. Every `codex`/`codex exec` invocation is a fresh process that reads `config.toml` at start. This is structurally the opposite of the source Claude Code harness's failure mode (where a running interactive session doesn't pick up plugin registration until restarted) — there is no "install session vs. fresh session" distinction to fail here, because there is no persistent session to begin with | No silent premium-model cost failure from stale registration |
-| 11 | Compare driver pricing against published rates | **PENDING** (gates P5 only) | Pricing pins |
+| 11 | Compare driver pricing against published rates | **PASS 2026-10-13** (OpenAI page: 2.00 / 0.20 / 12.00) | Pricing pins |
 
 ## Check 4 — MCP tools registered via `config.toml` are NOT reachable from `codex exec` on 0.151.0 (CRITICAL, 2026-08-31)
 
@@ -565,7 +565,7 @@ is a greenfield run creating a throwaway fixture inside the tree it just generat
 
 1. Vertex ADC or `GEMINI_API_KEY` — unblocks check 8 (mechanical-tier dispatch) and the Gemini
    region pin. Not yet provisioned (track doc Q13(c)); does not block P2–P4 offline work.
-2. Re-verify the `gpt-5.6-terra` pricing pin against OpenAI's published rates — gates P5 only.
+2. ~~Re-verify the `gpt-5.6-terra` pricing pin against OpenAI's published rates.~~ Done 2026-10-13.
 3. Re-test the web-search hook-invisibility finding on `0.151.0` with a prompt engineered to
    actually trigger hosted search — folded into P4's audit-flag work rather than done standalone.
 4. ~~Live MCP tool-namespacing test, once the real `model-dispatch` server is wired in P3.~~

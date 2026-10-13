@@ -31,6 +31,13 @@ test("the codex plugin manifest exists and parses", () => {
   assert.doesNotThrow(() => manifest());
 });
 
+test("README version badge matches the plugin version", () => {
+  const readme = readFileSync(join(REPO_ROOT, "README.md"), "utf-8");
+  const badge = readme.match(/badge\/version-(\d+\.\d+\.\d+)-/);
+  assert.ok(badge, "README.md must carry a version badge");
+  assert.equal(badge[1], manifest().version);
+});
+
 test("manifest carries the required identity fields", () => {
   const m = manifest();
   assert.match(m.name, /^[a-z0-9][a-z0-9-]*$/, "name must be kebab-case per the codex spec");

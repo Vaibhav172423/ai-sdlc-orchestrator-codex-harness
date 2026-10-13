@@ -2,7 +2,7 @@
 
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![CI](https://github.com/tl-ai-labs/ai-sdlc-orchestrator-codex-harness/actions/workflows/test.yml/badge.svg)](https://github.com/tl-ai-labs/ai-sdlc-orchestrator-codex-harness/actions/workflows/test.yml)
-[![Version](https://img.shields.io/badge/version-0.1.0-blue)](.agents/plugins/marketplace.json)
+[![Version](https://img.shields.io/badge/version-0.2.0-blue)](.agents/plugins/marketplace.json)
 
 ## What this is
 

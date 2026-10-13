@@ -20,12 +20,11 @@ models:
     # Pinned in docs/verification/p1-codex-runtime.md (Document B section 8).
     # A mismatch here must abort the run — see the fairness-pin assertion (P4).
     reasoning: { effort: high }
-    # D4 pins, dated 2026-08-09. Re-verify against OpenAI's published rates
-    # before the first paid run (Document A P1' / port track section 6, P5
-    # gate) — this does not block P2-P4.
+    # Verified 2026-10-13 against OpenAI's pricing page: 2.00 / 0.20 / 12.00 per 1M.
+    # The over-272K-input tier is not modelled here.
     pricing: { input: 2.00, input_cached: 0.20, output: 12.00 }
     pricing_source: https://platform.openai.com/docs/pricing
-    pricing_last_verified: 2026-08-09
+    pricing_last_verified: 2026-10-13
     auth: { env: OPENAI_API_KEY }
     # TODO(ceiling): no published absolute output-token ceiling confirmed for
     # gpt-5.6-terra as of this port. 32000 is a placeholder matching the
