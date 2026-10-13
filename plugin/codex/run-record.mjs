@@ -243,6 +243,11 @@ export function completionEvidence(runDir, runStartedAtMs) {
   return { summary: byCode.ok, summaryReason: byCode.ok ? null : byCode.reason, gate4: accepted, complete: byCode.ok && accepted };
 }
 
+/** A completed run's reason, in the words its Gate 4 line recorded: an unattended run says auto-approved. */
+export function completionReason(runDir) {
+  return `write-manifest.mjs wrote SUMMARY.md and Gate 4 was ${gateDecision(gate4Acceptance(runDir)) || "accepted"}`;
+}
+
 /**
  * Why an invocation's turn ended, from evidence written during that
  * invocation only. Returns {outcome, reason, gate?, question?} or null when
@@ -316,7 +321,7 @@ export function stopCheck({
   if (rejection) return { outcome: "pin_rejected", reason: `the codex CLI rejected the pinned model or effort — ${rejection}` };
 
   if (completionEvidence(runDir, runStartedAtMs).complete) {
-    return { outcome: "completed", reason: "write-manifest.mjs wrote SUMMARY.md and Gate 4 was accepted" };
+    return { outcome: "completed", reason: completionReason(runDir) };
   }
   return null;
 }

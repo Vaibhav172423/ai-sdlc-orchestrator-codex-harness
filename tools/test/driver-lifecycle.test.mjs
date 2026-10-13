@@ -1304,8 +1304,34 @@ test("Phase 9's provisional SUMMARY.md does not end the run: the re-run after Ga
     const { code, out } = await h.run(args(h, "r1", "--max-turns=2"));
     assert.equal(code, 0);
     assert.equal(h.calls().length, 2, "the turn that left a provisional summary was resumed");
-    assert.match(out, /run r1: completed — write-manifest\.mjs wrote SUMMARY\.md and Gate 4 was accepted/);
+    assert.match(out, /run r1: completed — write-manifest\.mjs wrote SUMMARY\.md and Gate 4 was auto-approved/);
     assert.match(h.calls()[1].argv.at(-1), /run that command again with --status=accepted or --status=auto-approved/);
+  } finally {
+    h.cleanup();
+  }
+});
+
+test("a completed run's reason names the Gate 4 decision: auto-approved unattended, accepted by a person", async () => {
+  const h = harness();
+  try {
+    withScenario(h, "r1", [COMPLETE]);
+    const run1 = await h.run(args(h, "r1"));
+    assert.equal(run1.code, 0);
+    const auto = "write-manifest.mjs wrote SUMMARY.md and Gate 4 was auto-approved";
+    assert.equal(h.records("r1").at(-1).reason, auto);
+    assert.equal(h.manifest("r1").outcome_reason, auto);
+    assert.equal(readManifest(h, "r1").driver.outcome_reason, auto);
+    assert.ok(run1.out.includes(`run r1: completed — ${auto}`), run1.out);
+    assert.ok(readFileSync(join(h.runDirOf("r1"), "report.md"), "utf-8").includes(`completed (exit 0) — ${auto}`));
+
+    const t = terminal(["accept\n"]);
+    withScenario(h, "r2", [
+      { gates: [{ gate: 4, decision: "pending" }], summary: true },
+      { gates: [{ gate: 4, decision: "accepted" }], summary: true, summaryStatus: "accepted" },
+    ]);
+    const run2 = await h.run(["--project-root", h.root, "--run-id=r2", "--mode=greenfield"], { stdin: t.stdin, stdout: t.stdout });
+    assert.equal(run2.code, 0);
+    assert.equal(h.manifest("r2").outcome_reason, "write-manifest.mjs wrote SUMMARY.md and Gate 4 was accepted");
   } finally {
     h.cleanup();
   }

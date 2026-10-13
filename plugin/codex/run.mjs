@@ -44,6 +44,7 @@ import {
   appendRecord,
   classifyDriverAuth,
   completionEvidence,
+  completionReason,
   countLines,
   invocationCount,
   isDeliberate,
@@ -1165,7 +1166,7 @@ async function runDriver(args, deps) {
         // The conductor can finish the run, and a brownfield close-out end its lock, before codex exits.
         if (!result.spawnError && completionEvidence(runDir, runStartedAtMs).complete) {
           outcome = "completed";
-          reason = `write-manifest.mjs wrote SUMMARY.md and Gate 4 was accepted; ${stopping} arrived after the run finished`;
+          reason = `${completionReason(runDir)}; ${stopping} arrived after the run finished`;
         } else {
           outcome = "interrupted";
           reason = `the driver received ${stopping}`;
