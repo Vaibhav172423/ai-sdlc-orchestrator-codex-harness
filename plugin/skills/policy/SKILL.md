@@ -24,6 +24,11 @@ is set). Also read `.sdlc/project.json.last_updated_at` and include it in the me
 
 - If a policy is set: `Current policy: <name>   (set <last_updated_at>, change with $mmo-codex:policy change)`.
 - If no policy is set: `No policy set yet — run $mmo-codex:policy change to pick one.`
+- If the script also prints `setup-policy: runs in this project use <path> (policy '<name>') …` on
+  stderr, a `routing-policy.yaml` sits at the project root and every run here uses it instead of
+  `default_policy` and of any `--policy`. Say so on its own line, naming the file and its policy:
+  `Runs here use <path> (policy '<name>'), which overrides the default above.` Changing the default
+  changes nothing while that file exists.
 
 Do not open the browser here. Do not error. This shape is purely read.
 
@@ -102,7 +107,9 @@ fails downstream. The choices above cover every real path.
 node '<plugin-root>/scripts/setup-policy.mjs' --check-creds --policy=<chosen> --project-root "$(pwd)"
 ```
 
-Parse the JSON.
+Parse the JSON. If it carries a `note`, print it verbatim before anything else: the project has a
+`routing-policy.yaml`, every run there uses that file whatever `default_policy` says, and its
+credentials are what was checked.
 
 - If `ok: true` → persist:
 
@@ -146,13 +153,16 @@ No browser. The script validates `<name>` against files in `plugin/config/polici
 # Notes
 
 - The change is per-project. Once written to `.sdlc/project.json`, every subsequent
-  `$mmo-codex:greenfield` or `$mmo-codex:brownfield` in this folder uses the new policy. Prior runs'
+  `$mmo-codex:greenfield` or `$mmo-codex:brownfield` in this folder uses the new policy, unless a
+  `routing-policy.yaml` sits at the project root: while that file exists, every run uses it, for
+  routing, the driver pin and the cost cap alike. Prior runs'
   `provenance.json` records the policy that was in effect at run time — those do not get rewritten.
 - To change the policy for a single ticket without touching the project's default:
   - **Interactive** (`$mmo-codex:brownfield`): type a different policy name at Gate 0's Policy bullet
     when reviewing the discovery summary. Accepted for that run only.
   - **Headless** (`$mmo-codex:pass`): pass `--policy=<name>`. Same one-run scope.
 
-  Neither path writes to `.sdlc/project.json`.
+  Neither path writes to `.sdlc/project.json`, and neither beats a `routing-policy.yaml` at the
+  project root.
 - The browser opens only when the user picks `Author a new policy` under `change` (or the same
   option during first-time `$mmo-codex:setup`). Picking a shipped preset stays in the terminal.

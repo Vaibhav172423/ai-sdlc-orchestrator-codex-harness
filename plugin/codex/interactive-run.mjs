@@ -12,7 +12,6 @@ export const PLUGIN_ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
 export const RUN_JSON = "run.json";
 export const RUN_JSON_VERSION = 1;
 export const ROUTE = "interactive";
-export const DEFAULT_POLICY = "gpt-plus-flash";
 
 /** How a run in a session may end. `deliberate` matches run-record.mjs's OUTCOMES. */
 export const INTERACTIVE_OUTCOMES = {
@@ -162,40 +161,4 @@ export function pluginVersion(pluginRoot = PLUGIN_ROOT) {
 export function intentIds(pluginRoot = PLUGIN_ROOT) {
   const raw = JSON.parse(readFileSync(join(pluginRoot, "config", "intents.json"), "utf-8"));
   return (Array.isArray(raw) ? raw : (raw.intents ?? [])).map((i) => i.id);
-}
-
-const POLICY_NAME_RE = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
-
-function policyFile(pluginRoot, name) {
-  return join(pluginRoot, "config", "policies", `${name}.yaml`);
-}
-
-function projectDefaultPolicy(projectRoot) {
-  try {
-    const name = JSON.parse(readFileSync(join(projectRoot, ".sdlc", "project.json"), "utf-8")).default_policy;
-    return typeof name === "string" && name ? name.replace(/\.ya?ml$/, "") : null;
-  } catch {
-    return null;
-  }
-}
-
-/**
- * The policy this run uses, in the order the bridge applies:
- * `<root>/routing-policy.yaml`, then --policy, then the project's
- * default_policy, then gpt-plus-flash. `name` is what dispatch commands pass
- * as --policy.
- */
-export function resolveRunPolicy({ projectRoot, policy, pluginRoot = PLUGIN_ROOT }) {
-  const override = join(projectRoot, "routing-policy.yaml");
-  const fromProject = projectDefaultPolicy(projectRoot);
-  const name = policy ?? fromProject ?? DEFAULT_POLICY;
-  const source = policy ? "--policy" : fromProject ? "project.json" : "default";
-  if (existsSync(override)) return { name, source: "routing-policy.yaml", path: override };
-  if (!POLICY_NAME_RE.test(name) || !existsSync(policyFile(pluginRoot, name))) {
-    throw new UsageError(
-      `policy '${name}' (from ${source}) is not a file in ${join(pluginRoot, "config", "policies")}. ` +
-        "Pass --policy=<name> with a policy that exists, or fix the project's default with $mmo-codex:policy change.",
-    );
-  }
-  return { name, source, path: policyFile(pluginRoot, name) };
 }

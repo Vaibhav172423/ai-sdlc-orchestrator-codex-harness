@@ -18,7 +18,7 @@ import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprot
 
 import { existsSync } from "node:fs";
 
-import { loadPolicy, loadPolicyFromPath, getModel } from "./policy.js";
+import { resolvePolicy, getModel, type ResolvedPolicy } from "./policy.js";
 import {
   pickModel,
   simulatePolicyCost,
@@ -88,6 +88,7 @@ const SERVER_VERSION = "0.1.0";
 // Runtime state: loaded policies cached by name, adapters cached by model id.
 const adapterCache = new Map<string, ReturnType<typeof createAdapter>>();
 let activePolicy: Policy | null = null;
+let activeResolution: ResolvedPolicy | null = null;
 let activePolicyKey = "";
 
 /** Slot choices, spelled `slot=option[,slot=option...]`. Property of the install. */
@@ -97,20 +98,22 @@ const LEGACY_SELECT_ENV = "SDLC_SELECT";
 let legacySelectWarned = false;
 
 function ensurePolicy(policyName?: string, projectRoot?: string, policyPath?: string): Policy {
-  const key = `${policyName ?? "opus-only"}|${projectRoot ?? ""}|${policyPath ?? ""}`;
+  const key = `${policyName ?? ""}|${projectRoot ?? ""}|${policyPath ?? ""}`;
   if (activePolicy && activePolicyKey === key) return activePolicy;
-  const policy = policyPath
-    ? loadPolicyFromPath(policyPath)
-    : loadPolicy({ policyName, projectRoot });
+  const resolved = resolvePolicy({ policyName, projectRoot, policyPath });
+  const policy = resolved.policy;
   // Every policy load goes through here, so a bad slot choice fails at load
   // rather than partway through a paid phase.
   validateSelectOverrides(policy, selectOverrides());
   activePolicy = policy;
+  activeResolution = resolved;
   activePolicyKey = key;
   log("info", "policy.load", {
     policy_name: policy.name,
-    resolved_path: policyPath,
-    source: policyPath ? "path" : "name",
+    resolved_path: resolved.path,
+    source: resolved.source,
+    requested: resolved.requestedName ?? undefined,
+    sha256: resolved.sha256,
     version: policy.version,
     model_count: policy.models.length,
     rule_count: policy.rules.length,
@@ -219,7 +222,12 @@ function preflightDispatch(policy: Policy, authMode: AuthMode) {
   return {
     ok: assessment.ok,
     auth_mode: authMode,
-    policy: { name: policy.name, version: policy.version },
+    policy: {
+      name: policy.name,
+      version: policy.version,
+      source: activeResolution?.source,
+      path: activeResolution?.path,
+    },
     models: assessment.models,
     // Named so "you did not select it" stays distinguishable from
     // "pre-flight forgot about it".

@@ -277,7 +277,7 @@ function loadAllPolicySummaries() {
 // ── build (mirrors lib/buildPolicy.ts) ────────────────────────────────
 
 function buildCustomPolicy(base, input) {
-  const { select, structural } = base;
+  const { select, structural, driver, hardCostCapUsd } = base;
   const { models } = input;
   const rules = [];
 
@@ -333,12 +333,15 @@ function buildCustomPolicy(base, input) {
 
   rules.push(structural.fallback ?? { default: models[0]?.id ?? input.routing[PHASES[0].id] });
 
+  // The driver pin and the cap are not edited here, but a run needs both.
   return {
     version: base.version,
     name: input.name,
+    ...(driver ? { driver } : {}),
     models,
     ...(select ? { select } : {}),
     rules,
+    ...(hardCostCapUsd !== undefined ? { hard_cost_cap_usd: hardCostCapUsd } : {}),
   };
 }
 
@@ -425,6 +428,8 @@ function savePolicy(input) {
     {
       version: base.version,
       select: base.select,
+      driver: base.driver,
+      hardCostCapUsd: base.hard_cost_cap_usd,
       structural: {
         codegenTaskTypes: codegenTaskTypes(base),
         debugEscalation: debugEscalationRule(base),
@@ -550,6 +555,8 @@ const server = createServer(async (req, res) => {
         {
           version: base.version,
           select: base.select,
+          driver: base.driver,
+          hardCostCapUsd: base.hard_cost_cap_usd,
           structural: {
             codegenTaskTypes: codegenTaskTypes(base),
             debugEscalation: debugEscalationRule(base),

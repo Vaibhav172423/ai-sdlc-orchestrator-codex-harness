@@ -11,7 +11,7 @@
  * gemini-3.5-flash global: 12,245/154 tokens, $0.0198.
  *
  * Usage:
- *   node probe-agent-worker.mjs                  # opus-plus-flash
+ *   node probe-agent-worker.mjs [--project-root=<dir>]   # the policy a run there would use
  *   node probe-agent-worker.mjs --policy=<name>
  *
  * Exit 0: delegation completed and priced. Exit 1: cause named in words.
@@ -39,7 +39,7 @@ export function agentLeafFrom(policy) {
     throw new Error(
       `Policy '${policy?.name ?? "?"}' declares no agent-worker leaf ` +
         `(no model with adapter: ${AGENT_ADAPTER}), so there is nothing here to probe. ` +
-        `The shipped policy that has one is opus-plus-flash.`
+        `The shipped policies that have one are gpt-plus-flash, gpt-plus-flash-38, gpt-seat-plus-flash and flash-agsdk-only.`
     );
   }
   if (leaves.length > 1) {
@@ -240,7 +240,8 @@ function makeProbeDirs() {
 async function main() {
   const pluginRoot = dirname(dirname(fileURLToPath(import.meta.url)));
   const argv = process.argv.slice(2);
-  const policyName = readFlag(argv, "policy") ?? "opus-plus-flash";
+  const policyName = readFlag(argv, "policy");
+  const projectRoot = readFlag(argv, "project-root") ?? process.cwd();
   const modelId = readFlag(argv, "model");
   const log = (m = "") => console.log(m);
 
@@ -248,7 +249,7 @@ async function main() {
   log("  One trivial delegation, in an empty temporary workspace, at real cost.\n");
 
   const { loadPolicy, createAdapter } = await loadServerModules(pluginRoot);
-  const policy = loadPolicy({ policyName });
+  const policy = loadPolicy({ policyName, projectRoot });
   const leaf = modelId ? agentLeafById(policy, modelId) : agentLeafFrom(policy);
 
   // Constructor is itself a gate — resolves project, worker script, and

@@ -23,10 +23,10 @@ import { spawn, spawnSync } from "node:child_process";
 import { homedir } from "node:os";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { parse as parseYaml } from "yaml";
 
 import { codexEvents, driverCostRow, modeledDriverCostRows, readDriverRecord } from "./telemetry/event-reader.mjs";
-import { readPin, assertPinnedInvocation, findPinRejection } from "./telemetry/fairnessPin.mjs";
+import { argvPin, assertPinnedInvocation, findPinRejection } from "./telemetry/fairnessPin.mjs";
+import { assertResumePolicy, codexEnv, policyRecord, readRecordedPolicy, resolveRunPolicy, RunRefusal } from "./run-policy.mjs";
 import { assertUnderCostCap, COST_CAP_EXCEEDED } from "../mcp/model-dispatch/dist/costCap.js";
 import { DriverTurnTracker } from "../mcp/model-dispatch/dist/driverUsage.js";
 import { configureSinks, log, redactText } from "../scripts/lib/log.mjs";
@@ -62,7 +62,6 @@ import { renderPrompt, renderSkills } from "./render.mjs";
 const CODEX_DIR = dirname(fileURLToPath(import.meta.url));
 const PLUGIN_ROOT = dirname(CODEX_DIR);
 const WRITE_CONTRACT_HOOK = join(CODEX_DIR, "hooks", "write-contract-check.mjs");
-const DEFAULT_POLICY = "gpt-plus-flash";
 
 /** Sandbox and approval pins — see the verification doc's "Pins chosen". */
 export const SANDBOX_MODE = "workspace-write";
@@ -205,15 +204,6 @@ export function parseArgs(argv) {
 }
 
 export { renderPrompt, renderSkills, RENDERED_SKILLS } from "./render.mjs";
-
-/** Loads the policy YAML the pins are read from. */
-export function loadPolicyFile(policyName, pluginRoot = PLUGIN_ROOT) {
-  const path = join(pluginRoot, "config", "policies", `${policyName}.yaml`);
-  if (!existsSync(path)) {
-    throw new Error(`run: policy '${policyName}' not found at ${path}.`);
-  }
-  return parseYaml(readFileSync(path, "utf-8"));
-}
 
 /**
  * The full `codex exec` argv. Built as a pure function so the pins are
@@ -677,7 +667,8 @@ function codexBinFrom(cwd, value) {
 /**
  * Runs the driver. `deps` replaces the process's own spawn, stdin, stdout,
  * stderr, clock, env, cwd and signal source (tests pass an EventEmitter),
- * plus loadPolicy, isGitRepo and killGraceMs. Returns the exit code.
+ * plus loadPolicy (name → the policy object to use in place of the resolved
+ * file's), isGitRepo and killGraceMs. Returns the exit code.
  */
 export async function main(input = [], deps = {}) {
   try {
@@ -687,6 +678,10 @@ export async function main(input = [], deps = {}) {
     if (err instanceof UsageError) {
       writeQuietly(deps.stderr ?? process.stderr, `run: ${err.message}\n`);
       return 2;
+    }
+    if (err instanceof RunRefusal) {
+      writeQuietly(deps.stderr ?? process.stderr, `${err.message}\n`);
+      return err.exitCode;
     }
     writeQuietly(deps.stderr ?? process.stderr, `run failed: ${err?.message ?? err}\n`);
     return 1;
@@ -747,13 +742,13 @@ async function runDriver(args, deps) {
     throw new UsageError(`run ${runId} already completed (${runDir}). Start a new run instead of resuming it.`);
   }
   const recorded = runSettings(earlier) ?? {};
-  refuseChange("policy", args.policy, recorded.policy, runId);
+  // A routing-policy.yaml can win over the --policy a run started with, so either name is that run's.
+  if (args.policy !== recorded.policy_requested) refuseChange("policy", args.policy, recorded.policy, runId);
   refuseChange("mode", args.mode, recorded.run_mode, runId);
   refuseChange("intent", args.intent, recorded.intent, runId);
 
   const runMode = args.mode ?? recorded.run_mode ?? undefined;
   const intent = args.intent ?? recorded.intent ?? undefined;
-  const policyName = args.policy ?? recorded.policy ?? DEFAULT_POLICY;
   const gateMode = args.gates ?? lastGateMode(earlier) ?? "prompt";
   if (!(gateMode in GATE_MODES)) throw new UsageError(`recorded gate mode '${gateMode}' is not known; pass --gates.`);
   if (intent && !recorded.intent) {
@@ -789,17 +784,26 @@ async function runDriver(args, deps) {
     );
   }
 
-  let policy;
-  let pin;
+  // Before anything is rendered: the prompt's --policy, the pin, the driver's
+  // rates and the cap all come from this one resolution, the bridge's own.
+  let policyRun;
   try {
-    policy = (deps.loadPolicy ?? loadPolicyFile)(policyName);
-    pin = readPin(policy);
-    // The only point where the pin is reliably enforceable: the stream never says which model answered.
-    assertPinnedInvocation({ model: pin.model, effort: pin.effort }, policy);
+    policyRun = resolveRunPolicy({
+      projectRoot,
+      policyArg: args.policy ?? recorded.policy_requested ?? recorded.policy ?? null,
+      warn,
+    });
+    if (deps.loadPolicy) policyRun = { ...policyRun, policy: deps.loadPolicy(policyRun.name) };
   } catch (err) {
-    throw new UsageError(err?.message ?? String(err));
+    throw err instanceof RunRefusal ? err : new UsageError(err?.message ?? String(err));
   }
-  const gpt = policy.models.find((m) => m.id === "gpt");
+  if (policyRun.notice && args.policy !== undefined) warn(policyRun.notice);
+  if (args.resume) {
+    assertResumePolicy({ recorded: readRecordedPolicy(runDir, { runId, warn }), run: policyRun, runDir, warn });
+  }
+  const policy = policyRun.policy;
+  const policyName = policyRun.name;
+  const pin = policyRun.driver.pin;
   const codexHome = env.CODEX_HOME ?? join(homedir(), ".codex");
   const skipGitRepoCheck = runMode === "greenfield";
 
@@ -819,11 +823,25 @@ async function runDriver(args, deps) {
   let nextPrompt = threadId ? resumePrompt(gateMode, previous) : promptText;
   const argvFor = (prompt, resumeThreadId) =>
     buildCodexArgs({ pin, promptText: prompt, cwd: projectRoot, codexHome, resumeThreadId, skipGitRepoCheck });
+  try {
+    // Checked on the argv codex will receive: the stream never says which model answered.
+    assertPinnedInvocation(argvPin(argvFor(nextPrompt, threadId)), policy);
+  } catch (err) {
+    throw new UsageError(err?.message ?? String(err));
+  }
 
   if (args["dry-run"]) {
     say(
       JSON.stringify(
-        { policy: policyName, pin, run_id: runId, output_dir: runDir, code_dir: codeDir, gates: gateMode, argv: argvFor(nextPrompt, threadId) },
+        {
+          ...policyRecord(policyRun),
+          pin,
+          run_id: runId,
+          output_dir: runDir,
+          code_dir: codeDir,
+          gates: gateMode,
+          argv: argvFor(nextPrompt, threadId),
+        },
         null,
         2,
       ),
@@ -844,10 +862,11 @@ async function runDriver(args, deps) {
   configureSinks({ runLogPath: join(runDir, "orchestrator.log") });
   const driverAuth = await readDriverAuth({ spawnFn, codexBin, cwd: projectRoot, env });
   const driver = {
-    pricing: gpt.pricing,
+    pricing: policyRun.driver.pricing,
     model: pin.model,
-    policyName: policy.name ?? policyName,
-    policyVersion: policy.version ?? 1,
+    policyName,
+    policyVersion: policyRun.version ?? 1,
+    policyRecord: policyRecord(policyRun),
     pin,
     sandbox: SANDBOX_MODE,
     approvalPolicy: APPROVAL_POLICY,
@@ -963,7 +982,8 @@ async function runDriver(args, deps) {
       const result = await spawnCodex(argvFor(nextPrompt, threadId), {
         spawnFn,
         cwd: projectRoot,
-        env,
+        // Every dispatch.mjs codex starts then loads exactly the file this run priced and capped.
+        env: codexEnv(policyRun, env),
         codexBin,
         invocation,
         resumeThreadId: threadId,
@@ -979,7 +999,7 @@ async function runDriver(args, deps) {
             mode,
             resume_thread_id: threadId,
             resume_after: resumeAfter,
-            policy: policyName,
+            ...policyRecord(policyRun),
             pin: { model: pin.model, effort: pin.effort },
             gates: gateMode,
             max_turns: maxTurns,
@@ -1155,7 +1175,7 @@ async function runDriver(args, deps) {
       exit_code: exitCode,
       // A run stopped before its first spawn has no invocation_start; --resume reads its settings from here.
       run_id: runId,
-      policy: policyName,
+      ...policyRecord(policyRun),
       gates: gateMode,
       run_mode: runMode ?? null,
       intent: intent ?? null,

@@ -12,12 +12,16 @@ import { dirname, join } from "node:path";
 import { PassThrough } from "node:stream";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
-import { GATE_MODES, loadPolicyFile, main } from "../../plugin/codex/run.mjs";
+import { GATE_MODES, main } from "../../plugin/codex/run.mjs";
+import { resolveRunPolicy } from "../../plugin/codex/run-policy.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const FAKE = join(HERE, "fixtures", "fake-codex.mjs");
 const RUN_MJS = join(HERE, "..", "..", "plugin", "codex", "run.mjs");
 const THREAD = "01a1340d-41da-7e31-84cd-b0907e9bc31f";
+
+/** A shipped preset, resolved the way run.mjs resolves --policy in a project with no routing-policy.yaml. */
+const presetPolicy = (name) => resolveRunPolicy({ projectRoot: join(HERE, "fixtures"), policyArg: name, warn: () => {} }).policy;
 
 const fakeSpawn = (bin, args, opts) => spawn(process.execPath, [FAKE, ...args], opts);
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -340,7 +344,7 @@ test("codex's fallback-metadata warning on a completed run is a warning, not a r
 test("the cost cap is checked before every spawn and after every invocation", async () => {
   const h = harness();
   try {
-    const capped = (cap) => (name) => ({ ...loadPolicyFile(name), hard_cost_cap_usd: cap });
+    const capped = (cap) => (name) => ({ ...presetPolicy(name), hard_cost_cap_usd: cap });
     withScenario(h, "r1", [{ telemetry: [{ cost_usd: 0.6 }] }]);
     const first = await h.run(args(h, "r1"), { loadPolicy: capped(0.5) });
     assert.equal(first.code, 4);
@@ -834,7 +838,7 @@ test("a run the cap stopped before its first spawn resumes with the policy, mode
     const seen = [];
     const capped = (cap) => (name) => {
       seen.push(name);
-      return { ...loadPolicyFile(name), hard_cost_cap_usd: cap };
+      return { ...presetPolicy(name), hard_cost_cap_usd: cap };
     };
     withScenario(h, "r2", [COMPLETE]);
     assert.equal((await h.run(args(h, "r2", "--policy=gpt-seat-plus-flash"), { loadPolicy: capped(0) })).code, 4);
@@ -1044,7 +1048,7 @@ test("a terminal that closes at a relayed gate ends the run as interrupted, not 
 test("a run over its cap when a gate is waiting ends as cost_cap without asking the gate", async () => {
   const h = harness();
   try {
-    const capped = (name) => ({ ...loadPolicyFile(name), hard_cost_cap_usd: 50 });
+    const capped = (name) => ({ ...presetPolicy(name), hard_cost_cap_usd: 50 });
     withScenario(h, "r1", [
       { gates: [{ gate: 1, artifact: "requirements.md", decision: "pending" }], message: "Gate 1 block", telemetry: [{ cost_usd: 60, provenance: "vendor" }] },
       { gates: [{ gate: 1, decision: "approved" }] },

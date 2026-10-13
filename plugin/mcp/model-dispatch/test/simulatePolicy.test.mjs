@@ -35,7 +35,7 @@ test("simulate_policy prices against a repo-local routing-policy.yaml when proje
   try {
     writeFileSync(
       join(dir, "routing-policy.yaml"),
-      readFileSync(SHIPPED, "utf-8").replace(
+      readFileSync(SHIPPED, "utf-8").replaceAll(
         "pricing: { input: 2.00, input_cached: 0.20, output: 12.00 }",
         "pricing: { input: 20.00, input_cached: 2.00, output: 120.00 }",
       ),

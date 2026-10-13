@@ -1,65 +1,108 @@
 /**
- * Fairness-pin assertion (Document A section 7, Document B section 8).
+ * Fairness pin (Document A section 7, Document B section 8).
  *
- * The pin lives in exactly one place — the official policy's `gpt` model
- * entry (plugin/config/policies/gpt-plus-flash.yaml: model_name,
- * reasoning.effort) — and is read from there, never duplicated as a second
- * set of constants here. A pricing or pin change only ever needs editing
- * in the policy YAML.
+ * The pin is the policy's top-level `driver:` block and is read from there,
+ * never duplicated as constants here. It has two halves, because a
+ * successful `codex exec --json` turn never echoes which model answered
+ * (docs/verification/p1-codex-runtime.md check 7):
  *
- * Enforceability is real but limited, per docs/verification/p1-codex-runtime.md
- * check 7: a successful `codex exec --json` turn never echoes back which
- * model or effort actually answered, so this cannot prove the correct pin
- * was used. What IS verified live: the CLI structurally rejects an
- * unrecognized model slug or an invalid `model_reasoning_effort` value with
- * a `turn.failed`/`error` item naming the problem. So the assertion has two
- * halves:
- *
- *   1. assertPinnedInvocation — called by the driver BEFORE invoking codex,
- *      on the exact model/effort strings it is about to pass as -m / -c
- *      flags. Catches a drifted driver script itself.
- *   2. findPinRejection — called AFTER a run, on the parsed event stream
- *      (see event-reader.mjs), to detect a structural rejection the CLI
- *      itself raised. It cannot prove success; it can prove a failure.
+ *   1. assertPinnedInvocation, before codex runs, on the -m / effort values
+ *      read back out of the built argv (argvPin).
+ *   2. findPinRejection, after a run, on the parsed event stream: it can
+ *      prove the CLI rejected the pin, never that the pin was honoured.
  */
 
-/** Reads the pin straight off the policy's `gpt` model entry. */
-export function readPin(policy) {
-  const gpt = policy.models.find((m) => m.id === "gpt");
-  if (!gpt) {
-    throw new Error(
-      `fairness pin: policy '${policy.name}' has no model with id 'gpt' to read the pin from.`,
-    );
+const DRIVER_BLOCK_EXAMPLE = [
+  "driver:",
+  "  model_name: gpt-5.6-terra",
+  "  reasoning: { effort: high }",
+  "  pricing: { input: 2.00, input_cached: 0.20, output: 12.00 }",
+].join("\n");
+
+function stderrWarn(message) {
+  process.stderr.write(`${message}\n`);
+}
+
+/**
+ * The conductor's pin and the rates its modeled cost uses. Prefers the
+ * `driver:` block; a policy written before it existed falls back to its
+ * `gpt` model entry, with a warning.
+ */
+export function readDriver(policy, { warn = stderrWarn } = {}) {
+  const models = Array.isArray(policy?.models) ? policy.models : [];
+  if (policy?.driver) {
+    const model = policy.driver.model_name;
+    const effort = policy.driver.reasoning?.effort;
+    if (!model || !effort) {
+      throw new Error(
+        `fairness pin: policy '${policy.name}''s driver block is missing model_name or reasoning.effort — nothing to assert against.`,
+      );
+    }
+    const pricing = policy.driver.pricing ?? models.find((m) => m.model_name === model)?.pricing ?? null;
+    if (!pricing) {
+      throw new Error(
+        `fairness pin: policy '${policy.name}''s driver block has no pricing, and no model entry prices ` +
+          `'${model}'. Add pricing: { input, input_cached, output } to the driver block.`,
+      );
+    }
+    return { pin: { model, effort }, pricing, from: "driver" };
   }
-  const model = gpt.model_name;
-  const effort = gpt.reasoning?.effort;
-  if (!model || !effort) {
-    throw new Error(
-      `fairness pin: policy '${policy.name}''s 'gpt' model entry is missing model_name or reasoning.effort — nothing to assert against.`,
+  const gpt = models.find((m) => m.id === "gpt");
+  if (gpt) {
+    const model = gpt.model_name;
+    const effort = gpt.reasoning?.effort;
+    if (!model || !effort) {
+      throw new Error(
+        `fairness pin: policy '${policy.name}''s 'gpt' model entry is missing model_name or reasoning.effort — nothing to assert against.`,
+      );
+    }
+    warn(
+      `fairness pin: policy '${policy.name}' has no driver: block, so the pin is read from its 'gpt' model entry. ` +
+        `Add a top-level driver: block; this fallback will be removed.`,
     );
+    return { pin: { model, effort }, pricing: gpt.pricing ?? null, from: "models.gpt" };
   }
-  return { model, effort };
+  throw new Error(
+    `fairness pin: policy '${policy?.name}' has no driver: block to read the pin from. Add one at the top level:\n${DRIVER_BLOCK_EXAMPLE}`,
+  );
+}
+
+export function readPin(policy, opts) {
+  return readDriver(policy, opts).pin;
+}
+
+/** The model and effort a built `codex exec` argv actually passes. */
+export function argvPin(argv) {
+  const end = argv.indexOf("--");
+  const flags = end === -1 ? argv : argv.slice(0, end);
+  const m = flags.indexOf("-m");
+  let effort = null;
+  for (let i = 0; i < flags.length - 1; i++) {
+    if (flags[i] !== "-c") continue;
+    const match = /^model_reasoning_effort="([^"]*)"$/.exec(flags[i + 1]);
+    if (match) effort = match[1];
+  }
+  return { model: m === -1 ? null : (flags[m + 1] ?? null), effort };
 }
 
 /**
  * Throws if the driver is about to invoke codex with a model or effort
- * that doesn't match the pin. Call this immediately before constructing
- * the `codex exec` argv — it is the only point where enforcement is
- * actually reliable (see module docstring).
+ * that doesn't match the pin. Pass argvPin(argv) of the real argv, so a
+ * drifted argv builder is caught and not only a drifted constant.
  */
 export function assertPinnedInvocation(intended, policy) {
-  const pin = readPin(policy);
+  const pin = readPin(policy, { warn: () => {} });
   if (intended.model !== pin.model) {
     throw new Error(
       `fairness pin violated: about to invoke model '${intended.model}', but the pinned model is ` +
-        `'${pin.model}' (plugin/config/policies/${policy.name}.yaml). Aborting rather than running an ` +
+        `'${pin.model}' (policy '${policy.name}'). Aborting rather than running an ` +
         `unpinned, uncomparable pass.`,
     );
   }
   if (intended.effort !== pin.effort) {
     throw new Error(
       `fairness pin violated: about to invoke reasoning effort '${intended.effort}', but the pinned ` +
-        `effort is '${pin.effort}' (plugin/config/policies/${policy.name}.yaml). Aborting rather than ` +
+        `effort is '${pin.effort}' (policy '${policy.name}'). Aborting rather than ` +
         `running an unpinned, uncomparable pass.`,
     );
   }

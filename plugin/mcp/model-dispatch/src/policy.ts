@@ -1,17 +1,25 @@
 /**
- * Policy loader & validator. Precedence:
- *   1. --policy=<name> (handled upstream)
+ * Policy resolver, loader and validator. The bridge and run.mjs (through
+ * dist/policy.js) both resolve here, so the policy a run prices and caps is
+ * the one its dispatches route by. First hit wins:
+ *   1. an explicit file (the bridge's `policy_path`)
  *   2. <projectRoot>/routing-policy.yaml
- *   3. plugin/config/policies/<name>.yaml
+ *   3. a named preset (--policy / `policy_name`)
+ *   4. <projectRoot>/.sdlc/project.json `default_policy`
+ *   5. DEFAULT_POLICY_NAME
  */
 
-import { readFileSync, existsSync } from "node:fs";
+import { readFileSync, existsSync, readdirSync } from "node:fs";
+import { createHash } from "node:crypto";
 import { join, dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parse as parseYaml } from "yaml";
 import type { Policy, ModelConfig } from "./types.js";
+import { KNOWN_ADAPTER_IDS, ANTHROPIC_ADAPTER_IDS } from "./adapters/ids.js";
 
-const PLUGIN_POLICY_DIR = resolve(
+export { KNOWN_ADAPTER_IDS, ANTHROPIC_ADAPTER_IDS };
+
+export const PLUGIN_POLICY_DIR = resolve(
   dirname(fileURLToPath(import.meta.url)),
   "..",
   "..",
@@ -20,33 +28,155 @@ const PLUGIN_POLICY_DIR = resolve(
   "policies"
 );
 
-export function loadPolicy(opts: {
-  policyName?: string;          // e.g. "opus-only"
-  projectRoot?: string;         // for project-level override
-}): Policy {
-  // 1. Project override
-  if (opts.projectRoot) {
-    const override = join(opts.projectRoot, "routing-policy.yaml");
-    if (existsSync(override)) {
-      return validatePolicy(parseYaml(readFileSync(override, "utf-8")));
-    }
-  }
-  // 2. Named preset
-  const name = opts.policyName ?? "opus-only";
-  const presetPath = join(PLUGIN_POLICY_DIR, `${name}.yaml`);
-  if (!existsSync(presetPath)) {
+export const DEFAULT_POLICY_NAME = "gpt-plus-flash";
+export const PROJECT_POLICY_FILE = "routing-policy.yaml";
+
+// Prompts render the name unquoted (`--policy={{POLICY}}`), and it becomes a
+// file name, so no separators and no shell metacharacters.
+export const POLICY_NAME_RE = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
+
+export type PolicySource = "path" | "project-override" | "flag" | "project-default" | "builtin-default";
+
+export interface PolicyQuery {
+  policyName?: string;
+  projectRoot?: string;
+  policyPath?: string;
+}
+
+export interface PolicyLocation {
+  source: PolicySource;
+  /** Absolute path of the file that won. */
+  path: string;
+  /** The name the caller or the project asked for, even when another file won. */
+  requestedName: string | null;
+}
+
+export interface ResolvedPolicy extends PolicyLocation {
+  policy: Policy;
+  /** Hex sha256 of the file's bytes. */
+  sha256: string;
+}
+
+function given(value: string | undefined): string | null {
+  return typeof value === "string" && value.length > 0 ? value : null;
+}
+
+function presetPath(name: string, label: string): string {
+  if (!POLICY_NAME_RE.test(name)) {
+    const hint = /\{\{.*\}\}/.test(name) ? " It is an unrendered {{PLACEHOLDER}}: the command was never filled in." : "";
     throw new Error(
-      `Policy '${name}' not found at ${presetPath}. ` +
-        `Available: opus-only, opus-plus-flash. ` +
-        `Add your own by dropping a YAML in ${PLUGIN_POLICY_DIR}.`
+      `Policy name '${name}' (${label}) is not a policy name: use letters, digits, '.', '_' and '-' only.${hint}`
     );
   }
-  return validatePolicy(parseYaml(readFileSync(presetPath, "utf-8")));
+  return join(PLUGIN_POLICY_DIR, `${name}.yaml`);
+}
+
+/** `default_policy` from <projectRoot>/.sdlc/project.json, or null when unset. A trailing .yaml is dropped. */
+export function readProjectDefaultPolicy(projectRoot: string): string | null {
+  const path = join(projectRoot, ".sdlc", "project.json");
+  if (!existsSync(path)) return null;
+  let parsed: any;
+  try {
+    parsed = JSON.parse(readFileSync(path, "utf-8"));
+  } catch (err: any) {
+    throw new Error(`${path} is not valid JSON: ${err?.message ?? err}. Fix or delete the file.`);
+  }
+  const value = parsed?.default_policy;
+  if (value === undefined || value === null || value === "") return null;
+  if (typeof value !== "string") {
+    throw new Error(`${path}: default_policy must be a policy name (a string), got ${JSON.stringify(value)}.`);
+  }
+  return value.replace(/\.ya?ml$/, "") || null;
+}
+
+/** Which file a query resolves to. Does not read the policy itself. */
+export function resolvePolicySource(opts: PolicyQuery): PolicyLocation {
+  const flagName = given(opts.policyName);
+  const policyPath = given(opts.policyPath);
+  if (policyPath) return { source: "path", path: resolve(policyPath), requestedName: flagName };
+
+  const projectRoot = given(opts.projectRoot) ? resolve(opts.projectRoot!) : null;
+  if (projectRoot) {
+    const override = join(projectRoot, PROJECT_POLICY_FILE);
+    if (existsSync(override)) return { source: "project-override", path: override, requestedName: flagName };
+  }
+  if (flagName) return { source: "flag", path: presetPath(flagName, "--policy"), requestedName: flagName };
+
+  const projectDefault = projectRoot ? readProjectDefaultPolicy(projectRoot) : null;
+  if (projectDefault) {
+    return {
+      source: "project-default",
+      path: presetPath(projectDefault, "from .sdlc/project.json default_policy"),
+      requestedName: projectDefault,
+    };
+  }
+  return { source: "builtin-default", path: presetPath(DEFAULT_POLICY_NAME, "built-in default"), requestedName: null };
+}
+
+/** Preset names in the plugin's policy directory that a run can use (replay fixtures left out). */
+export function shippedPresetNames(dir: string = PLUGIN_POLICY_DIR): string[] {
+  let files: string[];
+  try {
+    files = readdirSync(dir).filter((f) => f.endsWith(".yaml"));
+  } catch {
+    return [];
+  }
+  return files
+    .filter((f) => {
+      try {
+        const raw = parseYaml(readFileSync(join(dir, f), "utf-8"));
+        return Array.isArray(raw?.models) && !raw.models.some((m: any) => ANTHROPIC_ADAPTER_IDS.has(m?.adapter));
+      } catch {
+        return false;
+      }
+    })
+    .map((f) => f.replace(/\.yaml$/, ""))
+    .sort();
+}
+
+function notFound(location: PolicyLocation): Error {
+  if (location.source === "path" || location.source === "project-override") {
+    return new Error(`Policy file not found: ${location.path}`);
+  }
+  const name = location.requestedName ?? DEFAULT_POLICY_NAME;
+  const from = location.source === "project-default" ? " (from .sdlc/project.json default_policy)" : "";
+  return new Error(
+    `Policy '${name}'${from} not found at ${location.path}. ` +
+      `Shipped presets: ${shippedPresetNames().join(", ")}. ` +
+      `For a policy of your own, save it as <project root>/${PROJECT_POLICY_FILE}: ` +
+      `the plugin's policy directory is replaced on every update.`
+  );
+}
+
+export function resolvePolicy(opts: PolicyQuery): ResolvedPolicy {
+  const location = resolvePolicySource(opts);
+  if (!existsSync(location.path)) throw notFound(location);
+  const bytes = readFileSync(location.path);
+  let policy: Policy;
+  try {
+    policy = validatePolicy(parseYaml(bytes.toString("utf-8")));
+  } catch (err: any) {
+    throw new Error(`${location.path}: ${err?.message ?? err}`);
+  }
+  return { ...location, policy, sha256: createHash("sha256").update(bytes).digest("hex") };
+}
+
+/** Parses policy YAML without validating it, for callers that only read model fields. */
+export function parsePolicyText(text: string): unknown {
+  return parseYaml(text);
+}
+
+export function loadPolicy(opts: { policyName?: string; projectRoot?: string }): Policy {
+  return resolvePolicy(opts).policy;
 }
 
 export function loadPolicyFromPath(path: string): Policy {
-  if (!existsSync(path)) throw new Error(`Policy file not found: ${path}`);
-  return validatePolicy(parseYaml(readFileSync(path, "utf-8")));
+  return resolvePolicy({ policyPath: path }).policy;
+}
+
+/** True when a model names an Anthropic adapter: a replay fixture in this harness. */
+export function isReplayFixture(policy: Policy): boolean {
+  return policy.models.some((m) => ANTHROPIC_ADAPTER_IDS.has(m.adapter));
 }
 
 function validatePolicy(raw: any): Policy {
@@ -72,6 +202,7 @@ function validatePolicy(raw: any): Policy {
     throw new Error("Policy: 'hard_cost_cap_usd' must be a positive number, or omitted for no cap");
   }
   for (const m of raw.models) validateModel(m);
+  if (raw.driver !== undefined) validateDriver(raw.driver);
   const modelIds = new Set<string>(raw.models.map((m: ModelConfig) => m.id));
   const slotNames = validateSelect(raw, modelIds);
   // Every rule references a known model id or a declared slot; check at load
@@ -133,15 +264,37 @@ function validateSelect(raw: any, modelIds: Set<string>): Set<string> {
   return names;
 }
 
+function validatePricing(pricing: any, where: string) {
+  for (const k of ["input", "input_cached", "output"]) {
+    if (typeof pricing?.[k] !== "number") {
+      throw new Error(`${where}: pricing.${k} must be number`);
+    }
+  }
+}
+
 function validateModel(m: any) {
   for (const key of ["id", "adapter", "model_name", "pricing"]) {
     if (!(key in m)) throw new Error(`Policy model: missing '${key}'`);
   }
-  for (const k of ["input", "input_cached", "output"]) {
-    if (typeof m.pricing[k] !== "number") {
-      throw new Error(`Policy model '${m.id}': pricing.${k} must be number`);
-    }
+  if (!KNOWN_ADAPTER_IDS.has(m.adapter)) {
+    throw new Error(
+      `Policy model '${m.id}': unknown adapter '${m.adapter}'. Known adapters: ${[...KNOWN_ADAPTER_IDS].join(", ")}.`
+    );
   }
+  validatePricing(m.pricing, `Policy model '${m.id}'`);
+}
+
+function validateDriver(d: any) {
+  if (!d || typeof d !== "object" || Array.isArray(d)) {
+    throw new Error("Policy: 'driver' must be an object with model_name and reasoning.effort");
+  }
+  if (typeof d.model_name !== "string" || d.model_name.length === 0) {
+    throw new Error("Policy driver: 'model_name' (non-empty string) required");
+  }
+  if (typeof d.reasoning?.effort !== "string" || d.reasoning.effort.length === 0) {
+    throw new Error("Policy driver: 'reasoning.effort' (non-empty string) required");
+  }
+  if (d.pricing !== undefined) validatePricing(d.pricing, "Policy driver");
 }
 
 export function getModel(policy: Policy, modelId: string): ModelConfig {

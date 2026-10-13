@@ -14,7 +14,7 @@ import { readRunRecords } from "./run-folder.mjs";
  * live append cannot know about yet.
  */
 export function regenerateDriverFiles({ runDir, runId, records = readRunRecords(runDir), driver }) {
-  const { pricing, model, policyName, policyVersion = 1, pin, sandbox, approvalPolicy, auth } = driver;
+  const { pricing, model, policyName, policyVersion = 1, policyRecord, pin, sandbox, approvalPolicy, auth } = driver;
   const rows = modeledDriverCostRows(records, { runId, model, pricing, policyName, policyVersion });
   writeFileAtomic(
     join(runDir, "driver-cost-modeled.jsonl"),
@@ -23,6 +23,7 @@ export function regenerateDriverFiles({ runDir, runId, records = readRunRecords(
   const manifest = buildDriverManifest(records, {
     runId,
     policyName,
+    policyRecord,
     pin,
     sandbox,
     approvalPolicy,
@@ -37,8 +38,8 @@ export function regenerateDriverFiles({ runDir, runId, records = readRunRecords(
  * ctx: {route, projectRoot, runDir, runId, mode, outcome, deliberate, reason,
  * policyName, codeDir, records, driver}. `route` is 'headless' (run.mjs, the
  * default) or 'interactive' (end-run.mjs). `driver` carries what pricing the
- * conductor needs: {pricing, model, policyName, policyVersion, pin, sandbox,
- * approvalPolicy, auth}; an interactive run has no driver-events.jsonl, so it
+ * conductor needs: {pricing, model, policyName, policyVersion, policyRecord,
+ * pin, sandbox, approvalPolicy, auth}; an interactive run has no driver-events.jsonl, so it
  * has neither `driver` nor driver files to regenerate.
  */
 export async function finalizeRun(ctx) {

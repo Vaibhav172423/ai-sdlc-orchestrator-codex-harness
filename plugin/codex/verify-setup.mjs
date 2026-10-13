@@ -527,14 +527,17 @@ export function probeCodexLogin(run = spawnSync) {
 }
 
 /**
- * The policy run.mjs falls back to when a project has not chosen one. Sync
- * by hand with DEFAULT_POLICY in run.mjs (same pre-`npm ci` constraint as
- * adcPath — this script cannot import the driver's module graph).
+ * The policy a run falls back to when a project has not chosen one. Kept
+ * equal to DEFAULT_POLICY_NAME in the bridge's src/policy.ts by a test: this
+ * script runs before the bridge is built, so it cannot import it.
  */
 export const DEFAULT_POLICY = "gpt-plus-flash";
 
 /** The subscription variant of the default: same models, no metered key. */
 export const SEAT_POLICY = "gpt-seat-plus-flash";
+
+/** Equal to POLICY_NAME_RE in the bridge's src/policy.ts, kept so by a test. */
+export const POLICY_NAME_RE = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
 
 /**
  * Adapter ids named by a policy's `models:` block. A regex, not a YAML
@@ -547,29 +550,70 @@ export function policyAdapters(yamlText) {
 
 /**
  * Which policy this project would actually run, and whether that policy
- * bills OPENAI_API_KEY.
+ * bills OPENAI_API_KEY. Mirrors the bridge's resolvePolicySource: a
+ * routing-policy.yaml at the project root wins, then .sdlc/project.json
+ * default_policy, then DEFAULT_POLICY.
  *
  *   usesOpenAiKey: true   → some tier routes through the `openai` adapter
  *                  false  → none does (gpt-seat-plus-flash reaches the same
  *                           model through `codex exec` on the ChatGPT seat)
  *                  null   → the policy file could not be read, so unknown
  *
- * `selected: false` means there is no .sdlc/project.json yet — the driver
- * would fall back to DEFAULT_POLICY, so that is the one worth checking.
+ * `selected: false` means the project chose nothing, so DEFAULT_POLICY runs.
+ * `source: "invalid-project-json"` means a run without --policy refuses the
+ * project.json default; `path` names that file and `error` says why.
  */
 export function observePolicy(pluginRoot, projectRoot = process.cwd(), read = readFileSync) {
-  let chosen = null;
+  const override = join(projectRoot, "routing-policy.yaml");
+  let overrideText = null;
   try {
-    chosen = JSON.parse(read(join(projectRoot, ".sdlc", "project.json"), "utf8")).default_policy ?? null;
-  } catch { /* no project.json, or unreadable — the default is what would run */ }
+    overrideText = read(override, "utf8");
+  } catch { /* no project override */ }
+  if (overrideText !== null) {
+    const name = /^name:\s*["']?([^"'\s#]+)/m.exec(overrideText)?.[1] ?? "routing-policy.yaml";
+    return {
+      name,
+      selected: true,
+      source: "project-override",
+      path: override,
+      usesOpenAiKey: policyAdapters(overrideText).includes("openai"),
+    };
+  }
+
+  const projectJson = join(projectRoot, ".sdlc", "project.json");
+  let raw = null;
+  try {
+    raw = read(projectJson, "utf8");
+  } catch { /* no project.json: the default is what would run */ }
+  const invalid = (error) => ({ name: null, selected: true, source: "invalid-project-json", path: projectJson, usesOpenAiKey: null, error });
+  let chosen = null;
+  if (raw !== null) {
+    try {
+      chosen = JSON.parse(raw)?.default_policy ?? null;
+    } catch (err) {
+      return invalid(`${projectJson} is not valid JSON: ${err?.message ?? err}. Fix or delete the file.`);
+    }
+    if (chosen !== null && typeof chosen !== "string") {
+      return invalid(`${projectJson}: default_policy must be a policy name (a string), got ${JSON.stringify(chosen)}.`);
+    }
+    if (chosen) chosen = chosen.replace(/\.ya?ml$/, "");
+    if (chosen && !POLICY_NAME_RE.test(chosen)) {
+      const hint = /\{\{.*\}\}/.test(chosen) ? " It is an unrendered {{PLACEHOLDER}}: the command was never filled in." : "";
+      return invalid(
+        `Policy name '${chosen}' (from .sdlc/project.json default_policy) is not a policy name: ` +
+          `use letters, digits, '.', '_' and '-' only.${hint}`,
+      );
+    }
+  }
 
   const selected = typeof chosen === "string" && chosen.length > 0;
   const name = selected ? chosen : DEFAULT_POLICY;
+  const source = selected ? "project-default" : "builtin-default";
   const path = join(pluginRoot, "config", "policies", `${name}.yaml`);
   try {
-    return { name, selected, path, usesOpenAiKey: policyAdapters(read(path, "utf8")).includes("openai") };
+    return { name, selected, source, path, usesOpenAiKey: policyAdapters(read(path, "utf8")).includes("openai") };
   } catch {
-    return { name, selected, path, usesOpenAiKey: null };
+    return { name, selected, source, path, usesOpenAiKey: null };
   }
 }
 
@@ -709,6 +753,15 @@ export function evaluate({
   // routes judgment work to the same model, at the same effort pin, through a
   // `codex exec` subprocess on the ChatGPT seat, and names no `openai` adapter
   // anywhere. So ask the policy that would actually run, rather than assuming.
+  if (policy?.source === "invalid-project-json") {
+    problems.push({
+      id: "project-json-invalid",
+      severity: "blocking",
+      message: `${policy.error} A run started without --policy refuses this project's default policy.`,
+      fix: `Edit ${policy.path} so default_policy names a shipped preset (run $mmo-codex:policy), or delete the file.`,
+    });
+  }
+
   if (!realEnv.OPENAI_API_KEY && policy?.usesOpenAiKey !== false) {
     const unknown = !policy || policy.usesOpenAiKey === null;
     problems.push({
@@ -716,11 +769,17 @@ export function evaluate({
       severity: unknown ? "warning" : "blocking",
       message: unknown
         ? "OPENAI_API_KEY is not set, and the policy that would run" +
-          (policy ? ` ('${policy.name}') could not be read from ${policy.path}` : " could not be determined") +
+          (policy?.source === "invalid-project-json"
+            ? ` could not be determined, because ${policy.path} is invalid`
+            : policy
+            ? ` ('${policy.name}') could not be read from ${policy.path}`
+            : " could not be determined") +
           " — so whether this install needs a key is unknown. If it routes judgment work through the " +
           "openai adapter, every phase will abort at its first dispatch."
         : "OPENAI_API_KEY is not set, and " +
-          (policy.selected
+          (policy.source === "project-override"
+            ? `this project's routing-policy.yaml (policy '${policy.name}')`
+            : policy.selected
             ? `this project's policy '${policy.name}'`
             : `this project has not chosen a policy, so a run falls back to the default '${policy.name}', which`) +
           " routes judgment work through the metered openai adapter. Every judgment-tier phase would abort " +
@@ -989,6 +1048,10 @@ export function nextStepsBanner(cwd = process.cwd(), ok = true) {
     const raw = readFileSync(join(cwd, ".sdlc", "project.json"), "utf8");
     currentPolicy = JSON.parse(raw).default_policy ?? null;
   } catch { /* no project.json yet — banner still worth printing */ }
+  let override = null;
+  try {
+    override = /^name:\s*["']?([^"'\s#]+)/m.exec(readFileSync(join(cwd, "routing-policy.yaml"), "utf8"))?.[1] ?? "?";
+  } catch { /* no project override */ }
 
   // `$name` is codex's skill-mention syntax, and codex namespaces a plugin's
   // skills by the plugin name — so these are `$mmo-codex:<skill>`, not the
@@ -997,6 +1060,9 @@ export function nextStepsBanner(cwd = process.cwd(), ok = true) {
   const policyLine = currentPolicy
     ? `\n  Current policy: ${currentPolicy}   (change: $mmo-codex:policy)`
     : `\n  No policy set yet — run $mmo-codex:policy to pick one.`;
+  const overrideLine = override
+    ? `\n  Runs here use routing-policy.yaml (policy '${override}'), which overrides default_policy and --policy.`
+    : "";
 
   return (
     `\n✓ Setup complete for this project.\n\n` +
@@ -1005,7 +1071,8 @@ export function nextStepsBanner(cwd = process.cwd(), ok = true) {
     `    $mmo-codex:brownfield  — work on this existing repo (docs, bugfix, feature, refactor, …)\n` +
     `    $mmo-codex:policy      — show / change this project's model policy\n` +
     `    $mmo-codex:pass        — headless/scripted run (for CI or replays)\n` +
-    policyLine
+    policyLine +
+    overrideLine
   );
 }
 

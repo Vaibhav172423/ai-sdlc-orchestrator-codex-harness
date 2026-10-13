@@ -1,5 +1,5 @@
 /** A run started from a `$mmo-codex:*` skill: start-run.mjs creates and renders it, end-run.mjs records how it ended. */
-import { test } from "node:test";
+import { after, test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
@@ -9,10 +9,11 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 
 import { main as startMain, parseStartArgs, START_FLAGS } from "../../plugin/codex/start-run.mjs";
 import { main as endMain, reportScript } from "../../plugin/codex/end-run.mjs";
-import { checkCompleted, INTERACTIVE_OUTCOMES, resolveRunPolicy } from "../../plugin/codex/interactive-run.mjs";
+import { checkCompleted, INTERACTIVE_OUTCOMES } from "../../plugin/codex/interactive-run.mjs";
 import { finalizeRun } from "../../plugin/codex/run-finalize.mjs";
 import { resolveRun, RUN_RECORD_FILES } from "../../plugin/codex/run-folder.mjs";
 import { isMain } from "../../plugin/scripts/lib/is-main.mjs";
+import { sessionHome } from "./fixtures/session-home.mjs";
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
 const PLUGIN_ROOT = join(REPO_ROOT, "plugin");
@@ -20,6 +21,9 @@ const START = join(PLUGIN_ROOT, "codex", "start-run.mjs");
 const MMO_LOG = join(PLUGIN_ROOT, "scripts", "mmo-log.mjs");
 const THREAD = "01a10f3e-4db6-7a70-8d73-a94d86244d4d";
 const NOW = Date.parse("2026-10-13T10:15:00Z");
+/** Every session these tests start from runs the driver pin. */
+const SESSION_HOME = sessionHome([THREAD, "second-thread"]);
+after(() => rmSync(SESSION_HOME, { recursive: true, force: true }));
 
 function sink() {
   let text = "";
@@ -37,12 +41,12 @@ function greenfield(root) {
   writeFileSync(join(root, "brief.md"), "# Project Brief — x\n");
 }
 
-async function start(root, argv, extra = {}) {
+async function start(root, argv, { env, ...extra } = {}) {
   const stdout = sink();
   const stderr = sink();
   const code = await startMain(argv, {
     cwd: root,
-    env: { CODEX_THREAD_ID: THREAD },
+    env: { CODEX_HOME: SESSION_HOME, CODEX_THREAD_ID: THREAD, ...env },
     now: () => NOW,
     rand: () => "abc123",
     isGitRepo: () => true,
@@ -77,12 +81,17 @@ test("a greenfield start renders the playbooks with real paths and records the i
     assert.equal(run.run_id, runId);
     assert.equal(run.mode, "greenfield");
     assert.equal(run.policy, "gpt-plus-flash");
-    assert.equal(run.policy_source, "--policy");
+    assert.equal(run.policy_source, "flag");
+    assert.equal(run.policy_path, join(PLUGIN_ROOT, "config", "policies", "gpt-plus-flash.yaml"));
+    assert.deepEqual(run.pin, { model: "gpt-5.6-terra", effort: "high" });
     assert.equal(run.code_dir, join(p.root, "src"));
     assert.equal(run.brief_path, join(p.root, "brief.md"));
     assert.equal(run.plugin_root, PLUGIN_ROOT);
     assert.equal(run.outcome, null);
-    assert.deepEqual(run.starts, [{ at: new Date(NOW).toISOString(), codex_thread_id: THREAD, resume: false, gates: "prompt" }]);
+    assert.deepEqual(run.starts, [{
+      at: new Date(NOW).toISOString(), codex_thread_id: THREAD, resume: false, gates: "prompt",
+      session_model: { model: "gpt-5.6-terra", effort: "high", effort_source: "turn" },
+    }]);
 
     const pipeline = readFileSync(join(runDir, "skills", "pipeline.md"), "utf-8");
     assert.doesNotMatch(pipeline, /\{\{[A-Z_]+\}\}/);
@@ -131,7 +140,8 @@ test("a brownfield start in a real git repository works without injected checks"
     if (spawnSync("git", ["init", "-q", p.root]).status !== 0) return;
     const stdout = sink();
     const stderr = sink();
-    const code = await startMain(["--mode=brownfield"], { cwd: p.root, env: {}, stdout, stderr });
+    const env = { CODEX_HOME: SESSION_HOME, CODEX_THREAD_ID: THREAD };
+    const code = await startMain(["--mode=brownfield"], { cwd: p.root, env, stdout, stderr });
     assert.equal(code, 0, stderr.text);
     assert.match(stdout.text, /^run_id: \d{8}-\d{6}-brownfield-[0-9a-f]{6}$/m);
   } finally { p.done(); }
@@ -163,27 +173,6 @@ test("start-run refuses before writing anything when the run cannot start", asyn
     assert.equal(notGit.code, 2);
     assert.match(notGit.err, /is not a git repository\. Brownfield needs git/);
     assert.equal(existsSync(join(p.root, ".sdlc")), false, "a refused start leaves no folder behind");
-  } finally { p.done(); }
-});
-
-test("the policy comes from routing-policy.yaml, then --policy, then the project default, then gpt-plus-flash", () => {
-  const p = project();
-  try {
-    assert.deepEqual(
-      { ...resolveRunPolicy({ projectRoot: p.root }), path: undefined },
-      { name: "gpt-plus-flash", source: "default", path: undefined },
-    );
-    mkdirSync(join(p.root, ".sdlc"));
-    writeFileSync(join(p.root, ".sdlc", "project.json"), JSON.stringify({ default_policy: "gpt-seat-plus-flash.yaml" }));
-    assert.equal(resolveRunPolicy({ projectRoot: p.root }).name, "gpt-seat-plus-flash");
-    assert.equal(resolveRunPolicy({ projectRoot: p.root }).source, "project.json");
-    assert.equal(resolveRunPolicy({ projectRoot: p.root, policy: "gpt-plus-flash" }).source, "--policy");
-    assert.throws(() => resolveRunPolicy({ projectRoot: p.root, policy: "no-such-policy" }), /is not a file in/);
-    assert.throws(() => resolveRunPolicy({ projectRoot: p.root, policy: "../x" }), /is not a file in/);
-    writeFileSync(join(p.root, "routing-policy.yaml"), "version: 1\n");
-    const override = resolveRunPolicy({ projectRoot: p.root, policy: "no-such-policy" });
-    assert.equal(override.source, "routing-policy.yaml");
-    assert.equal(override.path, join(p.root, "routing-policy.yaml"));
   } finally { p.done(); }
 });
 
@@ -422,7 +411,7 @@ test("the CLI prints the run and exits 0, or names the problem and exits 2", () 
   const p = project();
   try {
     greenfield(p.root);
-    const env = { ...process.env, CODEX_THREAD_ID: THREAD };
+    const env = { ...process.env, CODEX_HOME: SESSION_HOME, CODEX_THREAD_ID: THREAD };
     let r = spawnSync("node", [START, "--mode=greenfield", "--json"], { cwd: p.root, env, encoding: "utf-8" });
     assert.equal(r.status, 0, r.stderr);
     const result = JSON.parse(r.stdout);
@@ -544,7 +533,7 @@ test("the start and end scripts run when reached through a symlinked plugin fold
     greenfield(p.root);
     const link = join(p.base, "plugin-link");
     symlinkSync(PLUGIN_ROOT, link, "dir");
-    const env = { ...process.env, CODEX_THREAD_ID: THREAD };
+    const env = { ...process.env, CODEX_HOME: SESSION_HOME, CODEX_THREAD_ID: THREAD };
     let r = spawnSync("node", [join(link, "codex", "start-run.mjs"), "--mode=greenfield", "--json"], { cwd: p.root, env, encoding: "utf-8" });
     assert.equal(r.status, 0, r.stderr);
     const result = JSON.parse(r.stdout);

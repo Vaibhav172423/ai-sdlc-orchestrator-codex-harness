@@ -6,12 +6,22 @@
 version: 1
 name: gpt-plus-flash-38
 
+# The conductor `codex exec` runs as: run.mjs pins -m and the effort from here
+# and models the driver's cost at these rates. Not a models[] entry, because it
+# is never dispatched and preflight would demand its credential. The same in
+# every runnable policy, so a comparison between policies holds it constant.
+driver:
+  model_name: gpt-5.6-terra
+  reasoning: { effort: high }
+  pricing: { input: 2.00, input_cached: 0.20, output: 12.00 }
+  pricing_source: https://platform.openai.com/docs/pricing
+  pricing_last_verified: 2026-10-13
+
 models:
   - id: gpt
     adapter: openai
     model_name: gpt-5.6-terra
-    # Pinned in docs/verification/p1-codex-runtime.md (Document B section 8).
-    # A mismatch here must abort the run — see the fairness-pin assertion (P4).
+    # The judgment worker's effort. The conductor's pin is `driver:` above.
     reasoning: { effort: high }
     # Verified 2026-10-13 against OpenAI's pricing page: 2.00 / 0.20 / 12.00 per 1M.
     # The over-272K-input tier is not modelled here.

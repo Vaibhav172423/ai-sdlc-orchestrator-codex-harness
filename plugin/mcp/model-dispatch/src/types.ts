@@ -225,6 +225,21 @@ export interface Policy {
   select?: Record<string, SelectSlot>;
   /** Absent means no cap. Enforced per run against `telemetry_path` — see costCap.ts. */
   hard_cost_cap_usd?: number;
+  /**
+   * The conductor's pin: the model `codex exec` runs as. Never dispatched
+   * through the bridge, so it is not a `models[]` entry (preflight would
+   * otherwise demand its credential). The bridge validates it and ignores it.
+   */
+  driver?: DriverPin;
+}
+
+export interface DriverPin {
+  model_name: string;
+  reasoning: { effort: string };
+  /** Rates the driver's modeled cost uses. Optional when a `models[]` entry names the same model. */
+  pricing?: ModelPricing;
+  pricing_source?: string;
+  pricing_last_verified?: string;
 }
 
 export interface RoutingDecision {

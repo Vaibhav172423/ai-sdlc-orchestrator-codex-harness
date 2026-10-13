@@ -2,13 +2,25 @@
 # Gemini 3.7 Flash via the Antigravity SDK agent adapter.
 #
 # IMPORTANT: the conductor's OWN turns (planning, tool-calling, gate answers)
-# run on the pinned GPT model inside `codex exec`, not on Flash. Only the
-# dispatched `execute_with_model` calls this policy governs route to Flash.
-# Those driver turns are reported as modeled driver-loop cost, kept in a
+# run on the GPT model pinned in `driver:` below, inside `codex exec`, not on
+# Flash. Only the dispatched `execute_with_model` calls this policy governs
+# route to Flash, so a run needs ADC and a codex login, and no OPENAI_API_KEY.
+# The driver turns are reported as modeled driver-loop cost, kept in a
 # separate section and never summed with the dispatched total — see
 # docs/methodology.md.
 version: 1
 name: flash-agsdk-only
+
+# The conductor `codex exec` runs as: run.mjs pins -m and the effort from here
+# and models the driver's cost at these rates. Not a models[] entry, because it
+# is never dispatched and preflight would demand its credential. The same in
+# every runnable policy, so a comparison between policies holds it constant.
+driver:
+  model_name: gpt-5.6-terra
+  reasoning: { effort: high }
+  pricing: { input: 2.00, input_cached: 0.20, output: 12.00 }
+  pricing_source: https://platform.openai.com/docs/pricing
+  pricing_last_verified: 2026-10-13
 
 models:
   - id: flash

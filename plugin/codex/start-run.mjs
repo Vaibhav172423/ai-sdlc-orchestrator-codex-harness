@@ -1,8 +1,9 @@
 #!/usr/bin/env node
 /**
- * Starts a run from a `$mmo-codex:*` skill in a codex session: creates the
- * run folder, renders the playbooks into `<run folder>/skills/` with real
- * paths, writes run.json, logs run.start, and prints where everything is.
+ * Starts a run from a `$mmo-codex:*` skill in a codex session: checks the
+ * session runs the policy's driver pin, creates the run folder, renders the
+ * playbooks into `<run folder>/skills/` with real paths, writes run.json,
+ * logs run.start, and prints where everything is.
  *
  * Usage:
  *   node start-run.mjs --mode=greenfield|brownfield [--project-root=<path>]
@@ -10,8 +11,9 @@
  *                      [--intent=<id>] [--gates=prompt|auto-approve|auto-abort]
  *                      [--run-id=<id>] [--resume=<run-id>] [--json]
  *
- * Exit codes: 0 started, 1 the harness could not load or render, 2 usage
- * error or refused.
+ * Exit codes: 0 started, 1 the session is not on the driver pin (or that
+ * cannot be read) or the harness could not load or render, 2 usage error or
+ * refused.
  */
 import { existsSync } from "node:fs";
 import { spawnSync } from "node:child_process";
@@ -26,7 +28,6 @@ import {
   PLUGIN_ROOT,
   pluginVersion,
   readRunJson,
-  resolveRunPolicy,
   ROUTE,
   RUN_JSON,
   RUN_JSON_VERSION,
@@ -34,6 +35,8 @@ import {
   UsageError,
   writeRunJson,
 } from "./interactive-run.mjs";
+import { assertResumePolicy, policyRecord, resolveRunPolicy, RunRefusal } from "./run-policy.mjs";
+import { checkSessionModel } from "./session-model.mjs";
 import { isRunId, runDirFor } from "../scripts/lib/run-id.mjs";
 import { isMain } from "../scripts/lib/is-main.mjs";
 import { configureSinks, log } from "../scripts/lib/log.mjs";
@@ -83,6 +86,14 @@ async function loadRunFolder(pluginRoot) {
   }
 }
 
+/** How the printed `policy:` line names where the policy came from; the playbooks quote these. */
+const POLICY_SOURCE_LABEL = {
+  "project-override": "routing-policy.yaml",
+  flag: "--policy",
+  "project-default": "project.json",
+  "builtin-default": "default",
+};
+
 function refuseChange(flag, given, recorded, runId) {
   if (given !== undefined && recorded !== undefined && recorded !== null && given !== recorded) {
     throw new UsageError(`--${flag}=${given} differs from run ${runId}'s ${flag} (${recorded}); a resumed run keeps its ${flag}.`);
@@ -91,7 +102,8 @@ function refuseChange(flag, given, recorded, runId) {
 
 /**
  * Creates or resumes the run and returns what start-run prints. `deps`
- * replaces cwd, env, the clock, the id's random part, and the git checks.
+ * replaces cwd, env (CODEX_HOME and CODEX_THREAD_ID locate the session's
+ * rollout), stderr, the clock, the id's random part, and the git checks.
  */
 export async function startRun(args, deps = {}) {
   const cwd = deps.cwd ?? process.cwd();
@@ -125,7 +137,8 @@ export async function startRun(args, deps = {}) {
     }
     refuseChange("mode", args.mode, earlier.mode, args.resume);
     refuseChange("intent", args.intent, earlier.intent, args.resume);
-    refuseChange("policy", args.policy, earlier.policy, args.resume);
+    // A routing-policy.yaml can win over the --policy a run started with, so either name is that run's.
+    if (args.policy !== earlier.policy_requested) refuseChange("policy", args.policy, earlier.policy, args.resume);
     refuseChange("run-id", args["run-id"], earlier.run_id, args.resume);
     if (args["code-dir"] !== undefined || args.brief !== undefined) {
       throw new UsageError("a resumed run keeps its --code-dir and --brief; drop them.");
@@ -159,9 +172,28 @@ export async function startRun(args, deps = {}) {
     );
   }
 
-  const policy = earlier
-    ? { name: earlier.policy, source: earlier.policy_source ?? "run.json" }
-    : resolveRunPolicy({ projectRoot, policy: args.policy, pluginRoot });
+  const stderr = deps.stderr ?? process.stderr;
+  const warn = (line) => stderr.write(`${line}\n`);
+  let policy;
+  try {
+    policy = resolveRunPolicy({
+      projectRoot,
+      policyArg: args.policy ?? earlier?.policy_requested ?? earlier?.policy ?? null,
+      warn,
+    });
+    if (earlier) {
+      assertResumePolicy({
+        recorded: { name: earlier.policy, path: earlier.policy_path ?? null, sha256: earlier.policy_sha256 ?? null, pin: earlier.pin ?? null },
+        run: policy,
+        runDir: runDirFor(projectRoot, args.resume),
+        warn,
+      });
+    }
+  } catch (err) {
+    if (err instanceof RunRefusal) throw new UsageError(err.message.replace(/^run: /, ""));
+    throw err;
+  }
+  if (policy.notice && args.policy !== undefined) warn(policy.notice);
   const gates = args.gates ?? earlier?.gates ?? "prompt";
 
   let runId;
@@ -190,6 +222,22 @@ export async function startRun(args, deps = {}) {
     }
   } else briefPath = join(runDir, "intent_brief.md");
 
+  const pin = policy.driver.pin;
+  // Before the run folder exists, so a session on the wrong model leaves nothing behind.
+  const session = checkSessionModel({
+    codexHome: env.CODEX_HOME ?? null,
+    threadId: env.CODEX_THREAD_ID || null,
+    pin,
+    policyName: policy.name,
+    now,
+    warn: () => {},
+  });
+  if (session.status !== "match") {
+    const e = new Error(`no run started: this session must run ${pin.model} at effort ${pin.effort}.\n${session.message}`);
+    e.exitCode = 1;
+    throw e;
+  }
+
   const values = {
     PLUGIN_ROOT: pluginRoot,
     PROJECT_ROOT: projectRoot,
@@ -208,7 +256,7 @@ export async function startRun(args, deps = {}) {
 
   const at = now.toISOString();
   const threadId = env.CODEX_THREAD_ID || null;
-  const start = { at, codex_thread_id: threadId, resume: Boolean(earlier), gates };
+  const start = { at, codex_thread_id: threadId, resume: Boolean(earlier), gates, session_model: session.observed };
   const record = earlier
     ? {
         ...earlier,
@@ -226,8 +274,8 @@ export async function startRun(args, deps = {}) {
         route: ROUTE,
         mode,
         intent: intent ?? null,
-        policy: policy.name,
-        policy_source: policy.source,
+        ...policyRecord(policy),
+        pin,
         gates,
         project_root: projectRoot,
         code_dir: codeDir,
@@ -271,6 +319,7 @@ export async function startRun(args, deps = {}) {
     intent_brief: mode === "brownfield" ? briefPath : null,
     policy: policy.name,
     policy_source: policy.source,
+    policy_path: policy.path,
     gates,
     gate_instruction: `${INTERACTIVE_GATE_MODES[gates]} ${GATE_RECORD}`,
     plugin_root: pluginRoot,
@@ -294,7 +343,8 @@ export function formatStart(result) {
   ];
   for (const key of keys) {
     if (result[key] === null || result[key] === undefined) continue;
-    const value = key === "policy" ? `${result.policy} (from ${result.policy_source})` : result[key];
+    const value =
+      key === "policy" ? `${result.policy} (from ${POLICY_SOURCE_LABEL[result.policy_source] ?? result.policy_source})` : result[key];
     lines.push(`${key}: ${value}`);
   }
   lines.push(`gates: ${result.gates} — ${result.gate_instruction}`);

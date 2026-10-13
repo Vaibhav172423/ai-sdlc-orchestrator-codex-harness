@@ -311,6 +311,19 @@ cheap way to build the fairness-pin assertion's *rejection* path — pass the pi
 on every call and trust the CLI to hard-fail on drift, since the stream can't positively confirm
 which model answered a *successful* call (see check 7 above).
 
+## The session's own rollout records the model and effort (codex 0.160.1, 2026-10-13)
+
+Narrows check 7's caveat. Run against a localhost mock provider with a temporary `CODEX_HOME`,
+`codex exec` writes a `turn_context` record to
+`$CODEX_HOME/sessions/YYYY/MM/DD/rollout-<local time>-<thread id>.jsonl` before the turn's first
+tool call. Its payload carries `model`, and `effort` when one is set (also
+`collaboration_mode.settings.reasoning_effort`). With no effort set the record has none, and the
+request uses the model's `default_reasoning_level` from `models_cache.json` (`medium` for
+`gpt-5.6-terra`). Commands the model runs get `CODEX_THREAD_ID` and `CODEX_SESSION_ID` (the same
+value) and inherit codex's own environment. `plugin/codex/session-model.mjs` reads this to check an
+interactive session against the driver pin, and `start-run.mjs` starts no run unless they match.
+The rollout records the model requested, not proof of the model that answered.
+
 ## Pins chosen (Document B §8, Document A P1′ exit criterion)
 
 Selected 2026-08-31 after check 7 (reasoning effort) and the sandbox/approval probes below, all

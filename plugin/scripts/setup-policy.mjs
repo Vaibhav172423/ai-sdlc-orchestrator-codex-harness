@@ -21,9 +21,9 @@
  *   node setup-policy.mjs --policy=<name>           # scripted; skip browser, just write the name
  *   node setup-policy.mjs --no-browser              # start server, print URL, don't auto-open
  *   node setup-policy.mjs --skip-install            # assume npm install already ran
- *   node setup-policy.mjs --print-only              # print resolved default_policy from project.json; no writes
+ *   node setup-policy.mjs --print-only              # print default_policy from project.json (stderr names a routing-policy.yaml that overrides it); no writes
  *   node setup-policy.mjs --list-json               # enumerate policies as JSON (no writes)
- *   node setup-policy.mjs --check-creds --policy=X  # verify creds for a policy; JSON out
+ *   node setup-policy.mjs --check-creds --policy=X  # verify creds for a policy (routing-policy.yaml wins); JSON out
  *   node setup-policy.mjs --guard-active-run        # check .sdlc/local/state.json; JSON out
  */
 
@@ -31,7 +31,7 @@ import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, watch, writ
 import { spawn, spawnSync } from "node:child_process";
 import { dirname, join, resolve } from "node:path";
 import { createInterface } from "node:readline";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { createConnection } from "node:net";
 import { platform } from "node:os";
 import { OFF_LIMITS_DEFAULT } from "./lib/off-limits.mjs";
@@ -47,6 +47,7 @@ import {
   hasGeminiCredentials,
   hasVertexCredentials,
 } from "../codex/verify-setup.mjs";
+import { readMmoSelectFile } from "../codex/mmoSelect.mjs";
 
 export { OFF_LIMITS_DEFAULT };
 
@@ -445,15 +446,96 @@ function geminiDoorState(env = process.env) {
   return { open: hasGeminiCredentials({ env, vertex }), vertex };
 }
 
-function checkCredsFor(policyName) {
-  const path = join(POLICIES_DIR, policyName + ".yaml");
+const SERVER_DIST = join(PLUGIN_ROOT, "mcp", "model-dispatch", "dist");
+
+/** The bridge's YAML parser and slot routing, or null before the bridge is built. */
+async function loadRoutingTools() {
+  try {
+    const [policy, routing] = await Promise.all([
+      import(pathToFileURL(join(SERVER_DIST, "policy.js")).href),
+      import(pathToFileURL(join(SERVER_DIST, "routing.js")).href),
+    ]);
+    if (!policy.parsePolicyText || !routing.unreachableModelIds) return null;
+    return { parse: policy.parsePolicyText, unreachable: routing.unreachableModelIds, parseSelect: routing.parseSelectOverrides };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Credentials only for the models a run can reach: a select slot's options
+ * the run did not choose are skipped, as the bridge's preflight skips them.
+ * Without a built bridge every model counts.
+ */
+function reachableInfo(info, path, tools, selectSpec) {
+  if (!tools) return info;
+  let raw;
+  try {
+    raw = tools.parse(readFileSync(path, "utf8"));
+  } catch {
+    return info;
+  }
+  if (!Array.isArray(raw?.models)) return info;
+  let skipped = new Set();
+  try {
+    skipped = tools.unreachable(raw, tools.parseSelect(selectSpec));
+  } catch { /* an unusable selection: every model counts */ }
+  const models = raw.models.filter((m) => !skipped.has(m?.id));
+  const adapters = new Set(models.map((m) => m?.adapter).filter(Boolean));
+  const env = new Set(models.map((m) => m?.auth?.env).filter((e) => typeof e === "string"));
+  return {
+    ...info,
+    adapters: [...adapters].sort(),
+    required_env: [...env].sort(),
+    requires_vertex_adc: adapters.has("antigravity-worker"),
+    requires_claude_cli: adapters.has("claude-cli"),
+    skipped_models: [...skipped].sort(),
+  };
+}
+
+/** The project's routing-policy.yaml and the name on its `name:` line, or null when there is none. */
+function projectOverride(projectRoot) {
+  const path = join(projectRoot, "routing-policy.yaml");
+  if (!existsSync(path)) return null;
+  let name = "routing-policy.yaml";
+  try {
+    name = /^name:\s*["']?([^"'\s#]+)/m.exec(readFileSync(path, "utf8"))?.[1] ?? name;
+  } catch { /* introspectPolicy reports the read failure */ }
+  return { name, path };
+}
+
+function credsTarget(policyName, projectRoot) {
+  const override = projectOverride(projectRoot);
+  if (override) {
+    return {
+      ...override,
+      source: "project-override",
+      note:
+        `${override.path} overrides --policy and default_policy for every run in this project, ` +
+        `so its credentials were checked instead of '${policyName}'.`,
+    };
+  }
+  return { name: policyName, path: join(POLICIES_DIR, policyName + ".yaml"), source: "preset", note: null };
+}
+
+async function checkCredsFor(policyName, projectRoot) {
+  const target = credsTarget(policyName, projectRoot);
+  const checked = { policy: { name: target.name, source: target.source, path: target.path }, ...(target.note ? { note: target.note } : {}) };
+  const result = await checkCredsForFile(target, projectRoot);
+  return { ...result, ...checked };
+}
+
+async function checkCredsForFile({ name: policyName, path }, projectRoot) {
   if (!existsSync(path)) {
     return { ok: false, missing: [{ kind: "policy", name: policyName, fix: `policy "${policyName}" not found in ${POLICIES_DIR}` }] };
   }
-  const info = introspectPolicy(policyName, path);
-  if (info.error) {
-    return { ok: false, missing: [{ kind: "policy", name: policyName, fix: info.error }] };
+  const lineInfo = introspectPolicy(policyName, path);
+  if (lineInfo.error) {
+    return { ok: false, missing: [{ kind: "policy", name: policyName, fix: lineInfo.error }] };
   }
+  // The order a dispatch sees: bridgeEnv injects the stored file whenever MMO_SELECT is unset.
+  const selectSpec = process.env.MMO_SELECT || readMmoSelectFile(projectRoot) || process.env.SDLC_SELECT;
+  const info = reachableInfo(lineInfo, path, await loadRoutingTools(), selectSpec);
   const missing = [];
   for (const envName of info.required_env) {
     if (process.env[envName]) continue;
@@ -558,6 +640,13 @@ async function printOnlyFlow(resolved) {
   const existing = readProjectJson(join(resolved.root, ".sdlc"));
   const name = existing.default_policy ?? null;
   process.stdout.write((name ?? "") + "\n");
+  const override = projectOverride(resolved.root);
+  if (override) {
+    process.stderr.write(
+      `setup-policy: runs in this project use ${override.path} (policy '${override.name}'), ` +
+        `which overrides default_policy and --policy.\n`,
+    );
+  }
 }
 
 function noteGitFallback(root) {
@@ -610,7 +699,7 @@ async function interactiveFlow(resolved, args) {
   process.stderr.write("\n");
   process.stderr.write(`  → Configure your policy in the browser, then click Save.\n`);
   process.stderr.write(`  → The terminal detects your save automatically (no Enter needed).\n`);
-  process.stderr.write(`  → To skip (pipelines will fall back to opus-plus-flash), press Ctrl-C.\n\n`);
+  process.stderr.write(`  → To skip (runs will fall back to gpt-plus-flash), press Ctrl-C.\n\n`);
 
   // Wait for a save (or Enter in a real TTY, or timeout). fs.watch is the
   // primary path because Claude Code's Bash tool doesn't provide interactive
@@ -646,7 +735,7 @@ async function interactiveFlow(resolved, args) {
       "\nType a policy name to use as this project's default, or press Enter to skip: ",
     );
     if (!ans) {
-      log("skipped — no default_policy written; pipelines will use opus-plus-flash.");
+      log("skipped — no default_policy written; runs will use gpt-plus-flash.");
       cleanup();
       return;
     }
@@ -687,7 +776,7 @@ async function main() {
   }
   if (args.checkCreds) {
     if (!args.policy) fail("--check-creds requires --policy=<name>");
-    process.stdout.write(JSON.stringify(checkCredsFor(args.policy)) + "\n");
+    process.stdout.write(JSON.stringify(await checkCredsFor(args.policy, resolved.root)) + "\n");
     return;
   }
   if (args.printOnly) return printOnlyFlow(resolved);

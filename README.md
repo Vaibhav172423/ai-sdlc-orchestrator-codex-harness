@@ -235,7 +235,7 @@ These and `pass` are invoke-only: they start a full billable run, so they never 
 | Skill | What it does | When to use it |
 |---|---|---|
 | [`$mmo-codex:setup`](plugin/skills/setup/SKILL.md) | Rebuilds the MCP server, re-checks credentials, pauses only when a human decision is genuinely needed (missing credential, Gemini door choice, policy pick). Idempotent. | After a plugin update, a credential change, or an unexpected refusal. Also the everyday "did I set this up right?" check. |
-| [`$mmo-codex:policy`](plugin/skills/policy/SKILL.md) | Bare: prints the active policy for this project. `change`: terminal picker, with an option to author a new one in the browser. `--policy=<name>`: silent set, no browser. Per-project — writes `.sdlc/project.json.default_policy`. | Check or change which policy this project uses. |
+| [`$mmo-codex:policy`](plugin/skills/policy/SKILL.md) | Bare: prints this project's `default_policy`, and names the `routing-policy.yaml` that overrides it when one sits at the project root. `change`: terminal picker, with an option to author a new one in the browser. `--policy=<name>`: silent set, no browser. Per-project — writes `.sdlc/project.json.default_policy`. | Check or change which policy this project uses. |
 
 ### Undo
 

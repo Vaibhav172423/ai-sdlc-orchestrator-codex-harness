@@ -12,34 +12,88 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { readPin, assertPinnedInvocation, findPinRejection, findCodexWarnings } from "../../../codex/telemetry/fairnessPin.mjs";
+import { readPin, readDriver, argvPin, assertPinnedInvocation, findPinRejection, findCodexWarnings } from "../../../codex/telemetry/fairnessPin.mjs";
 import { parseEventStream } from "../../../codex/telemetry/event-reader.mjs";
+
+const RATES = { input: 2.0, input_cached: 0.2, output: 12.0 };
 
 const POLICY = {
   name: "gpt-plus-flash",
+  driver: { model_name: "gpt-5.6-terra", reasoning: { effort: "high" }, pricing: RATES },
   models: [
-    { id: "gpt", adapter: "openai", model_name: "gpt-5.6-terra", reasoning: { effort: "high" } },
+    { id: "gpt", adapter: "openai", model_name: "gpt-5.6-terra", reasoning: { effort: "medium" }, pricing: RATES },
     { id: "flash-completion", adapter: "mcp:model-dispatch", model_name: "gemini-3.7-flash" },
   ],
 };
 
-test("readPin reads model and effort from the policy's gpt entry", () => {
-  const pin = readPin(POLICY);
-  assert.deepEqual(pin, { model: "gpt-5.6-terra", effort: "high" });
+const LEGACY = {
+  name: "legacy",
+  models: [{ id: "gpt", adapter: "openai", model_name: "gpt-5.6-terra", reasoning: { effort: "high" }, pricing: RATES }],
+};
+
+const silent = { warn: () => {} };
+
+test("readPin reads model and effort from the driver block, not the gpt model entry", () => {
+  assert.deepEqual(readPin(POLICY), { model: "gpt-5.6-terra", effort: "high" });
 });
 
-test("readPin throws when the policy has no gpt model entry", () => {
+test("readDriver returns the pin, the rates and where they came from", () => {
+  assert.deepEqual(readDriver(POLICY), { pin: { model: "gpt-5.6-terra", effort: "high" }, pricing: RATES, from: "driver" });
+});
+
+test("readDriver takes the rates from a model entry for the same model when the block has none", () => {
+  const policy = { ...POLICY, driver: { model_name: "gpt-5.6-terra", reasoning: { effort: "high" } } };
+  assert.deepEqual(readDriver(policy).pricing, RATES);
+});
+
+test("readDriver throws when nothing prices the driver model", () => {
+  const policy = { name: "p", driver: { model_name: "gpt-9", reasoning: { effort: "high" } }, models: [] };
+  assert.throws(() => readDriver(policy), /no pricing/);
+});
+
+test("a policy with no driver block falls back to its gpt entry, with a warning", () => {
+  const warnings = [];
+  const driver = readDriver(LEGACY, { warn: (m) => warnings.push(m) });
+  assert.deepEqual(driver, { pin: { model: "gpt-5.6-terra", effort: "high" }, pricing: RATES, from: "models.gpt" });
+  assert.equal(warnings.length, 1);
+  assert.match(warnings[0], /has no driver: block/);
+});
+
+test("a policy with neither a driver block nor a gpt entry throws and shows the block to add", () => {
   assert.throws(
-    () => readPin({ name: "flash-only", models: [{ id: "x", model_name: "y" }] }),
-    /no model with id 'gpt'/,
+    () => readPin({ name: "flash-only", models: [{ id: "x", model_name: "y" }] }, silent),
+    /has no driver: block.*\ndriver:\n  model_name: gpt-5\.6-terra/s,
   );
 });
 
 test("readPin throws when the gpt entry is missing reasoning.effort", () => {
   assert.throws(
-    () => readPin({ name: "broken", models: [{ id: "gpt", model_name: "gpt-5.6-terra" }] }),
+    () => readPin({ name: "broken", models: [{ id: "gpt", model_name: "gpt-5.6-terra" }] }, silent),
     /missing model_name or reasoning\.effort/,
   );
+});
+
+test("readPin throws when the driver block is missing reasoning.effort", () => {
+  assert.throws(
+    () => readPin({ name: "broken", driver: { model_name: "gpt-5.6-terra" }, models: [] }),
+    /driver block is missing model_name or reasoning\.effort/,
+  );
+});
+
+test("argvPin reads -m and the effort override out of a codex argv, ignoring the prompt", () => {
+  const argv = [
+    "exec", "--json", "-m", "gpt-5.6-terra",
+    "-c", 'model_reasoning_effort="high"',
+    "-c", 'sandbox_mode="workspace-write"',
+    "--", "-m gpt-6 -c model_reasoning_effort=\"low\"",
+  ];
+  assert.deepEqual(argvPin(argv), { model: "gpt-5.6-terra", effort: "high" });
+  assert.deepEqual(argvPin(["exec", "--", "hi"]), { model: null, effort: null });
+});
+
+test("assertPinnedInvocation on an argv that drifted from the policy throws", () => {
+  const argv = ["exec", "-m", "gpt-5.6-terra", "-c", 'model_reasoning_effort="medium"', "--", "p"];
+  assert.throws(() => assertPinnedInvocation(argvPin(argv), POLICY), /reasoning effort 'medium'/);
 });
 
 test("assertPinnedInvocation passes when model and effort match the pin", () => {

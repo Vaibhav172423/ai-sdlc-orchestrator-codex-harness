@@ -21,7 +21,6 @@ import { fileURLToPath } from "node:url";
 import {
   buildCodexArgs,
   buildRunArtifacts,
-  loadPolicyFile,
   renderPrompt,
   renderSkills,
   GATE_MODES,
@@ -48,6 +47,7 @@ import {
   summarize,
   runDispatch,
 } from "../../plugin/codex/dispatch.mjs";
+import { resolveRunPolicy } from "../../plugin/codex/run-policy.mjs";
 
 function tmp() {
   return mkdtempSync(join(tmpdir(), "driver-test-"));
@@ -116,16 +116,25 @@ test("buildCodexArgs passes -C only when a cwd is given", () => {
   assert.equal(withCwd[withCwd.indexOf("-C") + 1], "/proj");
 });
 
-test("loadPolicyFile reads the real shipped policy and it carries the pin", () => {
-  const policy = loadPolicyFile("gpt-plus-flash");
-  assert.equal(policy.name, "gpt-plus-flash");
-  const gpt = policy.models.find((m) => m.id === "gpt");
-  assert.equal(gpt.model_name, "gpt-5.6-terra");
-  assert.equal(gpt.reasoning.effort, "high");
+test("an unconfigured project runs the shipped default, and it carries the driver pin", () => {
+  const dir = tmp();
+  try {
+    const run = resolveRunPolicy({ projectRoot: dir });
+    assert.equal(run.name, "gpt-plus-flash");
+    assert.equal(run.source, "builtin-default");
+    assert.deepEqual(run.driver.pin, PIN);
+  } finally { cleanup(dir); }
 });
 
-test("loadPolicyFile throws a clear error for a policy that doesn't exist", () => {
-  assert.throws(() => loadPolicyFile("no-such-policy"), /not found at/);
+test("a policy that doesn't exist is refused before spending, with exit code 2", () => {
+  const dir = tmp();
+  try {
+    assert.throws(() => resolveRunPolicy({ projectRoot: dir, policyArg: "no-such-policy" }), (err) => {
+      assert.match(err.message, /not found at/);
+      assert.equal(err.exitCode, 2);
+      return true;
+    });
+  } finally { cleanup(dir); }
 });
 
 test("parseArgs handles --key=value and bare flags", () => {
@@ -347,7 +356,7 @@ test("buildRunArtifacts surfaces a pin rejection from the stream", () => {
 
 test("buildRunArtifacts names the policy the run used, not a hard-coded one", () => {
   const { modeled } = buildRunArtifacts({
-    jsonl: REAL_STREAM, pin: PIN, pricing: PRICING, passId: "r", policy: loadPolicyFile("gpt-seat-plus-flash"),
+    jsonl: REAL_STREAM, pin: PIN, pricing: PRICING, passId: "r", policy: resolveRunPolicy({ projectRoot: join(dirname(fileURLToPath(import.meta.url)), "fixtures"), policyArg: "gpt-seat-plus-flash" }).policy,
   });
   assert.equal(modeled[0].routing.policy_name, "gpt-seat-plus-flash");
 });
@@ -594,7 +603,7 @@ test("an empty handover leaves no stray placeholder in the rendered prompt", () 
 test("costCapStop lets the run resume under the cap and stops it once the cap is spent", () => {
   const dir = mkdtempSync(join(tmpdir(), "mmo-cap-"));
   try {
-    const policy = { ...loadPolicyFile("gpt-plus-flash"), hard_cost_cap_usd: 0.5 };
+    const policy = { ...resolveRunPolicy({ projectRoot: dir, policyArg: "gpt-plus-flash" }).policy, hard_cost_cap_usd: 0.5 };
     const telemetry = join(dir, "telemetry.jsonl");
     assert.equal(costCapStop(policy, telemetry), null, "no telemetry yet is under any cap");
     writeFileSync(telemetry, JSON.stringify({ cost_usd: 0.3 }) + "\n");

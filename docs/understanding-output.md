@@ -67,7 +67,7 @@ In each run's folder, `.sdlc/runs/<run-id>/`:
 | `state.json` | The gate that is waiting for an answer, written before the gate is printed. |
 | `provenance.json` | Brownfield: every file the run touched, with its pre-run hash. The input `$mmo-codex:revert` reads. |
 | `orchestrator.log` | `run.start` and `run.end` (from `run.mjs`, or from `start-run.mjs` and `end-run.mjs` in a session), the conductor's `phase.start`, `phase.end`, `phase.skip`, `gate.open` and `gate.resolved` lines, and the bridge's log of each dispatch. |
-| `run.json` | Session runs: the route (`interactive`), mode, intent, policy, every start of the run, and how it ended (`outcome`, `reason`). `start-run.mjs` writes it, `end-run.mjs` closes it. |
+| `run.json` | Session runs: the route (`interactive`), mode, intent, the policy (`policy_source`, `policy_path`, `policy_sha256`) and its driver `pin`, every start of the run with the session's model and effort (`session_model`), and how it ended (`outcome`, `reason`). `start-run.mjs` writes it, `end-run.mjs` closes it. |
 | `skills/` | The playbooks rendered with this run's paths (`pipeline.md`, `brownfield-guide.md`, `discovery.md`, `roles/*.md`). The conductor reads these copies, never the plugin's own `SKILL.md` files. |
 | `driver-events.jsonl` | `run.mjs` runs: one JSON line per record. `invocation_start` and `invocation_end` bracket each `codex exec`, `codex` lines carry each raw event with its arrival time, and `run_end` names the outcome and exit code. Written as events arrive. |
 | `driver-stderr.log` | `run.mjs` runs: what codex wrote to stderr, with a header line per invocation. |

@@ -34,7 +34,9 @@ Spawns `codex exec` with a pinned model, reasoning effort, sandbox and approval 
 
 - **Completion signal.** Phase 9 writes `manifest.json` and `SUMMARY.md`. `SUMMARY.md` is the signal, because only the final phase writes it.
 - **Why resuming is normal.** One turn ends when the session hits its context ceiling — exit 0, no error. `--max-turns` (default 12) caps how many turns one run may use.
-- **The fairness pin.** The model and effort are asserted against the policy before spending. A mismatch aborts rather than quietly running a different model than the one the cost figures will be attributed to. See `plugin/codex/telemetry/fairnessPin.mjs`.
+- **The fairness pin.** The model and effort are read back out of the built `codex exec` argv and asserted against the policy's `driver:` block before spending. A mismatch aborts rather than quietly running a different model than the one the cost figures will be attributed to. See `plugin/codex/telemetry/fairnessPin.mjs`.
+- **One policy resolver.** `run.mjs` and `start-run.mjs` resolve their policy through the bridge's `dist/policy.js`. `run.mjs` hands codex the resolved file in `MMO_POLICY_PATH`, which `dispatch.mjs` forwards as `policy_path`. The policy that prices and caps the run is the one every dispatch routes by.
+- **The session model check.** In a codex session, `start-run.mjs` reads the session's last `turn_context` from its rollout file (found by `CODEX_THREAD_ID`) and starts no run unless the model and effort match the policy's `driver:` block. See `plugin/codex/session-model.mjs`.
 
 ## 3. The bridge — `plugin/mcp/model-dispatch/`
 

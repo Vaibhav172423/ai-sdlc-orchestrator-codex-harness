@@ -327,7 +327,7 @@ function uniqueInOrder(values) {
 }
 
 /** driver-manifest.json, rebuilt whole from the record. */
-export function buildDriverManifest(records, { runId, policyName, pin, sandbox, approvalPolicy, pricing, driverAuth }) {
+export function buildDriverManifest(records, { runId, policyName, policyRecord, pin, sandbox, approvalPolicy, pricing, driverAuth }) {
   const starts = records.filter((r) => r.kind === "invocation_start");
   const ends = records.filter((r) => r.kind === "invocation_end");
   const events = codexEvents(records);
@@ -338,6 +338,7 @@ export function buildDriverManifest(records, { runId, policyName, pin, sandbox, 
   return {
     run_id: runId,
     policy: policyName,
+    ...policyRecord,
     gates: uniqueInOrder(starts.map((s) => s.gates)).join(", ") || null,
     pin: { ...pin, sandbox, approval_policy: approvalPolicy },
     started_at: starts[0]?.at ?? null,

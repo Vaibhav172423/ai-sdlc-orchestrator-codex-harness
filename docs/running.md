@@ -11,6 +11,29 @@ Two ways to run the pipeline, what the gates ask you, and what lands on disk.
 A policy decides which model each phase is routed to, and what the run costs. Four ship as
 selectable. `$mmo-codex:policy` prints the current one; `$mmo-codex:policy change` swaps it.
 
+### Which policy a run uses
+
+The first match wins, for the driver and the bridge alike:
+
+| Order | Source | Set by |
+|---|---|---|
+| 1 | `<project-root>/routing-policy.yaml` | A complete policy file you keep in the project. It beats `--policy`, and `run.mjs` prints a notice when it does. |
+| 2 | `--policy=<name>` | The flag, for one run. |
+| 3 | `.sdlc/project.json` `default_policy` | `$mmo-codex:policy` or `setup-policy.mjs --policy=<name>`. |
+| 4 | `gpt-plus-flash` | Nothing chosen. |
+
+The pin, the driver's rates and the cost cap all come from the file that won. `--dry-run`, each
+`invocation_start` line of `driver-events.jsonl`, `driver-manifest.json` and a session run's
+`run.json` record it as `policy_source`, `policy_path` and `policy_sha256`, and `--resume` on
+either route refuses a different policy than the one the run started on.
+
+Every runnable policy carries the same `driver:` block: the conductor runs on `gpt-5.6-terra` at
+effort `high` whatever the policy routes dispatches to, so comparisons between policies hold the
+driver constant. A policy of your own without one falls back to its `gpt` model entry, with a
+warning. In a codex session, `start-run.mjs` reads the session's model and effort before it
+creates the run folder, and starts no run unless they match the pin: switch with `/model`, or
+start codex with `codex -m gpt-5.6-terra -c model_reasoning_effort="high"`.
+
 ### `gpt-plus-flash` — the policy of record
 
 Judgment phases (requirements, design, packet planning, senior review, security review) run on
@@ -53,10 +76,11 @@ reference run is where a seat is most likely to run out mid-run.
 
 ### `flash-agsdk-only` — the mechanical tier alone
 
-Every phase routes to Gemini 3.7 Flash through the Antigravity SDK agent worker.
+Every dispatched phase routes to Gemini 3.7 Flash through the Antigravity SDK agent worker. The
+conductor still runs on the GPT driver pin, and its turns are modeled at GPT rates.
 
 **Credentials:** Vertex application-default credentials — the agent path is ADC-only and has no
-API-key door — plus Python 3.10+.
+API-key door — plus Python 3.10+ and a logged-in codex for the conductor. No `OPENAI_API_KEY`.
 
 **When to pick it:** exercising the agent door, or measuring what the mechanical tier does
 unaided.
@@ -127,7 +151,7 @@ shaped correctly. Drop the flag to run for real.
 | `--brief=<path>` | — | The brief the run builds from. Greenfield takes a project brief; brownfield takes an intent brief. |
 | `--project-root=<path>` | current directory | The repo the run works against. |
 | `--output-dir=<path>` | `<project-root>/.sdlc/runs/<run-id>` | Greenfield only: a different run folder inside the project. It may not be the project root, a folder inside `.sdlc` other than the run's own, or a folder that overlaps the code directory. Pass it again on `--resume`. |
-| `--policy=<name>` | `gpt-plus-flash` | Routing policy for this run. A per-run override; it does not rewrite the project default. |
+| `--policy=<name>` | `.sdlc/project.json` default, else `gpt-plus-flash` | Routing policy for this run. A per-run override; it does not rewrite the project default. A `routing-policy.yaml` at the project root beats it — see [Which policy a run uses](#which-policy-a-run-uses). |
 | `--code-dir=<path>` | `<project-root>/src` (greenfield), `<project-root>` (brownfield) | Where generated code goes. It must stay inside the project and outside `.sdlc`. |
 | `--gates=<mode>` | `prompt` | `prompt`, `auto-approve`, or `auto-abort`. See below. `prompt` needs a terminal. |
 | `--mode=<mode>` | inferred | `greenfield` or `brownfield`. Omit to let the conductor work it out from the brief and the repo. A folder that is not a git repository needs `--mode=greenfield`. |

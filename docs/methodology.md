@@ -158,6 +158,7 @@ total as a mixture and look at the underlying events before quoting it.
 ## Reproducibility
 
 Every run records the pins it ran under in `driver-manifest.json`: the model, the reasoning
-effort, the sandbox mode, and the approval policy. A cost comparison between two runs is only
+effort, the sandbox mode, and the approval policy, plus the policy file that won
+(`policy_source`, `policy_path`, `policy_sha256`). A cost comparison between two runs is only
 meaningful if those pins match, which is why the report prints them in its header rather than
 leaving them in a file.

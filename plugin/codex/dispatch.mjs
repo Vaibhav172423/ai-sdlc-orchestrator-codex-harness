@@ -17,7 +17,7 @@
  *
  * Usage:
  *   node dispatch.mjs --packet=<packet.json> --out=<result.json> \
- *                     [--policy=<name>] [--project-root=<path>] \
+ *                     [--policy=<name>] [--policy-path=<file>] [--project-root=<path>] \
  *                     [--telemetry=<path>] [--work-dir=<path>]
  *   node dispatch.mjs --log-phase=<state> --task-type=skipped|in_session \
                      --telemetry=<path> --out=<receipt.json> \
@@ -40,6 +40,13 @@ const BRIDGE_CLIENT = resolve(
   "dist",
   "driverClient.js",
 );
+
+/**
+ * run.mjs sets this in codex's environment to the policy file it resolved,
+ * so the bridge routes by the file the run priced and capped. --policy-path
+ * wins over it.
+ */
+export const POLICY_PATH_ENV = "MMO_POLICY_PATH";
 
 /** `--key=value` and bare `--flag` parsing. No positional arguments. */
 export function parseArgs(argv) {
@@ -71,9 +78,10 @@ export function bridgeEnv(projectRoot, env = process.env, readSelect = readMmoSe
  * a wrong or missing field here is the failure mode that costs a whole
  * premium phase to discover.
  */
-export function buildExecuteArgs({ packet, policy, projectRoot, telemetryPath, workDir }) {
+export function buildExecuteArgs({ packet, policy, policyPath, projectRoot, telemetryPath, workDir }) {
   const args = { packet };
   if (policy) args.policy_name = policy;
+  if (policyPath) args.policy_path = policyPath;
   if (projectRoot) args.project_root = projectRoot;
   if (telemetryPath) args.telemetry_path = telemetryPath;
   if (workDir) args.work_dir = workDir;
@@ -81,9 +89,10 @@ export function buildExecuteArgs({ packet, policy, projectRoot, telemetryPath, w
 }
 
 /** Builds the `preflight_dispatch` argument object. */
-export function buildPreflightArgs({ authMode, policy, projectRoot }) {
+export function buildPreflightArgs({ authMode, policy, policyPath, projectRoot }) {
   const args = { auth_mode: authMode };
   if (policy) args.policy_name = policy;
+  if (policyPath) args.policy_path = policyPath;
   if (projectRoot) args.project_root = projectRoot;
   return args;
 }
@@ -178,6 +187,8 @@ export function buildLogEventArgs({ phase, taskType, module, reason, policyName,
 export async function runDispatch(args, { connect, env = process.env } = {}) {
   const projectRoot = args["project-root"] ? resolve(args["project-root"]) : process.cwd();
   const outPath = args.out;
+  const policyFile = args["policy-path"] || env[POLICY_PATH_ENV];
+  const policyPath = policyFile ? resolve(policyFile) : undefined;
   if (!outPath) throw new Error("dispatch: --out=<path> is required — results are written to a file, never stdout.");
 
   const isPreflight = Boolean(args.preflight);
@@ -206,6 +217,7 @@ export async function runDispatch(args, { connect, env = process.env } = {}) {
     toolArgs = buildPreflightArgs({
       authMode: args["auth-mode"],
       policy: args.policy,
+      policyPath,
       projectRoot,
     });
   } else {
@@ -220,6 +232,7 @@ export async function runDispatch(args, { connect, env = process.env } = {}) {
     toolArgs = buildExecuteArgs({
       packet,
       policy: args.policy,
+      policyPath,
       projectRoot,
       telemetryPath: args.telemetry,
       workDir: args["work-dir"],
