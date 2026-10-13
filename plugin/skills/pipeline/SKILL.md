@@ -68,6 +68,19 @@ separate arguments.
 
 ---
 
+## The tools a run uses
+
+The commands in this playbook are the run's whole tool set. Do not fetch a toolchain, runtime or
+package manager yourself (a Node or Python download, `curl … | sh`, `npm install -g`), and do not
+write an executable helper (a `.py`, `.sh` or `.mjs` script) into the run folder or the code
+directory to drive the pipeline for you. A helper runs outside the cost record and the gate
+record, and a fetched toolchain makes the run depend on whatever you downloaded. Phase 7's
+`npm install` of the app's own dependencies in the code directory is part of the playbook; the
+tools that run it are not yours to provide. When a step needs a tool this machine lacks, stop:
+tell the user what is missing and how to install it, and end the run with outcome `stopped`.
+
+---
+
 ## Phase -1 — preflight (MANDATORY, before anything else)
 
 ```

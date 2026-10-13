@@ -201,6 +201,18 @@ refused, the refusal names the path and the rule it hit. Do not try to route aro
 write — surface it to the user and stop. In particular, never edit the write contract itself to
 widen your own permissions.
 
+## The tools a run uses
+
+The commands in this prompt and the playbook are the run's whole tool set. Do not fetch a
+toolchain, runtime or package manager yourself (a Node or Python download, `curl … | sh`,
+`npm install -g`), and do not write an executable helper (a `.py`, `.sh` or `.mjs` script) into
+`{{OUTPUT_DIR}}` or `{{CODE_DIR}}` to drive the pipeline for you. A helper runs outside the cost
+record and the gate record, and a fetched toolchain makes the run depend on whatever you
+downloaded. Phase 7's `npm install` of the app's own dependencies in `{{CODE_DIR}}` is part of the
+playbook; the tools that run it are not yours to provide. When a step needs a tool this machine
+lacks, write `{"reason": "<the missing tool, and how to install it>"}` to `{{OUTPUT_DIR}}/stop.json`
+and end your turn.
+
 ## Stopping a run
 
 The driver reads why your turn ended from files, not from your prose: an `aborted` gate line, a
