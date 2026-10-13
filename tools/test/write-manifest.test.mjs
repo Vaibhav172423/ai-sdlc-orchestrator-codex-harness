@@ -302,7 +302,7 @@ test("SUMMARY.md is written only with --summary, and every figure in it is the m
     assert.match(text, /\| Dispatched work \(calls through the dispatch bridge\) \| \$0\.1700 \|/);
     assert.match(text, /\| ↳ vendor-metered \| \$0\.1000 \|/);
     assert.match(text, /\| ↳ estimated \(no usage block returned\) \| \$0\.0200 \|/);
-    assert.match(text, /\| ↳ modeled \(token counts at policy rates\) \| \$0\.0500 \|/);
+    assert.match(text, /\| ↳ modeled \(token counts at the dated price list's rates\) \| \$0\.0500 \|/);
     assert.doesNotMatch(text, /unlabelled/);
     for (const [phase, b] of Object.entries(m.phase_breakdown)) {
       assert.ok(text.includes(`| ${phase} | ${b.calls} | ${b.models.join(", ")} | $${b.cost_usd.toFixed(4)} |`), phase);

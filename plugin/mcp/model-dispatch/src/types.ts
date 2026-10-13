@@ -82,10 +82,10 @@ export interface TelemetryEvent {
    * Where the cost figure on this event actually comes from. `vendor` —
    * real vendor-reported usage from a dispatched call. `estimated` — a
    * direct-tier call priced by the character-count heuristic because no
-   * vendor usage was available. `modeled` — codex-specific: the driver
-   * session itself never dispatches through this server (D1's conductor
-   * role), so its cost is derived after the fact from `codex exec --json`
-   * turn usage at the pinned rates, not from a live vendor call. `none` — no
+   * vendor usage was available. `modeled` — token counts priced at the
+   * dated price list's rates, not a live vendor bill: the driver's own turns,
+   * which never dispatch through this server, and a seat adapter's
+   * (codex-cli) dispatches. `none` — no
    * model call was made at all: a phase the intent skipped, or one the
    * conductor completed in-session without dispatching. Its zeros are facts
    * rather than estimates, and its real token cost, where there is any,

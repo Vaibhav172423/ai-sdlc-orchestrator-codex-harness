@@ -129,7 +129,7 @@ export function renderRunSummary(manifest, { runDir } = {}) {
   L.push(`| Dispatched work (calls through the dispatch bridge) | ${usd(t.dispatched_cost_usd ?? m.total_cost_usd)} |`);
   L.push(`| ↳ vendor-metered | ${usd(prov.vendor)} |`);
   if (prov.estimated > 0) L.push(`| ↳ estimated (no usage block returned) | ${usd(prov.estimated)} |`);
-  if (prov.modeled > 0) L.push(`| ↳ modeled (token counts at policy rates) | ${usd(prov.modeled)} |`);
+  if (prov.modeled > 0) L.push(`| ↳ modeled (token counts at the dated price list's rates) | ${usd(prov.modeled)} |`);
   if (prov.unlabelled > 0) L.push(`| ↳ unlabelled provenance | ${usd(prov.unlabelled)} |`);
   const driverCost = Number.isFinite(t.driver_cost_usd_modeled) ? usd(t.driver_cost_usd_modeled) : "not measured";
   L.push(`| Conductor (driver) loop — modeled | ${driverCost} |`, "");

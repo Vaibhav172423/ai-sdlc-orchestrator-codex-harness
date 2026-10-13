@@ -48,7 +48,7 @@ test("SUMMARY.md lists a seat floor on the modeled line", () => {
   writeManifest({ runDir, runId: "r1", policy: "gpt-seat-plus-flash", projectRoot: root, summary: true });
   const text = readFileSync(join(runDir, "SUMMARY.md"), "utf-8");
   assert.match(text, /\| ↳ vendor-metered \| \$0\.0011 \|/);
-  assert.match(text, /\| ↳ modeled \(token counts at [^)]+\) \| \$0\.0100 \|/);
+  assert.match(text, /\| ↳ modeled \(token counts at the dated price list's rates\) \| \$0\.0100 \|/);
   assert.doesNotMatch(text, /estimated \(no usage block returned\)/);
 });
 

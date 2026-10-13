@@ -34,7 +34,7 @@ Rules for Codex CLI sessions editing this repo. The full contributor guide is [C
 - **A prompt beginning with `---`** (for example, skill frontmatter) is parsed as CLI flags by `clap` unless preceded by a literal `--` separator.
 - **`codex exec --json` events carry no timestamps.** The telemetry event reader stamps its own.
 - **A command codex runs can find its own session.** It gets `CODEX_THREAD_ID`, and the session's rollout file under `$CODEX_HOME/sessions/` holds one `turn_context` record per turn with the model and effort. `plugin/codex/session-model.mjs` checks an interactive session against the driver pin this way.
-- **No wallet or usage figures are reported for the driver.** Driver cost is modeled from token counts at the pinned rates and labelled `modeled`, never presented as actual spend.
+- **No wallet or usage figures are reported for the driver.** Driver cost is modeled from token counts at the dated price list's rates (`plugin/mcp/model-dispatch/src/prices.ts`) and labelled `modeled`, never presented as actual spend.
 
 ## Other conventions
 
