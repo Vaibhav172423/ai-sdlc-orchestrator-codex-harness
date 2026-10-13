@@ -325,12 +325,12 @@ function uniqueInOrder(values) {
   return [...new Set(values.filter((v) => v !== undefined && v !== null))];
 }
 
-/** driver-manifest.json, rebuilt whole from the record. */
 /**
- * `turnPricing` is {model, priceFn, requestsFor?} (run-finalize.mjs
- * driverTurnPricing); a bare `pricing` card still works and is labelled
- * custom. `policy` names the driver's price record; `baselines` are known
- * running totals for threads first seen in a resume.
+ * driver-manifest.json, rebuilt whole from the record. `turnPricing` is
+ * {model, priceFn, requestsFor?} (run-finalize.mjs driverTurnPricing); a
+ * bare `pricing` card still works and is labelled custom. `policy` names
+ * the driver's price record; `baselines` are known running totals for
+ * threads first seen in a resume.
  */
 export function buildDriverManifest(records, { runId, policyName, policyRecord, policy, pin, sandbox, approvalPolicy, pricing, turnPricing, baselines, driverAuth }) {
   const starts = records.filter((r) => r.kind === "invocation_start");

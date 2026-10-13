@@ -10,6 +10,7 @@ import { join } from "node:path";
 import { modeledDriverCostRows } from "./telemetry/event-reader.mjs";
 import { buildDriverManifest, gate4Acceptance, gateDecision, writeFileAtomic } from "./run-record.mjs";
 import { readRunRecords } from "./run-folder.mjs";
+import { observedSessionModels } from "./session-model.mjs";
 import { ACCEPTED_STATUSES, codeWrittenSummary, writeManifest } from "../scripts/write-manifest.mjs";
 import { abandonCommand, endRun } from "../scripts/write-contract.mjs";
 import { collectDriverUsage } from "../scripts/collect-driver-usage.mjs";
@@ -61,7 +62,7 @@ export function regenerateDriverFiles({ runDir, runId, records = readRunRecords(
     join(runDir, "driver-cost-modeled.jsonl"),
     rows.map((r) => JSON.stringify(r)).join("\n") + (rows.length ? "\n" : ""),
   );
-  const manifest = buildDriverManifest(records, {
+  const built = buildDriverManifest(records, {
     runId,
     policyName,
     policyRecord,
@@ -73,6 +74,11 @@ export function regenerateDriverFiles({ runDir, runId, records = readRunRecords(
     baselines,
     driverAuth: auth,
   });
+  // Without a codex home to read, nothing is observed: a caller that names none never reads the person's own.
+  const observed = driver.codexHome
+    ? observedSessionModels(built.thread_ids ?? [], { codexHome: driver.codexHome, pin, policyName })
+    : null;
+  const manifest = { ...built, driver_model_observed: observed };
   writeFileAtomic(join(runDir, "driver-manifest.json"), JSON.stringify(manifest, null, 2) + "\n");
   return { rows, manifest };
 }

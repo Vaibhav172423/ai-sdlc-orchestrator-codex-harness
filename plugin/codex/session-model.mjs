@@ -216,6 +216,23 @@ function compare({ codexHome, threadId, pin, policyName, warn, now, base, unveri
   return { ...base, status: "mismatch", reason: "model or effort differs from the driver pin", message };
 }
 
+/**
+ * What codex's session files say each thread of a run ran on. A headless run
+ * pins the model on the command line and its event stream never names it,
+ * so this is the only record of what answered. Read-only, never throws.
+ */
+export function observedSessionModels(threadIds, { codexHome, pin, policyName = null, now } = {}) {
+  const ids = [...new Set((threadIds ?? []).filter((t) => typeof t === "string" && t))];
+  const threads = ids.map((threadId) => {
+    const r = checkSessionModel({ codexHome, threadId, pin, policyName, now, warn: () => {} });
+    return { thread_id: threadId, status: r.status, observed: r.observed, rollout_path: r.rollout_path, reason: r.reason };
+  });
+  let status = "unverified";
+  if (threads.some((t) => t.status === "mismatch")) status = "mismatch";
+  else if (threads.length > 0 && threads.every((t) => t.status === "match")) status = "match";
+  return { status, pin: pin ?? null, threads };
+}
+
 function parseArgs(argv) {
   const out = {};
   for (let i = 0; i < argv.length; i++) {

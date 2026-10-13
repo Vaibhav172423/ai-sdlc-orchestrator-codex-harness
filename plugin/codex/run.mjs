@@ -1297,6 +1297,13 @@ async function runDriver(args, deps) {
     for (const n of finalNotes) warn(`  ${n}`);
     for (const line of contractLines) say(`  ${line}`);
     if (m.pin_rejection) warn(`  the codex CLI rejected the pinned model or effort — ${m.pin_rejection}`);
+    for (const t of m.driver_model_observed?.threads ?? []) {
+      if (t.status !== "mismatch") continue;
+      warn(
+        `  driver model: codex's session file says thread ${t.thread_id} ran ${t.observed?.model} at effort ` +
+          `${t.observed?.effort ?? "unknown"}, not the pin ${pin.model} at effort ${pin.effort} (${t.rollout_path})`,
+      );
+    }
     for (const w of m.codex_warnings ?? []) warn(`  codex warning: ${w}`);
     for (const line of driverLines(m, driverUsage, cost)) say(`  ${line}`);
     if (cost) say(`  run total (dispatched + driver): ${money(cost.run_total_usd, cost.run_total_bound)}`);
