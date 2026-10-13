@@ -412,8 +412,9 @@ test("a seat adapter's estimated floor counts as modeled, not vendor-metered", (
   });
   const out = report(dir).stdout;
   assert.match(out, /Vendor-metered total\s+at least \$0\.0540/);
-  assert.match(out, /of which estimated \(no usage block returned\)\s+\$0\.0040/);
+  assert.match(out, /of which estimated \(no usage block returned\)\s+at least \$0\.0040/);
   assert.match(out, /Modeled \(seat\) total\s+at least \$0\.5200/);
+  assert.match(out, /of which dispatched\s+at least \$0\.0200/);
   assert.match(out, /Run total = dispatched \+ driver\s+at least \$0\.5740/);
   const r = summarize(readRun(dir));
   assert.equal(r.totals.vendor_metered_usd, 0.054);

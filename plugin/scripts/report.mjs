@@ -608,7 +608,8 @@ export function summarize(run) {
   const unlabelledM = byProv.none.m + byProv.unknown.m;
   const driverM = driver.measured ? driver.m : null;
   const partialCalls = PROVENANCES.reduce((n, k) => n + byProv[k].partial, 0);
-  const runBound = combineBounds(partialCalls > 0 ? "floor" : "exact", driver.bound);
+  const dispatchedBound = partialCalls > 0 ? "floor" : "exact";
+  const runBound = combineBounds(dispatchedBound, driver.bound);
   const mixed = runBound === "mixed";
   const floorReasons = driver.floor_facts.map((f) => `${f}, so ${mixed ? "that cost is missing from the figure" : "the run cost is at least this"}.`);
   const ceilingReasons = driver.ceiling_facts.map((f) => `${f}, so ${mixed ? "the figure can count more than this run spent" : "the run cost is at most this"}.`);
@@ -670,6 +671,8 @@ export function summarize(run) {
     driver: { ...driverOut, cost_usd: dollars(driverM) },
     totals: {
       dispatched_usd: dollars(dispatchedM),
+      dispatched_bound: dispatchedBound,
+      dispatched_is_floor: dispatchedBound === "floor",
       driver_usd: dollars(driverM),
       driver_bound: driver.bound,
       driver_is_floor: driver.bound === "floor",
@@ -679,12 +682,15 @@ export function summarize(run) {
       vendor_metered_usd: dollars(meteredM),
       vendor_metered_is_floor: byProv.vendor.partial + byProv.estimated.partial > 0,
       estimated_usd: dollars(byProv.estimated.m),
+      estimated_is_floor: byProv.estimated.partial > 0,
       modeled_usd: driverM == null ? null : dollars(byProv.modeled.m + driverM),
       modeled_bound: modeledBound,
       modeled_is_floor: modeledBound === "floor",
       modeled_dispatched_usd: dollars(byProv.modeled.m),
+      modeled_dispatched_is_floor: byProv.modeled.partial > 0,
       modeled_driver_usd: dollars(driverM),
       unlabelled_usd: dollars(unlabelledM),
+      unlabelled_is_floor: byProv.none.partial + byProv.unknown.partial > 0,
       floor_reasons: floorReasons,
       ceiling_reasons: ceilingReasons,
       either_reasons: eitherReasons,
@@ -904,7 +910,7 @@ function renderText(r) {
       counted("Runner overhead", r.dispatched.overhead.calls, fmtUSD(r.dispatched.overhead.cost_usd));
       for (const ph of r.dispatched.overhead_phases) phaseRow(ph, "  ");
     }
-    counted("Dispatched total", r.dispatched.calls, fmtUSD(r.dispatched.cost_usd));
+    counted("Dispatched total", r.dispatched.calls, amount(r.dispatched.cost_usd, t.dispatched_bound));
     p();
     p(`  Tokens: fresh input / cached input / output.`);
     if (r.dispatched.overhead.calls > 0) p(`  ${OVERHEAD_NOTE}`);
@@ -956,21 +962,21 @@ function renderText(r) {
 
   p(`  Run total`);
   p();
-  money("Dispatched total", fmtUSD(t.dispatched_usd));
+  money("Dispatched total", amount(t.dispatched_usd, t.dispatched_bound));
   money("Driver loop — modeled", amount(t.driver_usd, t.driver_bound));
   p(rule);
   money(RUN_TOTAL_LABEL, runTotalAmount(t));
   p();
   money("Vendor-metered total", amount(t.vendor_metered_usd, t.vendor_metered_is_floor));
-  if (r.dispatched.by_provenance.estimated.calls > 0) money("  of which estimated (no usage block returned)", fmtUSD(t.estimated_usd));
+  if (r.dispatched.by_provenance.estimated.calls > 0) money("  of which estimated (no usage block returned)", amount(t.estimated_usd, t.estimated_is_floor));
   money(modeledLabel(id.driver_auth), amount(t.modeled_usd, t.modeled_bound));
-  money("  of which dispatched", fmtUSD(t.modeled_dispatched_usd));
+  money("  of which dispatched", amount(t.modeled_dispatched_usd, t.modeled_dispatched_is_floor));
   money("  of which driver loop", amount(t.modeled_driver_usd, t.driver_bound));
-  if (showUnlabelled(r)) money("Unlabelled provenance", fmtUSD(t.unlabelled_usd));
+  if (showUnlabelled(r)) money("Unlabelled provenance", amount(t.unlabelled_usd, t.unlabelled_is_floor));
   p();
   if (t.run_total_usd == null) {
     p(`  The driver loop was not measured, so this run has no total. Dispatched work`);
-    p(`  alone is ${fmtUSD(t.dispatched_usd)}; it is not the run's cost.`);
+    p(`  alone is ${amount(t.dispatched_usd, t.dispatched_bound)}; it is not the run's cost.`);
   } else if (t.modeled_usd > 0) {
     p(`  Modeled figures are token counts at the price list's rates, not a bill.`);
   }
@@ -1057,7 +1063,7 @@ function renderMarkdown(r) {
       p(`| Runner overhead | | ${r.dispatched.overhead.calls} | | ${fmtUSD(r.dispatched.overhead.cost_usd)} |`);
       for (const ph of r.dispatched.overhead_phases) phaseRow(ph, "↳ ");
     }
-    p(`| **Dispatched total** | | ${r.dispatched.calls} | | **${fmtUSD(r.dispatched.cost_usd)}** |`);
+    p(`| **Dispatched total** | | ${r.dispatched.calls} | | **${amount(r.dispatched.cost_usd, t.dispatched_bound)}** |`);
     p();
     p(`_Tokens: fresh input / cached input / output.${r.dispatched.overhead.calls > 0 ? ` ${OVERHEAD_NOTE}` : ""}_`);
     p();
@@ -1123,18 +1129,18 @@ function renderMarkdown(r) {
   p();
   p(`| Line | Amount |`);
   p(`|---|---:|`);
-  p(`| Dispatched total | ${fmtUSD(t.dispatched_usd)} |`);
+  p(`| Dispatched total | ${amount(t.dispatched_usd, t.dispatched_bound)} |`);
   p(`| Driver loop — modeled | ${amount(t.driver_usd, t.driver_bound)} |`);
   p(`| **${RUN_TOTAL_LABEL}** | **${runTotalAmount(t)}** |`);
   p(`| Vendor-metered total | ${amount(t.vendor_metered_usd, t.vendor_metered_is_floor)} |`);
-  if (r.dispatched.by_provenance.estimated.calls > 0) p(`| ↳ estimated (no usage block returned) | ${fmtUSD(t.estimated_usd)} |`);
+  if (r.dispatched.by_provenance.estimated.calls > 0) p(`| ↳ estimated (no usage block returned) | ${amount(t.estimated_usd, t.estimated_is_floor)} |`);
   p(`| ${modeledLabel(id.driver_auth)} | ${amount(t.modeled_usd, t.modeled_bound)} |`);
-  p(`| ↳ dispatched | ${fmtUSD(t.modeled_dispatched_usd)} |`);
+  p(`| ↳ dispatched | ${amount(t.modeled_dispatched_usd, t.modeled_dispatched_is_floor)} |`);
   p(`| ↳ driver loop | ${amount(t.modeled_driver_usd, t.driver_bound)} |`);
-  if (showUnlabelled(r)) p(`| Unlabelled provenance | ${fmtUSD(t.unlabelled_usd)} |`);
+  if (showUnlabelled(r)) p(`| Unlabelled provenance | ${amount(t.unlabelled_usd, t.unlabelled_is_floor)} |`);
   p();
   if (t.run_total_usd == null) {
-    p(`_The driver loop was not measured, so this run has no total. Dispatched work alone is ${fmtUSD(t.dispatched_usd)}; it is not the run's cost._`);
+    p(`_The driver loop was not measured, so this run has no total. Dispatched work alone is ${amount(t.dispatched_usd, t.dispatched_bound)}; it is not the run's cost._`);
   } else if (t.modeled_usd > 0) {
     p(`_Modeled figures are token counts at the price list's rates, not a bill._`);
   }

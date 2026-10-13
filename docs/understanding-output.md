@@ -83,7 +83,7 @@ node plugin/scripts/report.mjs .sdlc/runs/<run-id> --markdown > .sdlc/runs/<run-
 
 | Line | What it adds up |
 |---|---|
-| `Dispatched total` | Every `telemetry.jsonl` event |
+| `Dispatched total` | Every `telemetry.jsonl` event. It reads `at least` when one of them returned partial usage (`usage_complete: false`), and so does every line below that includes that event. |
 | `Driver loop — modeled` | The driver figure above |
 | `Run total = dispatched + driver` | The two together, with a qualifier when the figure is not exact (table below) |
 | `Vendor-metered total` | Events labelled `vendor` or `estimated`, with the estimated share on its own line. An event with `adapter_provenance: modeled` is left out. |
