@@ -11,6 +11,7 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { main, readRun, render, summarize, SDLC_PHASES } from "../../plugin/scripts/report.mjs";
+import { PHASES } from "../../plugin/mcp/model-dispatch/dist/types.js";
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
 
@@ -88,10 +89,8 @@ test("overhead phases are listed one by one under Runner overhead", () => {
 });
 
 test("every phase the bridge can dispatch has a place in the report", () => {
-  const types = readFileSync(join(REPO_ROOT, "plugin", "mcp", "model-dispatch", "src", "types.ts"), "utf8");
-  const union = types.slice(types.indexOf("export type Phase ="), types.indexOf("export interface"));
-  const phases = [...union.matchAll(/\|\s*"([a-z_]+)"/g)].map((m) => m[1]);
-  assert.ok(phases.length >= 13, `parsed ${phases.length} phases from types.ts`);
+  const phases = [...PHASES];
+  assert.ok(phases.length >= 13, `${phases.length} phases in types.ts`);
   const dir = makeRun({ telemetry: phases.map((phase, i) => event({ phase, task_id: `t${i}`, cost_usd: 0.001 })) });
   const r = summarize(readRun(dir));
   const shown = [...r.dispatched.phases, ...r.dispatched.overhead_phases].map((p) => p.phase).sort();

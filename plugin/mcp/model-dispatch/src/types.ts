@@ -2,24 +2,33 @@
  * Shared types for the multi-model orchestration layer.
  */
 
-export type Phase =
-  | "requirements_analysis"
-  | "architecture_design"
-  | "plan_task_packets"
-  | "codegen"
-  | "tests"
-  | "docs"
-  | "debug"
-  | "senior_code_review"
-  | "security_review"
-  | "refactor"
-  | "final_report"
-  // Brownfield additions (v1). Discovery is scoped to Tier 1 repo read;
-  // change_plan is the brownfield analog of architecture_design (delta doc
-  // rather than full subsystem design). Both routed to premium tier by
-  // default — see plugin/config/policies/*.yaml.
-  | "discovery"
-  | "change_plan";
+/**
+ * The phase names a packet or a logged phase may carry; the bridge refuses
+ * any other, because a name no policy rule matches routes to the default
+ * tier and gets no row of its own in the report. `discovery` and
+ * `change_plan` are brownfield's (change_plan is its delta design).
+ */
+export const PHASES = [
+  "requirements_analysis",
+  "architecture_design",
+  "plan_task_packets",
+  "codegen",
+  "tests",
+  "docs",
+  "debug",
+  "senior_code_review",
+  "security_review",
+  "refactor",
+  "final_report",
+  "discovery",
+  "change_plan",
+] as const;
+
+export type Phase = (typeof PHASES)[number];
+
+export function isPhase(value: unknown): value is Phase {
+  return typeof value === "string" && (PHASES as readonly string[]).includes(value);
+}
 
 export interface FileSlice {
   path: string;

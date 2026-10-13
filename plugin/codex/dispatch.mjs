@@ -19,7 +19,7 @@
  *   node dispatch.mjs --packet=<packet.json> --out=<result.json> \
  *                     --telemetry=<path> [--policy=<name>] [--policy-path=<file>] \
  *                     [--project-root=<path>] [--work-dir=<path>]
- *   node dispatch.mjs --log-phase=<state> --task-type=skipped|in_session \
+ *   node dispatch.mjs --log-phase=<phase> --task-type=skipped|in_session \
  *                     --telemetry=<path> --out=<receipt.json> \
  *                     [--module=<name>] [--reason=<text>] [--policy=<name>]
  *   node dispatch.mjs --preflight --auth-mode=vendor [--policy=<name>] \
@@ -173,7 +173,7 @@ function writeResult(outPath, payload) {
  * carries that so the row explains itself.
  */
 export function buildLogEventArgs({ phase, taskType, module, reason, policyName, telemetryPath }) {
-  if (!phase) throw new Error("dispatch: --log-phase=<state> is required for --log-phase.");
+  if (!phase) throw new Error("dispatch: --log-phase=<phase> is required for --log-phase.");
   if (typeof telemetryPath !== "string" || telemetryPath.trim() === "") {
     throw new Error("dispatch: --telemetry=<path> is required for --log-phase — an unwritten event is not a record.");
   }

@@ -43,6 +43,7 @@ import {
   resolveGcpLocation,
 } from "./adapters/geminiTransports.js";
 import type { ExecutionResult, TaskPacket, TelemetryEvent, Policy, SelectOverrides, ModelConfig } from "./types.js";
+import { isPhase, PHASES } from "./types.js";
 import { log, setLevel, configureSinks, type Level } from "./log.js";
 
 /**
@@ -72,6 +73,10 @@ function validateTaskPacket(raw: unknown): TaskPacket {
       `See plugin/mcp/model-dispatch/src/types.ts for the schema (or plugin/skills/pipeline/SKILL.md for the required-fields table).`,
     );
   }
+  if (!isPhase(packet.phase)) {
+    log("warn", "packet.validate.fail", { packet_id: packet.id as string, missing_fields: "phase" });
+    throw new Error(unknownPhaseMessage("execute_with_model: TaskPacket.phase", packet.phase));
+  }
   if (!Array.isArray(packet.inputs)) {
     log("warn", "packet.validate.fail", { packet_id: packet.id as string, missing_fields: "inputs" });
     throw new Error(
@@ -86,6 +91,13 @@ function validateTaskPacket(raw: unknown): TaskPacket {
     );
   }
   return packet as unknown as TaskPacket;
+}
+
+function unknownPhaseMessage(field: string, value: unknown): string {
+  return (
+    `${field} '${String(value)}' is not a phase the bridge routes. Use one of: ${PHASES.join(", ")}. ` +
+    "The state-machine step names (execute_packets, test_run, ...) are not phase names."
+  );
 }
 
 const SERVER_NAME = "model-dispatch";
@@ -592,6 +604,7 @@ server.setRequestHandler(CallToolRequestSchema, async (req, extra) => {
       }
       case "log_telemetry": {
         const a = args as any;
+        if (!isPhase(a.event?.phase)) throw new Error(unknownPhaseMessage("log_telemetry: event.phase", a.event?.phase));
         // Direct-tier caller is a model with no clock — normalize overwrites
         // its `ts` and nulls `latency_ms`.
         appendEvent(a.telemetry_path, normalizeDirectTierEvent(a.event as TelemetryEvent));

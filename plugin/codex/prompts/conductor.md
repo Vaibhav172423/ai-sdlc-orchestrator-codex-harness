@@ -103,8 +103,8 @@ different things depending on which one you last read.
 
 Phases 1, 2, 4, 6 and 8 are judgment work: the policy routes them to the premium tier. Phases 5
 and 7 are mechanical: the policy routes them to the mechanical tier. You do not choose the
-model — the policy does, from the packet's `phase` and `task_type`. Your job is to set those
-fields correctly.
+model — the policy does, from the packet's `phase`, `task_type` and `retry_count`. Your job is
+to set those fields correctly.
 
 ## The brief
 
@@ -140,7 +140,7 @@ generate another run id: the write contract's `run_id` and every packet's `pass_
 | Field | Type | Notes |
 |---|---|---|
 | `id` | string | Unique per dispatch, e.g. `tp_codegen_001` |
-| `phase` | string | One of the state-machine phase names above |
+| `phase` | string | A phase the bridge routes: `requirements_analysis`, `architecture_design`, `plan_task_packets`, `codegen`, `tests`, `docs`, `debug`, `senior_code_review`, `security_review`, `refactor`, `final_report`, and in brownfield `discovery` and `change_plan`. Never a state-machine step name: step 5's packets are `codegen`, `tests` or `docs`, and a step 7 failure is `debug`. The bridge refuses any other name |
 | `task_type` | string | e.g. `controller_handler`, `dto`, `doc_addition`, `requirements` |
 | `module` | string | Coarse grouping for telemetry, e.g. `auth`, `cross` |
 | `instruction` | string | Under ~300 tokens |
@@ -148,6 +148,7 @@ generate another run id: the write contract's `run_id` and every packet's `pass_
 | `outputSchema` | object | JSON Schema for the expected output |
 | `acceptance` | array of strings | Testable bullets |
 | `budget` | object | `{ maxInputTokens, maxOutputTokens }` — both required |
+| `retry_count` | number | Optional, `0` when omitted. A refined packet carries the failed one's `retry_count + 1`; from `2` on, the policy routes it to the premium tier |
 | `pass_id` | string | This run's id: `{{RUN_ID}}` |
 | `artifact_path` | string | Optional; brownfield only — the repo-relative path this packet writes |
 
@@ -213,8 +214,10 @@ has to stop again, write a new one.
 ## Retries
 
 If a dispatched result fails validation, do not continue a conversation with the worker. Build a
-**fresh** packet with the failure encoded in the instruction, and dispatch that. Workers are
-stateless by design; a follow-up message to one is not a thing this architecture has.
+**fresh** packet with a new `id`, the failure encoded in the instruction, and `retry_count` one
+higher than the packet that failed, and dispatch that. The policy moves a packet with
+`retry_count` 2 or more to the premium tier, so leave the count honest rather than resetting it.
+Workers are stateless by design; a follow-up message to one is not a thing this architecture has.
 
 ## Search
 

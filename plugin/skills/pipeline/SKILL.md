@@ -231,9 +231,10 @@ For each packet, in dependency order:
 Dispatch it with the command above. The bridge routes per policy — you do not choose the model.
 Validate the returned structured output against the schema; if invalid, construct a *refined*
 packet (new id, `retry_count+1`, with the validation error appended to instruction) and
-re-dispatch. After 2 mechanical-tier retries fail, the policy escalates to the premium tier
-automatically (rule with `retry_count: { gte: 2 }`) — the routing decision is the policy's, and
-the escalated packet dispatches exactly like every other one.
+re-dispatch. After 2 mechanical-tier attempts fail, the policy sends the third (`retry_count: 2`)
+to the premium tier automatically (a rule on `phase: [codegen, tests, docs]` with
+`retry_count: { gte: 2 }`, and one on `debug`) — the routing decision is the policy's, and the
+escalated packet dispatches exactly like every other one.
 
 Write the returned file content to disk at the packet's stated `artifact_path`. In a brownfield
 run the write hook snapshots each file before your first write to it lands, for
@@ -350,7 +351,9 @@ command has run again with `--status=accepted` (see Gate 4).
 ```ts
 {
   id: "tp_<phase>_<seq>",
-  phase: "codegen" | "tests" | "docs" | "debug" | "refactor" | ...,
+  phase: "requirements_analysis" | "architecture_design" | "plan_task_packets" | "codegen" | "tests"
+       | "docs" | "debug" | "senior_code_review" | "security_review" | "refactor" | "final_report"
+       | "discovery" | "change_plan",  // brownfield adds the last two; the bridge refuses any other name
   task_type: "controller_handler" | "service_method" | ...,
   module: "employees" | "leave" | ...,
   instruction: "<imperative, <300 tokens>",
@@ -622,7 +625,7 @@ Event shape:
 {
   "ts": "ISO-8601",
   "pass": "pass1|pass2",
-  "phase": "<state>",
+  "phase": "<phase>",
   "task_type": "<from packet>",
   "task_id": "<from packet>",
   "module": "<from packet>",
@@ -660,10 +663,10 @@ lost event and never an ambiguous one:
 
 ```bash
 node '{{PLUGIN_ROOT}}/codex/dispatch.mjs' \
-  --log-phase=<state> --task-type=skipped|in_session \
+  --log-phase=<phase> --task-type=skipped|in_session \
   --module=<module> --reason='<why in one line>' \
   --policy={{POLICY}} --telemetry='{{OUTPUT_DIR}}/telemetry.jsonl' \
-  --out='{{OUTPUT_DIR}}/<state>-skip-receipt.json'
+  --out='{{OUTPUT_DIR}}/<phase>-skip-receipt.json'
 ```
 
 These carry `provenance: "none"` and all-zero tokens. That is not an estimate — it is the fact

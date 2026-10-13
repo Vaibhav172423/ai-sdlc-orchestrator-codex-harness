@@ -108,8 +108,9 @@ Same rule applies to greenfield and brownfield. The default `gpt-plus-flash` pol
 | `requirements_analysis` · `architecture_design` · `plan_task_packets` | judgment | `gpt-5.6-terra`, effort `high` |
 | `senior_code_review` · `security_review` | judgment | `gpt-5.6-terra`, effort `high` |
 | `discovery` · `change_plan` (brownfield only) | judgment | `gpt-5.6-terra`, effort `high` |
-| `execute_packets` (codegen) · `tests` · `docs` | mechanical | Gemini 3.7 Flash |
-| `debug` (retry_count ≥ 2) | judgment | `gpt-5.6-terra` (auto-escalation) |
+| `codegen` · `tests` · `docs` (the `execute_packets` step) | mechanical | Gemini 3.7 Flash |
+| `debug` | mechanical | Gemini 3.7 Flash |
+| `codegen` · `tests` · `docs` · `debug` with `retry_count` ≥ 2 | judgment | `gpt-5.6-terra` (auto-escalation) |
 | `test_run` | local | Bash on your machine, no model call |
 
 Source: [plugin/config/policies/gpt-plus-flash.yaml](plugin/config/policies/gpt-plus-flash.yaml). Every rule is data — change routing by editing the YAML, or author a new policy in the browser console via `$mmo-codex:policy change`.

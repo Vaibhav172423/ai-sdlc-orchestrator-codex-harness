@@ -126,6 +126,13 @@ rules:
     use: gpt
     reason: "Judgment: delta design for feature-extend / refactor / deps"
 
+  # A refined packet escalates after 2 failed mechanical-tier attempts, the
+  # retry rule pipeline/SKILL.md gives the conductor. Before the mechanical
+  # rules, which would otherwise match first.
+  - when: { phase: [codegen, tests, docs], retry_count: { gte: 2 } }
+    use: gpt
+    reason: "Escalation: 2 mechanical-tier attempts failed"
+
   - when:
       phase: codegen
       task_type:
