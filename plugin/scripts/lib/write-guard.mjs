@@ -3,6 +3,7 @@
  * stdin and replies with what decideCall returns; the rule order is in docs/architecture.md §7.
  */
 import { lstatSync, mkdirSync, readdirSync, readlinkSync, statSync } from "node:fs";
+import { homedir } from "node:os";
 import { basename, dirname, isAbsolute, join, parse, relative, resolve, sep } from "node:path";
 import { CREATABLE_WHEN_ABSENT, firstMatch, hardcodedHit } from "./off-limits.mjs";
 import {
@@ -36,6 +37,14 @@ const unquote = (s) => s.replace(/^['"]+|['"]+$/g, "");
 // An fd number before a redirect (`cp a b 2>/dev/null`) is not an argument.
 const ARGS = String.raw`((?:-{1,2}[A-Za-z-]*\s+)*(?:(?!\d+>)[^\s;&|()<>-][^\s;&|()<>]*\s*)+)`;
 const argsOf = (text) => text.trim().split(/\s+/).filter(Boolean).map(unquote).filter(Boolean);
+/** A match whose last word runs into a `(` (a zsh glob group, `$(`): the scan stops there, so the rest is any text. */
+const gluedParen = (command, m) => command[m.index + m[0].length] === "(" && !/\s$/.test(m[0]);
+/** The words of an argument match, the last one marked open when it runs into a `(`. */
+function wordsOf(command, m, group = 1) {
+  const words = argsOf(m[group]);
+  if (words.length && gluedParen(command, m)) words[words.length - 1] += "*";
+  return words;
+}
 
 /** Device files a redirect writes to without touching the project (`2>/dev/null`). */
 const DEVICE_RE = /^\/dev\/(?:null|stdout|stderr|tty|fd\/\d+)$/;
@@ -136,15 +145,15 @@ function bashWriteTargets(raw, cwd = null) {
   let m;
   while ((m = redirectRe.exec(command)) !== null) {
     const target = unquote(m[1].trim());
-    if (target && !/^&\d+$/.test(target)) targets.push(target);
+    if (target && !/^&\d+$/.test(target)) targets.push(gluedParen(command, m) ? `${target}*` : target);
   }
   const teeRe = new RegExp(String.raw`\btee\s+` + ARGS, "g");
-  while ((m = teeRe.exec(command)) !== null) targets.push(...argsOf(m[1]).filter((a) => !a.startsWith("-")));
+  while ((m = teeRe.exec(command)) !== null) targets.push(...wordsOf(command, m).filter((a) => !a.startsWith("-")));
   const touchRe = new RegExp(String.raw`\btouch\s+` + ARGS, "g");
-  while ((m = touchRe.exec(command)) !== null) targets.push(...argsOf(m[1]).filter((a) => !a.startsWith("-")));
+  while ((m = touchRe.exec(command)) !== null) targets.push(...wordsOf(command, m).filter((a) => !a.startsWith("-")));
   const cpMvRe = new RegExp(String.raw`\b(cp|mv)\s+` + ARGS, "g");
   while ((m = cpMvRe.exec(command)) !== null) {
-    const copied = copyTargets(m[1], argsOf(m[2]), cwd);
+    const copied = copyTargets(m[1], wordsOf(command, m, 2), cwd);
     targets.push(...copied.files);
     folders.push(...copied.folders);
   }
@@ -163,7 +172,7 @@ export function extractBashTightRedirects(raw) {
   let m;
   while ((m = re.exec(command)) !== null) {
     const target = unquote(m[1].trim());
-    if (target && !/^&\d+$/.test(target) && !DEVICE_RE.test(target)) out.push(target);
+    if (target && !/^&\d+$/.test(target) && !DEVICE_RE.test(target)) out.push(gluedParen(command, m) ? `${target}*` : target);
   }
   return out;
 }
@@ -175,9 +184,9 @@ export function extractBashRemovals(raw) {
   const out = [];
   let m;
   const rmRe = new RegExp(String.raw`\b(?:rm|unlink)\s+` + ARGS, "g");
-  while ((m = rmRe.exec(command)) !== null) out.push(...argsOf(m[1]).filter((a) => !a.startsWith("-")));
+  while ((m = rmRe.exec(command)) !== null) out.push(...wordsOf(command, m).filter((a) => !a.startsWith("-")));
   const mvRe = new RegExp(String.raw`\bmv\s+` + ARGS, "g");
-  while ((m = mvRe.exec(command)) !== null) out.push(...argsOf(m[1]).filter((a) => !a.startsWith("-")).slice(0, -1));
+  while ((m = mvRe.exec(command)) !== null) out.push(...wordsOf(command, m).filter((a) => !a.startsWith("-")).slice(0, -1));
   return out;
 }
 
@@ -289,16 +298,149 @@ const RUN_RECORD_FOLDERS = ["skills", "backups"];
  */
 export function guardedHit(rel, runId, { containing = false } = {}) {
   const r = rel.toLowerCase().replace(/\/+$/, "");
+  for (const g of guardedPaths(runId)) {
+    if (r === g || r.startsWith(`${g}/`)) return g;
+    if (containing && (r === "" || r === "." || g.startsWith(`${r}/`))) return g;
+  }
+  return null;
+}
+
+function guardedPaths(runId) {
   const guarded = [CONTRACT_REL_PATH];
   if (isRunId(runId)) {
     const base = `.sdlc/runs/${runId.toLowerCase()}`;
     guarded.push(...RUN_RECORDS.map((f) => `${base}/${f}`), ...RUN_RECORD_FOLDERS.map((f) => `${base}/${f}`));
   }
-  for (const g of guarded) {
-    if (r === g || r.startsWith(`${g}/`)) return g;
-    if (containing && (r === "" || r === "." || g.startsWith(`${r}/`))) return g;
+  return guarded;
+}
+
+// ── shell words the shell expands ──────────────────────────────────────────
+
+const MAX_FORMS = 64;
+
+/** The `{a,b}` alternatives of a word, or null past MAX_FORMS. A `{x..y}` range stands for any text. */
+function expandBraces(word) {
+  const out = [];
+  const go = (w) => {
+    if (out.length > MAX_FORMS) return;
+    for (let i = w.indexOf("{"); i !== -1; i = w.indexOf("{", i + 1)) {
+      let depth = 0;
+      const commas = [];
+      for (let j = i; j < w.length; j++) {
+        if (w[j] === "{") depth++;
+        else if (w[j] === "," && depth === 1) commas.push(j);
+        else if (w[j] === "}" && --depth === 0) {
+          if (!commas.length) break;
+          const cuts = [i, ...commas, j];
+          for (let k = 0; k + 1 < cuts.length; k++) go(w.slice(0, i) + w.slice(cuts[k] + 1, cuts[k + 1]) + w.slice(j + 1));
+          return;
+        }
+      }
+    }
+    out.push(w.replace(/\{[^{}]*\.\.[^{}]*\}/g, "*"));
+  };
+  go(word);
+  return out.length > MAX_FORMS ? null : out;
+}
+
+/**
+ * The paths a shell word may name once the shell expands it: quotes and backslashes dropped, braces expanded, a
+ * leading `~`, `$HOME` or `$TMPDIR` filled in, globs kept. Any other `$` or a backtick makes the rest unknown: the
+ * form is `<prefix>/**`, cut at the last `/` before it, with `open` set. Without `open`, such forms are left out.
+ */
+export function wordForms(word, { open = true } = {}) {
+  let w = String(word).replace(/\\(.)/g, "$1").replace(/['"]/g, "");
+  w = w.replace(/^~(?=\/|$)/, () => homedir());
+  w = w.replace(/^\$(?:\{(HOME|TMPDIR)\}|(HOME|TMPDIR)(?![A-Za-z0-9_]))/, (m, a, b) => {
+    const v = process.env[a ?? b];
+    return v && isAbsolute(v) ? v.replace(/\/+$/, "") : m;
+  });
+  const alts = expandBraces(w) ?? [`${w.slice(0, w.indexOf("{"))}$`];
+  const forms = [];
+  for (const f of alts) {
+    const i = f.search(/[$`]/);
+    if (i === -1) forms.push({ path: f, open: false });
+    else if (open) {
+      const cut = f.lastIndexOf("/", i);
+      forms.push({ path: cut === -1 ? "**" : `${f.slice(0, cut)}/**`, open: true });
+    }
+  }
+  return forms;
+}
+
+const GLOB_CHARS = /[*?[]/;
+
+/** One name of a shell glob as a regex, without regard to case. A class it cannot read takes any name. */
+function nameRegex(glob) {
+  let re = "";
+  for (let i = 0; i < glob.length; i++) {
+    const c = glob[i];
+    if (c === "*") re += ".*";
+    else if (c === "?") re += ".";
+    else if (c === "[" && glob.indexOf("]", i + 2) !== -1) {
+      const close = glob.indexOf("]", i + 2);
+      let body = glob.slice(i + 1, close);
+      const negate = body[0] === "!" || body[0] === "^";
+      if (negate) body = body.slice(1);
+      re += `[${negate ? "^" : ""}${body.replace(/[\\\]]/g, "\\$&")}]`;
+      i = close;
+    } else re += c.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  }
+  try { return new RegExp(`^${re}$`, "i"); } catch { return /^/; }
+}
+
+const nameMatches = (glob, name) => (GLOB_CHARS.test(glob) ? nameRegex(glob).test(name) : glob === name);
+
+/**
+ * Whether a path pattern (names, `**` for any run of them) can name `target`, something below it, or with
+ * `containing` a folder that holds it. Leading dots get no special case, so `*` takes `.sdlc` as GLOB_DOTS would.
+ */
+function reaches(pattern, target, containing) {
+  const go = (i, j) => {
+    if (i === pattern.length) return j === target.length || containing;
+    if (j === target.length) return true;
+    if (pattern[i] === "**") return go(i + 1, j) || go(i, j + 1);
+    return nameMatches(pattern[i], target[j]) && go(i + 1, j + 1);
+  };
+  return go(0, 0);
+}
+
+/**
+ * The guarded record a shell word that is not a literal path may reach, `{g, st, open}`, or null. A removal is judged
+ * under a live lock as well as a binding contract; `containing` also takes a folder that holds a record.
+ */
+function guardedReach(word, cwd, sessionRoot, session, { containing = false, removal = false, open = true } = {}) {
+  for (const form of wordForms(word, { open })) {
+    const abs = joinRaw(cwd, form.path);
+    const states = statesFor(abs, sessionRoot, session);
+    if (session && !states.includes(session)) states.push(session);
+    const patterns = [...new Set([resolve(abs), realPath(abs)])].map((p) => names(p.toLowerCase()));
+    for (const st of states) {
+      if (!st.binds && !(removal && st.live)) continue;
+      if (!removal && st.contract?.strict === false && !st.lock) continue;
+      const runId = st.binds ? st.runId : st.live?.run_id;
+      for (const root of new Set([st.root, realPath(st.root)])) {
+        for (const g of guardedPaths(runId)) {
+          const target = names(`${root}/${g}`.toLowerCase());
+          if (patterns.some((p) => reaches(p, target, containing))) return { g, st, open: form.open };
+        }
+      }
+    }
   }
   return null;
+}
+
+function reachRefusal(target, hit, removal) {
+  const runId = (hit.st.binds ? hit.st.runId : hit.st.live?.run_id) ?? "?";
+  const what = `${hit.g}, which run ${runId} keeps while it is live`;
+  const deny = hit.open
+    ? `${target} names a path the hook cannot read before the shell expands it (a variable or a command substitution), ` +
+      `and it may reach ${what}. Write the path out in full and try again.`
+    : removal
+      ? `${target} would remove or move ${what}. Ending a run is the person's decision. Stop and tell the person.`
+      : `${target} may expand to ${what} (the write contract, or the run's lock, frozen copy, rendered skills, ` +
+        `provenance or backups). ${SCOPE_IS_THE_PERSONS}`;
+  return { deny, rule: hit.g, state: hit.st };
 }
 
 const statusOf = (st) => ({ root: st.root, run_id: st.runId ?? st.live?.run_id ?? null, binds: st.binds });
@@ -429,9 +571,10 @@ function statesFor(abs, sessionRoot, session) {
 
 /**
  * `narrow`: a target the scan is unsure of, judged by the always-off-limits list, the guarded set and tampering only.
- * `folder`: a folder a whole directory is copied into, judged as the folder and as any file in it.
+ * `folder`: a folder a whole directory is copied into, judged as the folder and as any file in it. `shellWord`: the
+ * target is a word the shell expands, not a literal path, so a glob or variable in it is judged against the guarded set.
  */
-function checkWrite(target, cwd, sessionRoot, session, mayCreate, narrow = false, folder = false) {
+function checkWrite(target, cwd, sessionRoot, session, { mayCreate = false, narrow = false, folder = false, shellWord = false } = {}) {
   const abs = joinRaw(cwd, target);
   if (!narrow && session && (session.binds || session.tampered) && insidePath(sessionRoot, abs) === null) {
     if (session.tampered) return { deny: session.tampered, rule: "tampered", state: session };
@@ -440,6 +583,10 @@ function checkWrite(target, cwd, sessionRoot, session, mayCreate, narrow = false
         `refused: a brownfield run writes only inside the repo whose contract it holds.`,
       state: session,
     };
+  }
+  if (shellWord && !isLiteralWord(target)) {
+    const hit = guardedReach(target, cwd, sessionRoot, session, { containing: folder, open: !narrow });
+    if (hit) return reachRefusal(target, hit, false);
   }
   const deciding = statesFor(abs, sessionRoot, session);
   if (deciding.length === 0) {
@@ -462,6 +609,10 @@ function checkWrite(target, cwd, sessionRoot, session, mayCreate, narrow = false
 
 /** A refusal, or `{bound}`: each binding contract the removal falls under, for the provenance snapshot. */
 function checkRemoval(target, cwd, sessionRoot, session) {
+  if (!isLiteralWord(target)) {
+    const hit = guardedReach(target, cwd, sessionRoot, session, { containing: true, removal: true });
+    if (hit) return reachRefusal(target, hit, true);
+  }
   const abs = joinRaw(cwd, target);
   const candidates = statesFor(abs, sessionRoot, session);
   if (session && !candidates.includes(session)) candidates.push(session);
@@ -501,6 +652,7 @@ export function decideCall(call, { wiredBy = "plugin" } = {}) {
   const shell = toolName === "Bash" ? bashWriteTargets(call?.tool_input?.command, cwd) : null;
   const targets = shell ? shell.files.filter((t) => !DEVICE_RE.test(t)) : extractTargets(call, cwd);
   const folderTargets = shell?.folders ?? [];
+  const patched = new Set(shell ? shellPatchTargets(call?.tool_input?.command) : []);
   const row = (decision, extra) => ({ decision, tool_name: toolName, wired_by: wiredBy, ...extra });
 
   const warnings = [];
@@ -509,14 +661,16 @@ export function decideCall(call, { wiredBy = "plugin" } = {}) {
   const removed = [];
   let refusal = null;
   for (const target of targets) {
-    const v = checkWrite(target, cwd, sessionRoot, session, mayCreateWhenAbsent(call, target, cwd));
+    const v = checkWrite(target, cwd, sessionRoot, session, {
+      mayCreate: mayCreateWhenAbsent(call, target, cwd), shellWord: !!shell && !patched.has(target),
+    });
     if (v.deny) { refusal = { ...v, target }; break; }
     warnings.push(...v.warns ?? []);
     bound.push(...v.bound);
   }
   if (!refusal) {
     for (const target of folderTargets) {
-      const v = checkWrite(target, cwd, sessionRoot, session, false, false, true);
+      const v = checkWrite(target, cwd, sessionRoot, session, { folder: true, shellWord: true });
       if (v.deny) { refusal = { ...v, target }; break; }
       warnings.push(...v.warns ?? []);
       folders.push(...v.bound);
@@ -525,7 +679,9 @@ export function decideCall(call, { wiredBy = "plugin" } = {}) {
   const unsure = [];
   if (!refusal) {
     for (const target of extractNarrowTargets(call, cwd, targets)) {
-      const v = checkWrite(target, cwd, sessionRoot, session, mayCreateWhenAbsent(call, target, cwd), true);
+      const v = checkWrite(target, cwd, sessionRoot, session, {
+        mayCreate: mayCreateWhenAbsent(call, target, cwd), narrow: true, shellWord: true,
+      });
       if (v.deny) { refusal = { ...v, target }; break; }
       unsure.push(...v.bound);
     }

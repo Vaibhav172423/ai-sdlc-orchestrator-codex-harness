@@ -15,13 +15,13 @@ import { spawn, spawnSync } from "node:child_process";
 import {
   mkdtempSync, writeFileSync, mkdirSync, rmSync, readFileSync, existsSync, realpathSync, symlinkSync,
 } from "node:fs";
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { endRun, freezeContract, abandonRun } from "../../plugin/scripts/write-contract.mjs";
 import {
-  extractBashFolders, extractBashRemovals, extractBashTargets, extractNarrowTargets,
+  extractBashFolders, extractBashRemovals, extractBashTargets, extractNarrowTargets, wordForms,
 } from "../../plugin/scripts/lib/write-guard.mjs";
 
 const HOOK = resolve(fileURLToPath(import.meta.url), "..", "..", "..", "plugin", "codex", "hooks", "write-contract-check.mjs");
@@ -846,6 +846,59 @@ test("live contract: rm, unlink and mv-source of a guarded record are refused; o
     ], "deny");
     await expectAll(dir, [bashRedirect("rm src/old.ts"), bashRedirect("rm -f .sdlc/runs/r1/design.md")], "allow");
   } finally { cleanup(dir); }
+});
+
+test("scan: a shell word is read as the paths the shell expands it to", () => {
+  const forms = (w, o) => wordForms(w, o).map((f) => (f.open ? `open:${f.path}` : f.path));
+  assert.deepEqual(forms(".sdlc/runs/r1/{backups,provenance.json}"), [".sdlc/runs/r1/backups", ".sdlc/runs/r1/provenance.json"]);
+  assert.deepEqual(forms('.sdlc/runs/r1/back"ups"'), [".sdlc/runs/r1/backups"]);
+  assert.deepEqual(forms(".sdlc/runs/r{1..9}/backups"), [".sdlc/runs/r*/backups"]);
+  assert.deepEqual(forms("$d/backups"), ["open:**"]);
+  assert.deepEqual(forms(".sdlc/runs/$ID/backups"), ["open:.sdlc/runs/**"]);
+  assert.deepEqual(forms("$HOME/x"), [`${homedir()}/x`]);
+  assert.deepEqual(forms("~/x"), [`${homedir()}/x`]);
+  assert.deepEqual(forms("$d/x", { open: false }), [], "an unsure target with a variable is left out");
+  assert.deepEqual(extractBashRemovals("rm -r .sdlc/runs/r1/b(ackups|x)"), [".sdlc/runs/r1/b*"], "a zsh glob group is any text");
+  assert.deepEqual(extractBashRemovals("rm -rf $(cat list)"), ["$*"]);
+});
+
+test("live contract: a glob, brace, quote or variable that may reach a guarded record is refused", async () => {
+  const dir = makeFrozenRepo(["src/**"]);
+  try {
+    mkdirSync(join(dir, ".sdlc", "runs", "r1", "backups"), { recursive: true });
+    await expectAll(dir, [
+      "rm -r .sdlc/runs/r1/backup?", "rm .sdlc/runs/r1/*", "rm -r .sdlc/runs/r1/*", "rm .sdlc/runs/*/write-contract.lock.json",
+      "rm .sdlc/local/write-contract.*", "rm -r .sdlc/runs/r1/[bp]*", "rm -r .sdlc/runs/r1/{backups,provenance.json}",
+      'rm -r .sdlc/runs/r1/back"ups"', "rm -r .sdlc/runs/r1/back\\ups", "rm -r .sdlc/runs/r?", "rm -r .s*",
+      "rm -r .sdlc/runs/r{1..1}/backups", `rm -r ${dir}/.sdlc/runs/r1/backup?`, "d=.sdlc/runs/r1; rm -r $d/backups",
+      "rm -r $(echo .sdlc/runs/r1/backups)", "rm -r .sdlc/runs/r1/b(ackups)", "unlink .sdlc/runs/r1/provenance.jso?",
+      "mv .sdlc/runs/r1/provenance.jso? src/p.json", "rm -r .SDLC/RUNS/R1/BACKUP?",
+      "echo x > .sdlc/runs/r1/write-contract.lock.jso?", "cp /tmp/x .sdlc/runs/r1/provenance.jso?",
+      "echo x > .sdlc/runs/r1/p(rovenance.json)", "echo x>.sdlc/runs/r1/provenance.jso?", "touch .sdlc/runs/r1/backups/*",
+      "echo x | tee .sdlc/runs/r1/skills/*.md",
+    ].map(bashRedirect), "deny");
+    await expectAll(dir, [
+      "rm .sdlc/runs/r1/notes-*.md", "rm -f *.log", "rm -rf src/*", "rm -rf src/{a,b}.ts", 'rm -rf "$HOME/.cache/mmo-test"',
+      "echo x > .sdlc/runs/r1/notes-?.md", "awk '$3>$4' src/a.ts", "rm -f /tmp/mmo-*.txt",
+    ].map(bashRedirect), "allow");
+    const r = await runHook(dir, bashRedirect("rm -r .sdlc/runs/r1/backup?"));
+    assert.match(r.reason, /^\.sdlc\/runs\/r1\/backup\? would remove or move \.sdlc\/runs\/r1\/backups, which run r1 keeps while it is live/);
+    const v = await runHook(dir, bashRedirect("d=.sdlc/runs/r1; rm -r $d/backups"));
+    assert.match(v.reason, /cannot read before the shell expands it .* Write the path out in full and try again\.$/);
+  } finally { cleanup(dir); }
+});
+
+test("a glob removal is judged only while a run is live; a patch header is a literal path, not a glob", async () => {
+  const dir = makeFrozenRepo(["src/**", "app/**"]);
+  try {
+    await expectAll(dir, [applyPatchAdd("app/[slug]/page.tsx"), applyPatchAdd("src/*.ts")], "allow");
+    endRun({ projectRoot: dir, runId: "r1", outcome: "completed" });
+    await expectAll(dir, ["rm .sdlc/runs/r1/*", "rm -rf $d/backups"].map(bashRedirect), "allow");
+  } finally { cleanup(dir); }
+  const plain = makeRepo(undefined);
+  try {
+    await expectAll(plain, ["rm -rf $X", "rm .sdlc/runs/*/provenance.json"].map(bashRedirect), "allow");
+  } finally { cleanup(plain); }
 });
 
 test("live contract: a redirect to a device file is not a write outside the project", async () => {

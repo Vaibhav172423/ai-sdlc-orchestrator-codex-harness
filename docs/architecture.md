@@ -110,7 +110,7 @@ A PreToolUse hook on `apply_patch` and `Bash`. The script only reads the call an
 | # | Rule | Answer |
 |---|---|---|
 | 1 | The contract's bytes no longer match a live lock, two locks are live, or a frozen contract's lock is gone | Refuse every write in the project |
-| 2 | A binding contract, and the path is the contract, or the run's lock, frozen copy, `skills/`, `provenance.json` or `backups/` | Refuse (also for `rm`, `unlink` and `mv` sources) |
+| 2 | A binding contract, and the path is the contract, or the run's lock, frozen copy, `skills/`, `provenance.json` or `backups/`; a shell word that may expand to one of them (glob, braces, quotes, a variable) | Refuse (also for `rm`, `unlink` and `mv` sources, under a live lock) |
 | 3 | `.env`, `.env.*`, `.mcp.json`, `.codex/config.toml`, `.codex/auth.json`, `.git/**`, `.agents/**` at any depth, any case; `.git` and `.agents` themselves too | Refuse, except creating a missing `.env`, `.env.example` or `.env.test` when no contract binds, by an `apply_patch` Add File or a shell write to a literal absolute path |
 | 4 | No binding contract | Allow |
 | 5 | The path is inside `.sdlc/runs/<run_id>/` | Allow |
@@ -118,7 +118,7 @@ A PreToolUse hook on `apply_patch` and `Bash`. The script only reads the call an
 | 7 | The contract's `allowlist` | Allow |
 | 8 | Anything else | Refuse (warn and allow under `strict: false`) |
 
-A `cp` or `mv` into a folder is judged at `<folder>/<source name>`; a folder copied in whole is listed and each file it lands is judged, and one the hook cannot list (a variable or glob source, or more than 1,000 entries) is judged as the folder and as any file inside it.
+A shell word is judged as the paths the shell may expand it to: quotes and backslashes dropped, `{a,b}` expanded, a leading `~`, `$HOME` or `$TMPDIR` filled in, and any other `$` or backtick read as anything below the folder written before it. A glob name takes a name with a leading dot too, as zsh's `GLOB_DOTS` would. A `cp` or `mv` into a folder is judged at `<folder>/<source name>`; a folder copied in whole is listed and each file it lands is judged, and one the hook cannot list (a variable or glob source, or more than 1,000 entries) is judged as the folder and as any file inside it.
 
 A contract binds while it is active and its run's lock has not ended; a contract with no lock binds while active. Only `<git root>/.sdlc/local/write-contract.json` counts: a contract in a subfolder or in a folder that is not a git root binds nothing. While the session's project is bound, a write outside it, or through a link that leads out of it, is refused.
 
