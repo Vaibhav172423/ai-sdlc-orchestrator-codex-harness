@@ -22,12 +22,13 @@
  *     baseline: { present, git_head, built_at, staleness_hint } | null,
  *     recent_runs: [{ run_id, intent, started_at, outcome, files_touched, spend_usd }, …],
  *     recent_runs_total: N,
- *     resume: { pending: bool, run_id, section, checkpoint, at, staleness } | null,
+ *     resume: { pending: bool, kind, run_id, section, checkpoint, at, staleness, write_contract? } | null,
  *     concurrent: { possible: bool, pid, run_id, started_at } | null }
  */
 
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { resolve, dirname, join } from "node:path";
+import { liveLock } from "./lib/contract-lock.mjs";
 
 const MMO_REL = ".sdlc";
 const MAX_RECENT_RUNS = 3;
@@ -131,6 +132,22 @@ function readResume(sdlc) {
     };
   }
 
+  // A live write-contract lock is a run that never ended, whatever state.json says: it still binds every session.
+  const live = liveLock(dirname(sdlc));
+  if (live) {
+    const same = s?.run_id === live.run_id ? s : null;
+    return {
+      pending: true,
+      kind: "run",
+      run_id: live.run_id,
+      phase: same?.phase ?? null,
+      checkpoint: same?.checkpoint ?? same?.next_packet_index ?? null,
+      status: "live",
+      write_contract: "live",
+      at: live.frozen_at ?? null,
+    };
+  }
+
   if (s && s.status && s.status !== "complete" && s.status !== "aborted") {
     return {
       pending: true,
@@ -199,6 +216,7 @@ function buildMarker({ recentRuns, recentRunsTotal, baseline, resume, concurrent
 
   if (resume?.pending) {
     if (resume.kind === "setup") parts.push(`interrupted setup at section ${resume.section ?? "?"}`);
+    else if (resume.write_contract === "live" && !resume.phase) parts.push(`resume: run ${resume.run_id ?? "?"} still holds the write contract`);
     else parts.push(`resume: run ${resume.run_id ?? "?"} at ${resume.phase ?? "?"}`);
   } else {
     parts.push("no open resume checkpoint");

@@ -273,7 +273,7 @@ Every artifact lands under `./.sdlc/`. Generated source lands under `./src/`.
 | `telemetry.jsonl` | One JSON line per model call: phase, model, tokens (input / cached / output), cost, latency, task_id. |
 | `manifest.json` | Rollup of the telemetry: totals, per-phase, per-module, per-task-type. |
 | `provenance.json` | Every file the run touched, with pre-run hash — the input `$mmo-codex:revert` reads. |
-| `local/guard-decisions.jsonl` | One line per write-contract decision, allow or deny. A denied call leaves no trace in the Codex event stream, so this file is the only record of it. |
+| `local/guard-decisions.jsonl` | One line per hooked call while a brownfield contract binds, allow or deny; outside a run, one line per refusal, and only in a project that already has `.sdlc/`. A denied call leaves no trace in the Codex event stream, so this file is the only record of it. |
 | `delegation/` | Only on runs that used the agent path. Three files per delegated packet: task brief, worker usage sidecar, receipt. |
 | Cost report | `node tools/report.mjs <output-dir>` — per-phase table, delegation table if any, separated totals, methodology footer. |
 
@@ -283,11 +283,23 @@ How the numbers are derived is in [docs/methodology.md](docs/methodology.md).
 
 Brownfield runs work against an existing repository, so scope is confirmed at a gate and enforced at the tool boundary. Being precise about the guarantee matters more than making it sound strong.
 
-**What is enforced.** Every file write the model attempts is intercepted before it reaches the filesystem, by a hook registered on both the native patch tool and shell commands. A write outside the confirmed allowlist, or matching an off-limits pattern, is refused — the model is told why, and the write does not happen. This covers the patch mechanism the model uses by default, shell redirects, `tee`, `touch`, and `cp` / `mv` destinations. Every decision, allow or deny, is recorded to `.sdlc/local/guard-decisions.jsonl` with its own timestamp.
+**Where the guard runs.** One hook script judges every `apply_patch` and shell call. It is wired twice from `plugin/hooks/hooks.json`:
 
-**The contract protects itself.** The write-contract file is not in its own allowlist, so an attempt to widen scope by editing it is refused like any other out-of-scope write. That was verified live, against a model that tried exactly that.
+| Route | Guarded | Why |
+|---|---|---|
+| Headless `run.mjs` | Always | `run.mjs` registers the hook for each `codex exec` call and passes `--dangerously-bypass-hook-trust`. |
+| Interactive, plugin installed | After you trust the hook once (the startup prompt's "Trust all and continue", or `/hooks`) | Codex skips an untrusted or changed hook without a word. Gate 0 runs `write-contract.mjs --assert-guard-live` and stops the run when no hook decision was recorded. |
+| Interactive, from a clone without installing | No | Nothing registers the hook. |
 
-**What is not enforced.** The shell-command scan is a heuristic, not a shell parser. A sufficiently indirect construction — a write performed by a script the model invokes, an interpreter one-liner, an unusual redirect form — can fall outside it, and fails open rather than closed. The guarantee is that ordinary writes are gated and recorded, not that the sandbox is escape-proof. Codex's own sandbox is the outer boundary; this contract is the scope boundary inside it.
+**What is enforced.** Gate 0 freezes the contract with `write-contract.mjs --freeze`: it writes `.sdlc/local/write-contract.json`, a byte-for-byte copy in the run's folder, and a lock holding the contract's SHA-256. While the run is live, a write outside the confirmed allowlist, or matching an off-limits pattern, is refused, and the model is told why. The run's own `.sdlc/runs/<run-id>/` folder stays writable, except the lock, the frozen copy, the rendered `skills/`, `provenance.json` and `backups/`. This covers the patch mechanism the model uses by default, also when it runs `apply_patch` through the shell, shell redirects, every file `tee` names, `touch`, `cp` / `mv` destinations, and `rm`, `unlink` and `mv` sources aimed at the contract or those records. A redirect with no space before the `>` (`echo hi>.env`) reads the same as code such as `a>b`, so it is checked against the always-refused list and those records only. Off-limits names match in any case, and a write through a link is judged where it lands: a link that leads out of the project is a write outside it. Only the contract at the root of the target's git project counts.
+
+**Refused in every session, contract or not.** `.env`, `.env.*`, `.mcp.json`, `.codex/config.toml`, `.codex/auth.json`, `.git/**` and `.agents/**`, at any depth and in any case, and a file named `.git` (a linked worktree's pointer to its store). With no contract binding, a missing `.env`, `.env.example` or `.env.test` may be created, so a fresh project can bootstrap its test fixture. The allowance holds only where the hook knows the folder the file lands in: an `apply_patch` Add File, or a shell write to an absolute path written out literally (no `~`, `$`, backtick, glob or quote inside it), with nothing at that path yet. A relative path in a shell command gets no allowance, because the shell can run it from another folder (see below). Build output, `node_modules/` and `.sdlc/local/` are off-limits only inside a contracted run.
+
+**The contract protects itself.** The model cannot edit the contract while its run is live, and a contract whose bytes no longer match its lock, by any route, makes the hook refuse every write until you end the run with `write-contract.mjs --abandon --run-id=<run-id>`. Close-out (`write-contract.mjs --close`) ends the run and switches the contract off; a contract whose run has ended binds nothing.
+
+**The decision log.** While a contract binds, every hooked call is recorded to `.sdlc/local/guard-decisions.jsonl` with its own timestamp, the run id, and `wired_by` (`run` or `plugin`). A refusal with no binding contract is recorded only when the project already has `.sdlc/`. The hook never creates `.sdlc/` in a repository that has none.
+
+**What is not enforced.** The shell-command scan is a heuristic, not a shell parser. A sufficiently indirect construction — a write performed by a script the model invokes, an interpreter one-liner, an unusual redirect form, a `cd` before a relative write — can fall outside it, and fails open rather than closed. A relative path in a shell command is judged from the session folder: Codex's shell tool takes a `workdir` that the hook payload does not carry, so the hook cannot see the folder the command runs in. The guarantee is that ordinary writes are gated and recorded, not that the sandbox is escape-proof. Codex's own sandbox is the outer boundary; this contract is the scope boundary inside it.
 
 ## Try it — one worked example
 

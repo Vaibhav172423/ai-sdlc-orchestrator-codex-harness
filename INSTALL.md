@@ -132,6 +132,14 @@ server and is not one. Two ways to avoid it:
 - run the pipeline headlessly, where the driver spawns the bridge outside Codex:
   `node <plugin-path>/codex/run.mjs --brief=<file> --project-root="$(pwd)" --output-dir="$(pwd)/.sdlc"`
 
+**Then this, for brownfield runs.** The plugin ships a write hook that holds a brownfield run to
+the scope confirmed at its Gate 0, and Codex runs a plugin hook only once it is trusted. The next
+time Codex starts it asks about the new hook: "Trust all and continue" trusts it, and so does
+`/hooks` inside a session. Until then every brownfield run in a session stops right after Gate 0
+with "The write guard did not run in this session"; a headless `run.mjs` run registers the hook
+itself. A plugin update that changes the hook's entry drops that trust, and the same step
+restores it.
+
 No new session is needed for the skills themselves. Codex reads its configuration fresh on every
 invocation, so the plugin installed above is already live.
 

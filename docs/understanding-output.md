@@ -60,7 +60,7 @@ The provenance key, a per-provenance count of dispatched events, and a note if t
 | `manifest.json` | Rollup of the telemetry — totals, per-phase, per-module, per-task-type — plus the run's artifacts. |
 | `SUMMARY.md` | Written only by the final phase, which is what makes it the completion signal the driver watches for. |
 | `runs/<run-id>/provenance.json` | Every file the run touched, with its pre-run hash. The input `$mmo-codex:revert` reads. |
-| `local/guard-decisions.jsonl` | One line per write-contract decision, allow or deny, with the reason. |
+| `local/guard-decisions.jsonl` | One line per hooked call while a brownfield contract binds, allow or deny, with the reason. Outside a run, only refusals, and only where `.sdlc/` already exists. |
 | `local/state.json` | The pipeline's current state, including a gate that was pending when a session died. |
 | `gates.jsonl` | One line per gate decision, including `auto-approved` ones, so an unattended run leaves the same audit trail as an attended one. |
 | `delegation/` | Agent-path runs only. Per delegated packet: the task brief, the worker's usage sidecar, and a receipt. |
@@ -88,7 +88,18 @@ Written per run under `runs/<run-id>/`. For each touched file: path, whether it 
 
 ### `guard-decisions.jsonl`
 
-Brownfield only, and the only record of a refused write. A denied call leaves no trace in the Codex event stream, so a write that silently did not happen is explained here and nowhere else. Each line carries its own timestamp, the path, the decision, and the reason.
+The only record of a refused write. A denied call leaves no trace in the Codex event stream, so a write that silently did not happen is explained here and nowhere else. While a brownfield contract binds, every hooked call gets a line; with no binding contract, only a refusal does, and only in a project that already has `.sdlc/`.
+
+| Field | What it holds |
+|---|---|
+| `ts` | When the hook decided. |
+| `decision` | `allow` or `deny`. |
+| `reason` | The refusal text the model saw, or what was cleared. |
+| `path` | The path judged, relative to the project root. |
+| `run_id` | The run whose contract decided. |
+| `matched_rule` | The pattern or record a refusal hit. |
+| `tool_name` | `apply_patch` or `Bash`. |
+| `wired_by` | `run` (headless `run.mjs`) or `plugin` (the installed plugin's hook). Two rows per call with both values mean both wirings fired. |
 
 ## A phase with no row is a lost event
 

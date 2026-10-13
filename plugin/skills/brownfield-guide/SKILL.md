@@ -43,7 +43,17 @@ Read the JSON. Three cases:
   &lt;phase&gt;. Print *"A previous &lt;intent&gt; run (`&lt;run_id&gt;`) was interrupted at phase &lt;phase&gt;.
   Would you like to resume it, or start fresh?"* Accept `resume`, `discard`, or `abort`. If
   `resume`, follow the resume path in [plugin/skills/pipeline/SKILL.md](../pipeline/SKILL.md).
-  If `discard`, clear `.sdlc/local/state.json` and continue to step 2.
+  If `discard`, end that run first, so its write contract stops binding:
+  ```bash
+  node '{{PLUGIN_ROOT}}/scripts/write-contract.mjs' --abandon --run-id=<run_id> --reason='discarded at resume' --project-root='{{PROJECT_ROOT}}'
+  ```
+  An exit 2 saying the run holds no write contract means it never reached Gate 0; carry on. Then
+  clear `.sdlc/local/state.json` and continue to step 2.
+
+  When `resume.write_contract` is `"live"`, that run never ended: its write contract still binds
+  this repository in every Codex session, and `phase` may be `null`. Say so in the question:
+  *"Run `<run_id>` still holds this repository's write contract, so every write outside its scope
+  is refused until you resume or discard it."*
 
 - **`resume.pending: null`** — normal flow. Print the one-line `marker` from the hydrate
   output (e.g. *"SDLC: 3 prior runs (last: docs, 2d ago); baseline at abc1234; no open resume
@@ -210,18 +220,41 @@ extra confirmation lines with the harness's default behavior. Example:
 >   into them. Continue? [assumed yes unless you say otherwise]
 
 On `approved`:
-1. Freeze the confirmed allowlist + off-limits into `.sdlc/local/write-contract.json`
-   ({ schema_version:1, active:true, mode:"brownfield", run_id, strict:true, allowlist,
-   off_limits }). The PreToolUse hook (plugin/codex/hooks/write-contract-check.mjs) reads this
-   file before every write and refuses off-limits or not-in-allowlist paths at the tool
-   boundary.
+1. Freeze the write contract with the lists confirmed above, each as a JSON array of path globs:
+   ```bash
+   node '{{PLUGIN_ROOT}}/scripts/write-contract.mjs' --freeze --run-id=<run-id> \
+     --allowlist='<allowlist JSON>' --off-limits='<extra off-limits JSON>' \
+     --project-root='{{PROJECT_ROOT}}'
+   ```
+   `<run-id>` is this run's folder name under `.sdlc/runs/` (letters, digits, `.`, `_`, `-`).
+   `--off-limits` carries only what this run adds: the AI configs from discovery and the paths
+   the user named. The script merges the project defaults from `.sdlc/project.json` itself.
+   Add `--strict-write=off` only when the user asked for out-of-scope writes to be warned about
+   rather than refused. Never write `.sdlc/local/write-contract.json` yourself: the write hook
+   ({{PLUGIN_ROOT}}/codex/hooks/write-contract-check.mjs) refuses it while the run is live, and a
+   contract whose bytes change after the freeze makes the hook refuse every write. If the script
+   exits non-zero, print its message to the user and stop.
 2. Update `.sdlc/runs/<run-id>/intent_brief.md` with the final scope.
-3. Continue to step 6.
+3. Prove the write hook runs in this session, with a command of its own:
+   ```bash
+   node '{{PLUGIN_ROOT}}/scripts/write-contract.mjs' --assert-guard-live --run-id=<run-id> --project-root='{{PROJECT_ROOT}}'
+   ```
+   Never put this check in the same shell call as the freeze: the hook judges a call once,
+   before it runs, so that call leaves no hook record after the freeze and the check fails.
+   If it exits non-zero, print its message and stop. A message that says the write guard did not
+   run means no hook decision was recorded for this run since the freeze: Codex skips an
+   untrusted or changed plugin hook without a word. The script has already ended the run and
+   switched its contract off, and its message tells the user how to trust the hook.
+4. Continue to step 6.
+
+From here until close-out the run writes freely inside `.sdlc/runs/<run-id>/` (except the
+contract's lock, its frozen copy, the rendered `skills/`, `provenance.json` and `backups/`) and
+elsewhere only inside the allowlist.
 
 On `revise: <comments>` — rewrite the affected parts and re-show Gate 0.
 
-On `abort` — clear `.sdlc/local/write-contract.json` (set active:false), do not delete the
-run directory (leave it as a partial record), and stop.
+On `abort` — nothing is frozen yet. Do not delete the run directory (leave it as a partial
+record), and stop.
 
 # 6. Run the pipeline
 
@@ -244,13 +277,38 @@ their behalf.
 
 # 7. Close out
 
-After the final report:
+When the user replies `accept` at Gate 4, record it in `.sdlc/runs/<run-id>/gates.jsonl` as
+`approved`, one line:
 
-1. Append a row to `.sdlc/ledger.md` (human-readable) and `.sdlc/ledger.json` (machine mirror).
-2. Update the project fingerprint record with a link to the ledger.
-3. Clear the write-contract state: set `.sdlc/local/write-contract.json` active:false.
+```json
+{"gate": 4, "artifact": "SUMMARY.md", "decision": "approved", "note": "<one line>"}
+```
+
+Then:
+
+1. End the run and switch its write contract off:
+   ```bash
+   node '{{PLUGIN_ROOT}}/scripts/write-contract.mjs' --close --run-id=<run-id> --project-root='{{PROJECT_ROOT}}'
+   ```
+   It refuses while `gates.jsonl` records neither an approved Gate 4 nor an abort. If it exits
+   non-zero, print its message and stop: the message names the `--abandon` command the user runs
+   to end the run. The ledger below sits outside the run's folder, so it is written only after
+   this step.
+2. Append a row to `.sdlc/ledger.md` (human-readable) and `.sdlc/ledger.json` (machine mirror).
+3. Update the project fingerprint record with a link to the ledger.
 4. Print the report to the user with cost breakdown, files touched, and (if applicable) the
    `git reset` command the report provides as the escape hatch.
+
+**An abort at Gate 1, 2, 3 or 4** ends the run too. Append the gate's `aborted` line, with that
+gate's number and artifact (here, an abort at Gate 2):
+
+```json
+{"gate": 2, "artifact": "design.md", "decision": "aborted", "note": "<one line>"}
+```
+
+then run
+`node '{{PLUGIN_ROOT}}/scripts/write-contract.mjs' --abandon --run-id=<run-id> --reason='aborted at gate <N>' --project-root='{{PROJECT_ROOT}}'`
+and stop. Keep the reason plain words.
 
 Do not propose a follow-up run.
 

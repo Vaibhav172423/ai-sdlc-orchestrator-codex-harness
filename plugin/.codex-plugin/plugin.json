@@ -16,6 +16,7 @@
     "cost-attribution"
   ],
   "skills": "./skills/",
+  "hooks": "./hooks/hooks.json",
   "mcpServers": {
     "model-dispatch": {
       "command": "node",

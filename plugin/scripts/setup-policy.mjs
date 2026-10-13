@@ -35,6 +35,7 @@ import { fileURLToPath } from "node:url";
 import { createConnection } from "node:net";
 import { platform } from "node:os";
 import { OFF_LIMITS_DEFAULT } from "./lib/off-limits.mjs";
+import { liveLock } from "./lib/contract-lock.mjs";
 // The Gemini credential question is already answered, correctly, in
 // verify-setup.mjs. Importing it keeps one answer instead of two that
 // disagree — see ALTERNATIVE_DOORS below for what the disagreement was.
@@ -523,6 +524,8 @@ function checkCredsFor(policyName) {
 const TERMINAL_RUN_STATUSES = new Set(["complete", "completed", "aborted", "failed"]);
 
 function checkActiveRun(projectRoot) {
+  const live = liveLock(projectRoot);
+  if (live) return { active: true, run_id: live.run_id, phase: null, status: "live", write_contract: "live" };
   const path = join(projectRoot, ".sdlc", "local", "state.json");
   if (!existsSync(path)) return { active: false };
   let parsed;

@@ -81,9 +81,36 @@ This lives in install state rather than in the policy on purpose: the policy fil
 
 ## 7. The write contract — `plugin/codex/hooks/write-contract-check.mjs`
 
-Brownfield only. A hook registered on both the native patch tool and shell commands, intercepting every attempted write before it reaches the filesystem. Writes outside the confirmed allowlist, or matching an off-limits pattern, are refused with a reason.
+A PreToolUse hook on `apply_patch` and `Bash`. The script only reads the call and replies; the decision is in `plugin/scripts/lib/write-guard.mjs`. Codex blocks a call on the JSON reply alone, not on an exit code, and any failure inside the hook allows the call.
 
-Every decision, allow or deny, is appended to `.sdlc/local/guard-decisions.jsonl`. That file exists because a denied call leaves no trace in the Codex event stream — without it, a refused write is invisible.
+**Lifecycle.** `plugin/scripts/write-contract.mjs` owns the contract; the model never writes it.
+
+| Step | Command | Effect |
+|---|---|---|
+| Gate 0 approved | `--freeze --run-id=<id> --allowlist='<json>' [--off-limits='<json>'] [--strict-write=off]` | Writes `.sdlc/local/write-contract.json` (project defaults from `.sdlc/project.json` merged in), `runs/<id>/write-contract.frozen.json` and `runs/<id>/write-contract.lock.json` with the SHA-256. Refused outside a git project's root, for a second freeze of one run, and while another run is live. |
+| Right after | `--assert-guard-live` | Passes when the decision log holds a row for the run stamped after the freeze. Otherwise ends the run and exits 2, saying the guard did not run. |
+| Gate 4 answered | `--close --run-id=<id>` | Needs an accepted Gate 4 or an abort in `runs/<id>/gates.jsonl`. Writes the lock's end record, then switches the contract off. |
+| The person ends a run | `--abandon --run-id=<id> [--reason=<text>]` | The same end, as `aborted`. Frees a project held by a killed session or a changed contract. |
+| Headless run end, `--resume` | `endRun()`, `reopenRun()` | Exported for `run.mjs`. A stopped run reopens with its frozen bytes. |
+
+**Rule order** for each path a write names, judged as written and again with every link resolved:
+
+| # | Rule | Answer |
+|---|---|---|
+| 1 | The contract's bytes no longer match a live lock, two locks are live, or a frozen contract's lock is gone | Refuse every write in the project |
+| 2 | A binding contract, and the path is the contract, or the run's lock, frozen copy, `skills/`, `provenance.json` or `backups/` | Refuse (also for `rm`, `unlink` and `mv` sources) |
+| 3 | `.env`, `.env.*`, `.mcp.json`, `.codex/config.toml`, `.codex/auth.json`, `.git/**`, `.agents/**` at any depth, any case; `.git` and `.agents` themselves too | Refuse, except creating a missing `.env`, `.env.example` or `.env.test` when no contract binds, by an `apply_patch` Add File or a shell write to a literal absolute path |
+| 4 | No binding contract | Allow |
+| 5 | The path is inside `.sdlc/runs/<run_id>/` | Allow |
+| 6 | The contract's `off_limits`, any case | Refuse (warn and allow under `strict: false`) |
+| 7 | The contract's `allowlist` | Allow |
+| 8 | Anything else | Refuse (warn and allow under `strict: false`) |
+
+A contract binds while it is active and its run's lock has not ended; a contract with no lock binds while active. Only `<git root>/.sdlc/local/write-contract.json` counts: a contract in a subfolder or in a folder that is not a git root binds nothing. While the session's project is bound, a write outside it, or through a link that leads out of it, is refused.
+
+**Two wirings, one entry.** `plugin/hooks/hooks.json` holds one group, so Codex saves one trust entry, `mmo-codex@tilicho-ai-labs:hooks/hooks.json:pre_tool_use:0:0`. Trust survives version bumps and script changes, and is lost when the entry's command, matcher, timeout or status message changes. `plugin/codex/hook-wiring.mjs` builds `run.mjs`'s session flags from the same file, with `--wired-by=run` on the command, `features.hooks=true`, and an inline `hooks.state` table that switches the installed plugin's copy off for the run.
+
+**The decision log.** `.sdlc/local/guard-decisions.jsonl` exists because a denied call leaves no trace in the Codex event stream. Every call is recorded while a contract binds; a refusal with no binding contract only where `.sdlc/` already exists. Each row carries `ts`, `decision`, `reason`, `path`, `run_id`, `tool_name` and `wired_by`.
 
 What the contract does and does not guarantee is stated plainly in the [README](../README.md#brownfield-mode-what-the-write-contract-actually-guarantees). The short version: the shell scan is a heuristic, not a shell parser, and fails open.
 

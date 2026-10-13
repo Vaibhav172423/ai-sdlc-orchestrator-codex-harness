@@ -255,9 +255,11 @@ verdict as final.
 cd <output_dir>
 # Only copy .env.test → .env when neither exists. Never overwrite an existing .env —
 # a real .env holds real secrets and belongs to the user.
-if [ -f .env.test ] && [ ! -f .env ]; then cp .env.test .env; fi
+if [ -f .env.test ] && [ ! -f .env ]; then cp .env.test <that folder, absolute>/.env; fi
 npm install --silent && npm test
 ```
+
+Write the `cp` target as the absolute path of the folder you `cd` into, spelled out. The write hook lets a shell command create a missing `.env` only at a literal absolute path: a relative one can land in a folder the hook cannot see.
 
 **Brownfield mode.** The greenfield env-copy above is refused entirely — the repo already has an `.env` (or an equivalent secrets manager) that the user manages, and copying a codegen-produced fixture would either overwrite real secrets or drop the run into a schema-invalid state. Instead:
 
@@ -266,9 +268,9 @@ cd <repo-root>   # NOT <output_dir> — the app-under-test is the user's actual 
 # Do NOT touch .env under any circumstances. Do NOT copy .env.test → .env.
 ```
 
-If codegen introduced new required env vars (via `existing_file_edit` on `.env.example`):
-1. Append the new keys to `.env.example` (this IS a permitted write — .env.example is in the allowlist by default and holds no values, only key names).
-2. Print the list of new keys to the operator with a mini-gate: *"Codegen introduced N new required env vars: X, Y, Z. Populate them in your .env before Phase 7 continues, or say `skip` to run Phase 7 anyway (tests requiring these keys will fail)."*
+If codegen introduced new required env vars:
+1. Do not write `.env.example` or any other `.env*` file: the write hook refuses every one of them while the run's contract is live, whatever the allowlist says.
+2. Print the list of new keys to the operator with a mini-gate: *"Codegen introduced N new required env vars: X, Y, Z. Add them to `.env.example` and populate them in your .env before Phase 7 continues, or say `skip` to run Phase 7 anyway (tests requiring these keys will fail)."*
 3. Wait for the user's response before invoking the test command.
 
 The test command in brownfield is `baseline.test_command` (confirmed at Gate 0), not hardcoded `npm test`. Working directory is the repo root (not `<output_dir>`); in monorepos, use the per-package scope from `baseline.monorepo.packages[].test_command` for whichever package the changed files belong to.
@@ -276,7 +278,7 @@ The test command in brownfield is `baseline.test_command` (confirmed at Gate 0),
 **Both modes:**
 
 On failure:
-- If the error is `Config validation error: "X" is required` or equivalent → the codegen phase missed keys. In greenfield build a debug TaskPacket routed to codegen to add the missing keys with schema-valid values. In brownfield, ask the user via the mini-gate above; do NOT patch `.env` from the harness.
+- If the error is `Config validation error: "X" is required` or equivalent → the codegen phase missed keys. Do NOT patch `.env`, `.env.test` or any other `.env*` file from the harness, in either mode: the write hook refuses an edit to one that already exists. In greenfield, name the missing keys with schema-valid fixture values for the user and ask them to add those to `.env.test` and `.env.example`, or say `skip`. In brownfield, ask the user via the mini-gate above.
 - Any other failure → parse the output, build a `debug` TaskPacket with the failing test name + error + relevant source slice. Route via policy. Retry up to 2 cost-efficient tier attempts; the policy escalates to the premium tier from there.
 
 **Test-command probe (optional Phase 0.5 in brownfield).** The pipeline pre-check (§7.4) already ran the discovered test command with `--collect-only` / `--dry-run` at prompt 1 to prove deps are installed. If pre-check step 2 failed for this run, Phase 7 halts with the recorded error rather than attempting the real run.
@@ -384,6 +386,18 @@ the gate-pending state to `.sdlc/local/state.json` before printing** — if the 
 mid-gate, session-hydrate detects a non-terminal state and re-prompts on the next
 `$mmo-codex:brownfield` invocation. No new command needed.
 
+**Gate record.** Once the user's reply settles a gate, append one line to
+`<output_dir>/gates.jsonl` (for brownfield, `.sdlc/runs/<run-id>/gates.jsonl`) before you act on it:
+
+```json
+{"gate": 4, "artifact": "SUMMARY.md", "decision": "approved", "note": "<one line>"}
+```
+
+`decision` is `approved` or `aborted` (a headless run's prompt adds `auto-approved`); record
+Gate 4's `accept` as `approved`. A `revise:` or `reject:` reply records nothing: revise, then show
+the gate again. The brownfield close-out (`write-contract.mjs --close`) reads this file and
+refuses while it holds neither an approved Gate 4 nor an abort.
+
 ### Gate 0 — Brownfield only, before Gate 1
 
 > ⏸ **HITL Gate 0 — Discovery Confirmation**
@@ -402,8 +416,9 @@ mid-gate, session-hydrate detects a non-terminal state and re-prompts on the nex
 > - **File scope:**
 >   - allowlist: `<paths proposed by the intent brief>` — accept / edit
 >   - off-limits: **project defaults from `.sdlc/project.json.off_limits_default`** apply
->     (`.env*`, `.mcp.json`, `node_modules/**`, `.cursor/rules/**`, `.codex/config.toml`,
->     `.codex/auth.json`, `dist/**`, `.sdlc/**`, `.git/**`) — add anything else this ticket must not touch
+>     (`.env`, `.env.*`, `.mcp.json`, `.cursor/rules/**`, `.codex/config.toml`, `.codex/auth.json`,
+>     `node_modules/**`, `dist/**`, `build/**`, `.next/**`, `.sdlc/local/**`, `.git/**`,
+>     `.agents/**`) — add anything else this ticket must not touch
 >   - AI configs detected in the repo are added on top (see previous bullet)
 > - **Repo-state risks (if any):** `<LFS / submodules / failing tests / encrypted secrets>`
 > - **Regulated-repo warning (when `baseline.regulated_repo_warning_required`):** *"This repo appears regulated (signals: `<kinds>`). Confirm the active policy uses only compliant endpoints, and that off-limits protects your regulated data folders."*
@@ -413,14 +428,40 @@ mid-gate, session-hydrate detects a non-terminal state and re-prompts on the nex
 >
 > Reply: `approved`, `revise: <comments>`, or `abort`.
 
-On `approved`, freeze the write contract to `.sdlc/local/write-contract.json`
-(schema: `{schema_version:1, active:true, mode:"brownfield", run_id, strict:true, allowlist,
-off_limits}`). Build `off_limits` by concatenating `.sdlc/project.json.off_limits_default`
-(the project-level constants — `.env*`, `.mcp.json`, `node_modules/**`, etc., written by setup)
-with the AI-configs from `baseline.ai_configs_detected` and any ticket-specific paths the user
-added at Gate 0. The PreToolUse hook and the packet validator both read the merged list — the
-UX shrinks (Gate 0 doesn't re-ask about constants each ticket), the enforcement is unchanged.
-See `plugin/codex/hooks/write-contract-check.mjs` for the hook.
+On `approved`, freeze the write contract with `write-contract.mjs`, as step 5 of
+[the brownfield guide](../brownfield-guide/SKILL.md) shows:
+
+```bash
+node '{{PLUGIN_ROOT}}/scripts/write-contract.mjs' --freeze --run-id=<run-id> \
+  --allowlist='<allowlist JSON>' --off-limits='<extra off-limits JSON>' --project-root='{{PROJECT_ROOT}}'
+```
+
+Then update `intent_brief.md` with the final scope, and prove the write hook runs with a
+command of its own:
+
+```bash
+node '{{PLUGIN_ROOT}}/scripts/write-contract.mjs' --assert-guard-live --run-id=<run-id> --project-root='{{PROJECT_ROOT}}'
+```
+
+Never put the freeze and the check in one shell call. The hook judges a call once, before it
+runs, so a call that freezes and checks leaves no hook record after the freeze, and the check
+then ends the run as if the hook were not trusted.
+
+`--off-limits` carries the AI-configs from `baseline.ai_configs_detected` and any ticket-specific
+paths the user added at Gate 0; the script merges `.sdlc/project.json.off_limits_default` (the
+project-level constants written by setup) into the contract itself, so Gate 0 does not re-ask about
+them each ticket. Never write `.sdlc/local/write-contract.json` by hand. The write hook
+(`{{PLUGIN_ROOT}}/codex/hooks/write-contract-check.mjs`) refuses it while the run is live, and a
+contract changed after its freeze makes the hook refuse every write. If either command exits
+non-zero, print its message and stop. While the contract is live the run writes its own
+`.sdlc/runs/<run-id>/` folder and, outside it, only the allowlist.
+
+**Ending a brownfield run.** After the user accepts Gate 4 and its `approved` line is in
+`gates.jsonl`, `write-contract.mjs --close --run-id=<run-id>` ends the run and switches the
+contract off, before the ledger rows are written. An abort at any gate appends that gate's
+`aborted` line, then runs `write-contract.mjs --abandon --run-id=<run-id>
+--reason='aborted at gate <N>'`. When `--close` refuses, print its message and stop: it names the
+`--abandon` command the user runs to end the run.
 
 **Default the AI-coexistence answer to OFF-LIMITS.** A user who hits `approved` without reading
 must not accidentally authorize the harness to rewrite their `.cursor/rules` or their custom
