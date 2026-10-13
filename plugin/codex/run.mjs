@@ -1,52 +1,62 @@
 #!/usr/bin/env node
 /**
- * Driver entry — the measured, headless run.
- *
- * Constructs and invokes `codex exec` with every pin the fairness argument
- * depends on, wires the write-contract hook, captures the `--json` event
- * stream, and turns that stream into run artifacts: the driver's own
- * modeled cost, the pin-rejection check, and the trajectory record.
- *
- * What this script does NOT do is author content or decide pipeline order:
- * the conductor prompt does that inside codex, dispatching each phase's
- * real model call out to dispatch.mjs (which speaks MCP to the bridge on
- * its behalf — see that file for why the conductor cannot call the bridge
- * itself). This script is the harness around the conductor, not the
- * conductor.
- *
- * Every pin below is the one recorded in
- * docs/verification/p1-codex-runtime.md section "Pins chosen", and each was
- * verified live before being pinned. Two of them are load-bearing in
- * non-obvious ways:
- *   - `sandbox_workspace_write.network_access=true` — without it the bridge
- *     subprocess is silently killed by the sandbox (empty stderr, no JS
- *     error; the sandbox finding in the verification doc).
- *   - the `--` separator before the prompt — a prompt beginning with `---`
- *     (skill/frontmatter shaped) is otherwise parsed as CLI flags.
+ * Driver entry for the measured, headless run: spawns the `codex exec`
+ * conductor with every pin the fairness argument depends on (see
+ * docs/verification/p1-codex-runtime.md "Pins chosen"), records its event
+ * stream as it arrives, and resumes the session until the run ends.
  *
  * Usage:
- *   node run.mjs --brief=<path> --output-dir=<path> \
- *                [--project-root=<path>] [--policy=<name>] [--run-id=<id>] \
- *                [--code-dir=<path>] [--gates=prompt|auto-approve|auto-abort] \
- *                [--mode=greenfield|brownfield] [--intent=<id>] [--seed=<text>] \
- *                [--resume=<session-id>] [--max-turns=<n>] \
+ *   node run.mjs [--brief=<path>] [--project-root=<path>] [--policy=<name>]
+ *                [--run-id=<id>] [--output-dir=<path>] [--code-dir=<path>]
+ *                [--gates=prompt|auto-approve|auto-abort]
+ *                [--mode=greenfield|brownfield] [--intent=<id>] [--seed=<text>]
+ *                [--resume=<run-id|thread-id>] [--max-turns=<n>]
  *                [--codex-bin=<path>] [--prompt-file=<path>] [--dry-run]
  *
- * `--mode`, `--intent` and `--seed` supply the handover the brownfield guide's
- * step 4 reads. Without them an unattended brownfield run reaches the "which
- * job type?" question with stdin closed and nobody to answer it.
+ * Exit codes: 0 completed, 1 codex failed or pin rejected, 2 usage error or
+ * refused before spending, 3 --max-turns reached, 4 stopped on purpose,
+ * 128+signal when interrupted.
  */
 
-import { readFileSync, writeFileSync, mkdirSync, existsSync } from "node:fs";
-import { spawn } from "node:child_process";
+import { appendFileSync, readFileSync, writeFileSync, mkdirSync, existsSync } from "node:fs";
+import { spawn, spawnSync } from "node:child_process";
 import { homedir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { dirname, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parse as parseYaml } from "yaml";
 
-import { parseEventStream, modeledDriverCostEvents } from "./telemetry/event-reader.mjs";
+import { codexEvents, driverCostRow, modeledDriverCostRows, readDriverRecord } from "./telemetry/event-reader.mjs";
 import { readPin, assertPinnedInvocation, findPinRejection } from "./telemetry/fairnessPin.mjs";
 import { assertUnderCostCap, COST_CAP_EXCEEDED } from "../mcp/model-dispatch/dist/costCap.js";
+import { DriverTurnTracker } from "../mcp/model-dispatch/dist/driverUsage.js";
+import { configureSinks, log, redactText } from "../scripts/lib/log.mjs";
+import {
+  assertRunDirApart,
+  lastGateMode,
+  readRunRecords,
+  resolveCodeDir,
+  resolveRun,
+  runDirFor,
+  runSettings,
+  UsageError,
+} from "./run-folder.mjs";
+import {
+  appendRecord,
+  classifyDriverAuth,
+  countLines,
+  invocationCount,
+  isDeliberate,
+  latestRunEnd,
+  liveDriver,
+  outcomeExitCode,
+  previousRunEnd,
+  QUESTION_FILE,
+  snapshotStopEvidence,
+  stopCheck,
+  STDERR_TAIL_MAX,
+  STDOUT_LINE_MAX,
+} from "./run-record.mjs";
+import { finalizeRun, regenerateDriverFiles } from "./run-finalize.mjs";
 
 const CODEX_DIR = dirname(fileURLToPath(import.meta.url));
 const PLUGIN_ROOT = dirname(CODEX_DIR);
@@ -74,18 +84,6 @@ export function defaultCodexHome() {
   return process.env.CODEX_HOME ?? join(homedir(), ".codex");
 }
 
-/**
- * What the conductor is told to do at each approval gate.
- *
- * `codex exec` runs with stdin closed, so a conductor told to "wait for the
- * user's answer" in that mode waits for something that can never arrive.
- * The flag surface here (`--gates`) is the one the brownfield guide already
- * documents; this is its implementation.
- *
- * `prompt` remains the default because a gate nobody reads is a weaker
- * guarantee than one somebody does, and defaulting to auto-approve would
- * quietly turn the review gates into decoration.
- */
 /**
  * Job types a brownfield run can be given up front. Mirrors the `id` values
  * in plugin/config/intents.json — read from there rather than duplicated, so
@@ -129,29 +127,78 @@ export function renderHandover({ mode, intent, seed } = {}) {
   ].join("\n");
 }
 
+const NO_QUESTIONS =
+  "Do not ask a question you cannot receive an answer to: if the run cannot go on without an " +
+  'answer, write {"reason": "<the question>"} to stop.json in your run folder and end your turn.';
+
+/**
+ * What the conductor is told to do at each approval gate. `codex exec` runs
+ * with stdin closed, so under `prompt` the driver relays the gate: the
+ * conductor records it as pending and ends its turn, and run.mjs asks the
+ * person at the terminal and resumes with the answer. `prompt` stays the
+ * default because defaulting to auto-approve would turn the review gates
+ * into decoration.
+ */
 export const GATE_MODES = {
   prompt:
-    "Stop and ask the user at each gate. Print what was produced, where it is, and what you " +
-    "propose to do next, then wait for their answer before continuing.",
+    "A person is at the terminal that started this run, but cannot type into your session. At " +
+    "each gate, print the gate block, append " +
+    '{"gate": N, "artifact": "<file>", "decision": "pending"} to gates.jsonl in your run folder, ' +
+    "then end your turn without doing anything else. The person's answer arrives as your next " +
+    "message: record their decision on a new gates.jsonl line and act on it. Never record a " +
+    "decision they did not give. Any other question for the person (the brownfield job type or " +
+    "interview, the Phase 7 environment check) goes the same way: print it, write " +
+    `{"question": "<the question, one line>"} to ${QUESTION_FILE} in your run folder, and end ` +
+    "your turn; the answer arrives as your next message.",
   "auto-approve":
     "You are running UNATTENDED — there is no user to answer, and stdin is closed. At each " +
     "gate, print what was produced and where it is, record the decision as `auto-approved`, " +
-    "and continue without waiting. Do not ask a question you cannot receive an answer to. " +
+    `and continue without waiting. ${NO_QUESTIONS} ` +
     "If an artifact looks wrong enough that a reviewer would have rejected it, say so plainly " +
     "in the gate record and in your final report rather than passing it silently.",
   "auto-abort":
     "You are running UNATTENDED with gates set to abort. At each gate, print what was " +
     "produced, record the decision as `aborted`, and stop the run there. Use this to produce " +
-    "one phase's artifact for inspection without proceeding.",
+    `one phase's artifact for inspection without proceeding. ${NO_QUESTIONS}`,
 };
 
+export const RUN_FLAGS = Object.freeze({
+  value: [
+    "brief", "output-dir", "project-root", "policy", "run-id", "code-dir", "gates",
+    "mode", "intent", "seed", "resume", "max-turns", "codex-bin", "prompt-file",
+  ],
+  boolean: ["dry-run"],
+});
+
+/** `--k=v` and `--k v`; an unknown flag, a stray word or a missing value is a UsageError. */
 export function parseArgs(argv) {
   const args = {};
-  for (const raw of argv) {
-    if (!raw.startsWith("--")) continue;
+  const known = () => [...RUN_FLAGS.value, ...RUN_FLAGS.boolean].map((f) => `--${f}`).join(", ");
+  for (let i = 0; i < argv.length; i++) {
+    const raw = String(argv[i]);
+    if (!raw.startsWith("--") || raw === "--") {
+      throw new UsageError(`unexpected argument '${raw}': every run.mjs option is a --flag. Known flags: ${known()}.`);
+    }
     const eq = raw.indexOf("=");
-    if (eq === -1) args[raw.slice(2)] = true;
-    else args[raw.slice(2, eq)] = raw.slice(eq + 1);
+    const name = eq === -1 ? raw.slice(2) : raw.slice(2, eq);
+    if (Object.prototype.hasOwnProperty.call(args, name)) throw new UsageError(`--${name} is given more than once.`);
+    if (RUN_FLAGS.boolean.includes(name)) {
+      const v = eq === -1 ? "true" : raw.slice(eq + 1);
+      if (v !== "true" && v !== "false") throw new UsageError(`--${name} takes no value (or =true / =false).`);
+      args[name] = v === "true";
+    } else if (RUN_FLAGS.value.includes(name)) {
+      let value = eq === -1 ? argv[i + 1] : raw.slice(eq + 1);
+      if (eq === -1) {
+        if (value === undefined || String(value).startsWith("--")) {
+          throw new UsageError(`--${name} needs a value (--${name}=<value>).`);
+        }
+        i += 1;
+      }
+      if (String(value) === "") throw new UsageError(`--${name} needs a value (--${name}=<value>).`);
+      args[name] = String(value);
+    } else {
+      throw new UsageError(`unknown flag --${name}. Known flags: ${known()}.`);
+    }
   }
   return args;
 }
@@ -237,6 +284,8 @@ export function buildCodexArgs({
   codexHome = defaultCodexHome(),
   /** Resume this session instead of starting a new one. See RESUME_PROMPT. */
   resumeThreadId = null,
+  /** Greenfield only: a new app's folder is usually not a git repo, and codex refuses one without this. */
+  skipGitRepoCheck = false,
 }) {
   // The hook path is single-quoted inside the TOML double-quoted command
   // string: this repo's own checkout path contains spaces ("TL ai labs"),
@@ -257,6 +306,7 @@ export function buildCodexArgs({
     // network grant apply to a resumed turn exactly as to the first.
     ...(resumeThreadId ? ["resume", resumeThreadId] : []),
     "--json",
+    ...(skipGitRepoCheck ? ["--skip-git-repo-check"] : []),
     "--dangerously-bypass-hook-trust",
     "-m",
     pin.model,
@@ -293,33 +343,41 @@ export function buildCodexArgs({
 }
 
 /**
- * How many `codex exec` turns the driver will spend on one run.
- *
- * A single turn is not enough for a real project. The first Workforce Ops
- * reference run got through requirements, design and into codegen, then the
- * turn simply ended — it had accumulated 2.9M input tokens (2.8M of them
- * cached) and hit the context ceiling with six phases still to go. `exit=0`,
- * no error, just an unfinished run, which is the most misleading way for this
- * to fail.
- *
- * `codex exec resume <session-id>` continues the same session, so the driver
- * resumes until the pipeline signals completion or this cap is reached.
+ * How many `codex exec` invocations one driver process may spend. One turn
+ * ends at the session's context ceiling with exit 0, so a real project needs
+ * several; a gate answer's invocation does not count.
  */
 export const DEFAULT_MAX_TURNS = 12;
 
+/** After forwarding SIGINT/SIGTERM/SIGHUP to codex's group, wait this long before SIGKILL. */
+export const KILL_GRACE_MS = 10_000;
+const FORWARDED_SIGNALS = ["SIGINT", "SIGTERM", "SIGHUP"];
+/** A closed terminal ends stdin and sends SIGHUP in no fixed order; wait this long for the signal before reading end of input as "no answer". */
+const END_OF_INPUT_SETTLE_MS = 150;
+
+const quietStreams = new WeakSet();
+
 /**
- * The pipeline's last act (phase 9) is to write manifest.json and SUMMARY.md.
- * SUMMARY.md is therefore the completion signal — an artifact only the final
- * phase produces, rather than a phrase in prose the model might improvise.
+ * A write to a closed terminal (EIO) or to a pipe whose reader died (EPIPE)
+ * fails as an 'error' event on the stream. Unheard, that event ends the
+ * driver before it can stop codex and write its record.
  */
-export function runIsComplete(outputDir, exists = existsSync) {
-  return exists(join(outputDir, "SUMMARY.md"));
+export function ignoreWriteErrors(stream) {
+  if (!stream || typeof stream.on !== "function" || quietStreams.has(stream)) return;
+  quietStreams.add(stream);
+  stream.on("error", () => {});
+}
+
+function writeQuietly(stream, text) {
+  try {
+    stream.write(text);
+  } catch { /* nobody is reading; the run record still has it */ }
 }
 
 /**
- * Null while dispatched spend is under the policy's hard_cost_cap_usd. Once it
+ * Null while recorded spend is under the policy's hard_cost_cap_usd. Once it
  * is not, the bridge refuses every dispatch, so a resumed session could only
- * spend conductor tokens being refused — the reason to stop resuming.
+ * spend conductor tokens being refused.
  */
 export function costCapStop(policy, telemetryPath) {
   try {
@@ -344,267 +402,869 @@ export function threadIdFrom(stdout) {
 }
 
 /**
- * What a resumed turn is told. Deliberately short: the session already holds
- * the conductor prompt and everything done so far, so restating the pipeline
- * would burn the very context that ran out.
+ * What a resumed turn is told. Short on purpose: the session already holds
+ * the conductor prompt, and restating the pipeline burns the context that
+ * ran out.
  */
 export const RESUME_PROMPT =
-  "Continue the run from where you stopped. Re-read your own artifacts in the output directory " +
-  "to see what is already done — do not redo completed phases, and do not re-dispatch a packet " +
-  "whose result file already exists. Pick up at the first incomplete phase and carry on through " +
-  "the remaining gates. The rules you were given still apply: you author no shipped content, " +
-  "every artifact comes back from a dispatch. Finish with the final report, manifest.json and " +
-  "SUMMARY.md.";
+  "Continue the run from where you stopped. Re-read your own artifacts in the run folder to see " +
+  "what is already done — do not redo completed phases, and do not re-dispatch a packet whose " +
+  "result file already exists. Pick up at the first incomplete phase. If a gate is waiting for " +
+  "an answer, do not answer it yourself: follow the gate instruction below. If you have to stop " +
+  "the run on purpose, record why before you end your turn (an aborted line in gates.jsonl, or " +
+  'stop.json with {"reason": "<one line>"}): a turn that ends with no new record reads as ' +
+  "running out of context, and the session is resumed. The rules you were given still apply: " +
+  "you author no shipped content, every artifact comes back from a dispatch. Finish with Phase 9 " +
+  "(manifest.json and SUMMARY.md) and Gate 4.";
 
 /**
- * Spawns codex and collects its stdout/stderr. stdin is closed explicitly:
- * `codex exec` reads stdin when attached and a phase can hang on a pipe
- * that never closes (gotcha ledger).
+ * RESUME_PROMPT plus this invocation's gate mode, which may differ from the
+ * first invocation's. `after` is the run_end of the driver process before
+ * this one: when that stop was deliberate, the person resuming has chosen to
+ * go past it, so the conductor takes up the step again instead of repeating
+ * the stop from its old record.
  */
-export function spawnCodex(args, { spawnFn = spawn, cwd, codexBin = "codex" } = {}) {
+export function resumePrompt(gateMode, after = null) {
+  const parts = [RESUME_PROMPT];
+  if (after?.outcome && isDeliberate(after.outcome)) {
+    parts.push(
+      `The run last stopped on purpose (${after.outcome}${after.reason ? `: ${after.reason}` : ""}). ` +
+        `The person has resumed it with --gates=${gateMode}: they chose to continue past that stop. ` +
+        "Take up the step that stopped it again, under the gate mode below. The earlier record does " +
+        "not stop this turn: if the run has to stop again, write a new record first (a new line in " +
+        "gates.jsonl, a new preflight.json, or stop.json).",
+    );
+  }
+  parts.push(`Gate mode for this invocation: ${GATE_MODES[gateMode]}`);
+  return parts.join("\n\n");
+}
+
+/** The resume that carries a person's answer to a question that is not a gate. */
+export function questionAnswerPrompt(answer, gateMode) {
+  return (
+    `Answer from the person to your question: ${String(answer).trim()}\n\n` +
+    "Carry on from the step that asked.\n\n" +
+    `Gate mode for this invocation: ${GATE_MODES[gateMode]}`
+  );
+}
+
+/** The resume that carries a person's answer to a pending gate. */
+export function gateAnswerPrompt(gate, answer, gateMode) {
+  return (
+    `Gate ${gate ?? "?"} answer from the person: ${String(answer).trim()}\n\n` +
+    "Record their decision on a new gates.jsonl line, then act on it.\n\n" +
+    `Gate mode for this invocation: ${GATE_MODES[gateMode]}`
+  );
+}
+
+/**
+ * Runs one codex invocation. Each complete stdout line goes to `onRecord` as
+ * it arrives, and stderr to `onStderr`. codex leads its own process group
+ * (not on Windows) so a forwarded signal reaches the shells it started.
+ * stdin is closed: `codex exec` reads an attached stdin and can hang on a
+ * pipe that never closes.
+ */
+export function spawnCodex(
+  args,
+  {
+    spawnFn = spawn,
+    cwd,
+    env,
+    codexBin = "codex",
+    invocation = 1,
+    resumeThreadId = null,
+    onSpawned = () => {},
+    onRecord = () => {},
+    onStderr = () => {},
+    clock = () => new Date().toISOString(),
+  } = {},
+) {
   return new Promise((resolvePromise) => {
-    const child = spawnFn(codexBin, args, { cwd, stdio: ["ignore", "pipe", "pipe"] });
-    let stdout = "";
-    let stderr = "";
-    child.stdout?.on("data", (c) => (stdout += c.toString()));
-    child.stderr?.on("data", (c) => (stderr += c.toString()));
-    child.on("error", (err) => resolvePromise({ status: null, stdout, stderr: String(err?.message ?? err) }));
-    child.on("close", (status) => resolvePromise({ status, stdout, stderr }));
+    const turns = { started: 0, completed: 0, failed: 0 };
+    let threadId = resumeThreadId;
+    let sawThread = false;
+    let pending = "";
+    let settled = false;
+
+    const onLine = (line) => {
+      if (!line.trim()) return;
+      const receivedAt = clock();
+      let event = null;
+      try {
+        event = JSON.parse(line);
+      } catch {
+        event = null;
+      }
+      if (!event || typeof event !== "object" || Array.isArray(event)) {
+        onRecord({ kind: "stdout_unparsed", invocation, received_at: receivedAt, line: line.slice(0, STDOUT_LINE_MAX) });
+        return;
+      }
+      if (event.type === "thread.started" && typeof event.thread_id === "string" && !sawThread) {
+        threadId = event.thread_id;
+        sawThread = true;
+      }
+      if (event.type === "turn.started") turns.started += 1;
+      else if (event.type === "turn.completed") turns.completed += 1;
+      else if (event.type === "turn.failed") turns.failed += 1;
+      onRecord({ kind: "codex", invocation, thread_id: threadId, received_at: receivedAt, event });
+    };
+    const finish = (end) => {
+      if (settled) return;
+      settled = true;
+      if (pending) onLine(pending);
+      pending = "";
+      resolvePromise({ threadId, turns, ...end });
+    };
+
+    let child;
+    try {
+      child = spawnFn(codexBin, args, {
+        cwd,
+        env,
+        stdio: ["ignore", "pipe", "pipe"],
+        detached: process.platform !== "win32",
+      });
+    } catch (err) {
+      onSpawned(null);
+      finish({ exitStatus: null, signal: null, spawnError: String(err?.message ?? err) });
+      return;
+    }
+    onSpawned(child);
+    child.stdout?.setEncoding?.("utf8");
+    child.stdout?.on("data", (chunk) => {
+      pending += chunk;
+      let i;
+      while ((i = pending.indexOf("\n")) !== -1) {
+        const line = pending.slice(0, i);
+        pending = pending.slice(i + 1);
+        onLine(line);
+      }
+    });
+    child.stderr?.setEncoding?.("utf8");
+    child.stderr?.on("data", (chunk) => onStderr(String(chunk)));
+    child.on("error", (err) => {
+      if (child.pid === undefined) finish({ exitStatus: null, signal: null, spawnError: String(err?.message ?? err) });
+    });
+    child.on("close", (code, signal) => finish({ exitStatus: code, signal: signal ?? null, spawnError: null }));
   });
 }
 
 /**
- * Turns a finished run's raw JSONL into the artifacts a reader and the
- * cost report need. Pure — takes the stream text, returns what to write.
+ * The pin check and the modeled driver rows for a run's driver-events text,
+ * format v1 or legacy bare codex events. Pure.
  */
-export function buildRunArtifacts({ jsonl, pin, pricing, passId, now }) {
-  const events = parseEventStream(jsonl, now);
+export function buildRunArtifacts({ jsonl, pin, pricing, passId, policy, now }) {
+  const records = readDriverRecord(jsonl, now);
+  const events = codexEvents(records);
   const rejection = findPinRejection(events);
-  const modeled = modeledDriverCostEvents(events, {
-    pass: passId,
+  const modeled = modeledDriverCostRows(records, {
+    runId: passId,
     model: pin.model,
     pricing,
-    now,
+    policyName: policy?.name,
+    policyVersion: policy?.version ?? 1,
   });
   return { events, rejection, modeled };
 }
 
-async function main(args) {
-  const projectRoot = args["project-root"] ? resolve(args["project-root"]) : process.cwd();
-  const outputDir = args["output-dir"] ? resolve(args["output-dir"]) : join(projectRoot, ".sdlc");
-  const policyName = args.policy ?? DEFAULT_POLICY;
-  const runId = args["run-id"] ?? new Date().toISOString().replace(/[:.]/g, "-");
+/** `codex login status`, classified; the text itself is never kept. */
+function readDriverAuth({ spawnFn, codexBin, cwd, env, timeoutMs = 5000 }) {
+  return new Promise((resolveAuth) => {
+    let text = "";
+    let done = false;
+    let child;
+    let timer = null;
+    const finish = () => {
+      if (done) return;
+      done = true;
+      clearTimeout(timer);
+      resolveAuth(classifyDriverAuth(text));
+    };
+    try {
+      child = spawnFn(codexBin, ["login", "status"], { cwd, env, stdio: ["ignore", "pipe", "pipe"] });
+    } catch {
+      resolveAuth("unknown");
+      return;
+    }
+    timer = setTimeout(() => {
+      try { child.kill("SIGKILL"); } catch { /* already gone */ }
+      finish();
+    }, timeoutMs);
+    timer.unref?.();
+    child.stdout?.on("data", (c) => (text += c));
+    child.stderr?.on("data", (c) => (text += c));
+    child.on("error", finish);
+    child.on("close", finish);
+  });
+}
 
-  // Defaults to the shipped conductor prompt; --prompt-file overrides it for
-  // a smoke test or a one-off.
-  const promptPath = args["prompt-file"]
-    ? resolve(args["prompt-file"])
-    : join(CODEX_DIR, "prompts", "conductor.md");
-  const codeDir = args["code-dir"] ? resolve(args["code-dir"]) : join(projectRoot, "src");
-  const briefPath = args.brief ? resolve(args.brief) : join(projectRoot, "brief.md");
-  if (!args["prompt-file"] && !existsSync(briefPath)) {
-    // Only enforced for the shipped conductor prompt, which reads a brief. A
-    // custom --prompt-file may legitimately not need one (smoke tests).
-    throw new Error(
-      `run: no brief at ${briefPath}. Pass --brief=<path>, or put brief.md at the project root.`,
+function isGitWorkTree(root) {
+  const r = spawnSync("git", ["-C", root, "rev-parse", "--is-inside-work-tree"], {
+    encoding: "utf-8",
+    stdio: ["ignore", "pipe", "ignore"],
+  });
+  return r.status === 0 && String(r.stdout).trim() === "true";
+}
+
+/**
+ * Answers typed at the terminal. Only a line typed after its question is
+ * printed may answer it: the stream is read from the start of the run, and
+ * ask() drops whatever arrived before (a stray Enter during a long turn would
+ * otherwise answer, or abort, a gate the person has not seen).
+ */
+export function createLineReader(stream) {
+  let buf = "";
+  let lines = [];
+  let ended = !stream;
+  let waiter = null;
+  let attached = false;
+  let cancelled = false;
+  const flush = () => {
+    if (!waiter) return;
+    if (cancelled || lines.length || ended) {
+      const w = waiter;
+      waiter = null;
+      w(!cancelled && lines.length ? lines.shift() : null);
+    }
+  };
+  const onData = (chunk) => {
+    buf += String(chunk);
+    let i;
+    while ((i = buf.indexOf("\n")) !== -1) {
+      lines.push(buf.slice(0, i).replace(/\r$/, ""));
+      buf = buf.slice(i + 1);
+    }
+    flush();
+  };
+  const onEnd = () => {
+    if (buf) lines.push(buf);
+    buf = "";
+    ended = true;
+    flush();
+  };
+  const attach = () => {
+    if (attached || !stream) return;
+    attached = true;
+    stream.on("data", onData);
+    stream.on("end", onEnd);
+    stream.on("close", onEnd);
+    // A read from a terminal that has gone away fails with EIO.
+    stream.on("error", onEnd);
+    stream.resume?.();
+  };
+  return {
+    attach,
+    /** Drops earlier input, calls `show` to print the question, then resolves with the next line, or null at end of input. */
+    async ask(show = () => {}) {
+      attach();
+      // Lets input that is already readable arrive before it is dropped.
+      await new Promise((r) => setImmediate(r));
+      const dropped = lines.length + (buf ? 1 : 0);
+      lines = [];
+      buf = "";
+      show(dropped);
+      return new Promise((r) => {
+        waiter = r;
+        flush();
+      });
+    },
+    /** Ends every wait, now and later, with null. */
+    cancel() {
+      cancelled = true;
+      flush();
+    },
+    close() {
+      if (!attached) return;
+      stream.off?.("data", onData);
+      stream.off?.("end", onEnd);
+      stream.off?.("close", onEnd);
+      stream.off?.("error", onEnd);
+      stream.pause?.();
+    },
+  };
+}
+
+function gateQuestion(gate) {
+  return gate === 4
+    ? "Gate 4 — reply accept, or reject: <comments>:"
+    : `Gate ${gate ?? "?"} — reply approved, revise: <comments>, or abort:`;
+}
+
+function lastAgentMessage(events) {
+  for (let i = events.length - 1; i >= 0; i--) {
+    const item = events[i].item;
+    if (events[i].type === "item.completed" && item?.type === "agent_message" && typeof item.text === "string") {
+      return item.text;
+    }
+  }
+  return null;
+}
+
+/** run.end in orchestrator.log speaks the run-log vocabulary: a deliberate stop ends the run as aborted. */
+function runLogOutcome(outcome) {
+  if (outcome === "completed") return "completed";
+  if (outcome === "max_turns") return "incomplete";
+  if (outcome === "interrupted") return "interrupted";
+  if (outcome === "codex_failed" || outcome === "pin_rejected") return "failed";
+  return "aborted";
+}
+
+const REPORT_MJS = resolve(PLUGIN_ROOT, "..", "tools", "report.mjs");
+
+function shellQuote(value) {
+  return `'${String(value).replace(/'/g, "'\\''")}'`;
+}
+
+/** Where a path flag that names a place outside the project (a brief, a prompt, a binary) resolves: the shell's cwd. */
+function fromCwd(cwd, value) {
+  return isAbsolute(value) ? value : resolve(cwd, value);
+}
+
+/** A bare command name is looked up on PATH; anything with a separator is a path. */
+function codexBinFrom(cwd, value) {
+  if (!value) return "codex";
+  return /[\\/]/.test(value) ? fromCwd(cwd, value) : value;
+}
+
+/**
+ * Runs the driver. `deps` replaces the process's own spawn, stdin, stdout,
+ * stderr, clock, env, cwd and signal source (tests pass an EventEmitter),
+ * plus loadPolicy, isGitRepo and killGraceMs. Returns the exit code.
+ */
+export async function main(input = [], deps = {}) {
+  try {
+    const args = Array.isArray(input) ? parseArgs(input) : input;
+    return await runDriver(args, deps);
+  } catch (err) {
+    if (err instanceof UsageError) {
+      writeQuietly(deps.stderr ?? process.stderr, `run: ${err.message}\n`);
+      return 2;
+    }
+    writeQuietly(deps.stderr ?? process.stderr, `run failed: ${err?.message ?? err}\n`);
+    return 1;
+  }
+}
+
+function refuseChange(flag, given, recorded, runId) {
+  if (given !== undefined && recorded !== undefined && recorded !== null && given !== recorded) {
+    throw new UsageError(`--${flag}=${given} differs from run ${runId}'s ${flag} (${recorded}); a resumed run keeps its ${flag}.`);
+  }
+}
+
+async function runDriver(args, deps) {
+  const env = deps.env ?? process.env;
+  const cwd = deps.cwd ?? process.cwd();
+  const stdin = deps.stdin ?? process.stdin;
+  const stdout = deps.stdout ?? process.stdout;
+  const stderr = deps.stderr ?? process.stderr;
+  const spawnFn = deps.spawnFn ?? spawn;
+  const clock = () => (deps.now ? new Date(deps.now()) : new Date()).toISOString();
+  // lib/log.mjs writes to process.stderr whatever stderr is here.
+  for (const s of [stdout, stderr, process.stderr]) ignoreWriteErrors(s);
+  const say = (line = "") => writeQuietly(stdout, `${line}\n`);
+  const warn = (line = "") => writeQuietly(stderr, `${line}\n`);
+
+  const projectRoot = resolve(cwd, args["project-root"] ?? ".");
+  if (args.mode !== undefined && args.mode !== "greenfield" && args.mode !== "brownfield") {
+    throw new UsageError(`--mode=${args.mode} is not one of greenfield, brownfield.`);
+  }
+  if (args["max-turns"] !== undefined && !/^[1-9]\d*$/.test(args["max-turns"])) {
+    throw new UsageError(`--max-turns=${args["max-turns"]} must be a positive whole number.`);
+  }
+  if (args.gates !== undefined && !(args.gates in GATE_MODES)) {
+    throw new UsageError(`--gates=${args.gates} is not one of ${Object.keys(GATE_MODES).join(", ")}.`);
+  }
+  const maxTurns = Number(args["max-turns"] ?? DEFAULT_MAX_TURNS);
+
+  const run = resolveRun({
+    projectRoot,
+    resume: args.resume,
+    runIdFlag: args["run-id"],
+    outputDir: args["output-dir"],
+    mode: args.mode,
+    intent: args.intent,
+    now: deps.now ? new Date(deps.now()) : undefined,
+  });
+  const { runId, runDir } = run;
+  const earlier = run.records;
+  const live = liveDriver(earlier);
+  if (live) {
+    // Two drivers on one thread would interleave their records and run two codex turns at once.
+    throw new UsageError(
+      `run ${runId} is still being driven by process ${live.pid} (invocation ${live.invocation}, started ${live.at}). ` +
+        `Let it finish, or stop it (kill ${live.pid}), then resume.`,
     );
   }
-  const gateMode = args.gates ?? "prompt";
-  if (!(gateMode in GATE_MODES)) {
-    throw new Error(`run: --gates=${gateMode} is not one of ${Object.keys(GATE_MODES).join(", ")}.`);
+  if (latestRunEnd(earlier)?.outcome === "completed") {
+    throw new UsageError(`run ${runId} already completed (${runDir}). Start a new run instead of resuming it.`);
+  }
+  const recorded = runSettings(earlier) ?? {};
+  refuseChange("policy", args.policy, recorded.policy, runId);
+  refuseChange("mode", args.mode, recorded.run_mode, runId);
+  refuseChange("intent", args.intent, recorded.intent, runId);
+
+  const runMode = args.mode ?? recorded.run_mode ?? undefined;
+  const intent = args.intent ?? recorded.intent ?? undefined;
+  const policyName = args.policy ?? recorded.policy ?? DEFAULT_POLICY;
+  const gateMode = args.gates ?? lastGateMode(earlier) ?? "prompt";
+  if (!(gateMode in GATE_MODES)) throw new UsageError(`recorded gate mode '${gateMode}' is not known; pass --gates.`);
+  if (intent && !recorded.intent) {
+    const allowed = validIntents();
+    if (!allowed.includes(intent)) throw new UsageError(`--intent=${intent} is not one of ${allowed.join(", ")}.`);
+    // An intent only means something to the brownfield guide.
+    if (runMode === "greenfield") throw new UsageError("--intent applies to brownfield runs; --mode=greenfield takes none.");
   }
 
-  const mode = args.mode;
-  if (mode && mode !== "greenfield" && mode !== "brownfield") {
-    throw new Error(`run: --mode=${mode} is not one of greenfield, brownfield.`);
+  const codeDir = args["code-dir"]
+    ? resolveCodeDir({ projectRoot, codeDir: args["code-dir"], mode: runMode })
+    : (recorded.code_dir ?? resolveCodeDir({ projectRoot, mode: runMode }));
+  assertRunDirApart({ projectRoot, runId, runDir, codeDir });
+  const briefPath = args.brief ? fromCwd(cwd, args.brief) : (recorded.brief_path ?? join(projectRoot, "brief.md"));
+  const promptPath = args["prompt-file"] ? fromCwd(cwd, args["prompt-file"]) : join(CODEX_DIR, "prompts", "conductor.md");
+  const codexBin = codexBinFrom(cwd, args["codex-bin"]);
+  let threadId = run.resume?.threadId ?? null;
+  if (!threadId && !args["prompt-file"] && !existsSync(briefPath)) {
+    // Only the shipped conductor prompt reads a brief.
+    throw new UsageError(`no brief at ${briefPath}. Pass --brief=<path>, or put brief.md at the project root.`);
   }
-  const intent = args.intent;
-  if (intent) {
-    const allowed = validIntents();
-    if (!allowed.includes(intent)) {
-      throw new Error(`run: --intent=${intent} is not one of ${allowed.join(", ")}.`);
-    }
-    // An intent only means something to the brownfield guide. Accepting it
-    // alongside greenfield would silently do nothing.
-    if (mode === "greenfield") {
-      throw new Error("run: --intent applies to brownfield runs; --mode=greenfield takes none.");
-    }
+
+  if (gateMode === "prompt" && !stdin?.isTTY) {
+    throw new UsageError(
+      "--gates=prompt needs a person at this terminal, and stdin is not one. For an unattended run pass " +
+        "--gates=auto-approve (replays of runs you have reviewed) or --gates=auto-abort (stop at the first gate).",
+    );
   }
+  if (runMode !== "greenfield" && !(deps.isGitRepo ?? isGitWorkTree)(projectRoot)) {
+    throw new UsageError(
+      `${projectRoot} is not a git repository. For a new app in an empty folder pass --mode=greenfield; ` +
+        "brownfield needs git (git init).",
+    );
+  }
+
+  let policy;
+  let pin;
+  try {
+    policy = (deps.loadPolicy ?? loadPolicyFile)(policyName);
+    pin = readPin(policy);
+    // The only point where the pin is reliably enforceable: the stream never says which model answered.
+    assertPinnedInvocation({ model: pin.model, effort: pin.effort }, policy);
+  } catch (err) {
+    throw new UsageError(err?.message ?? String(err));
+  }
+  const gpt = policy.models.find((m) => m.id === "gpt");
+  const codexHome = env.CODEX_HOME ?? join(homedir(), ".codex");
+  const skipGitRepoCheck = runMode === "greenfield";
 
   const renderValues = {
     PLUGIN_ROOT: PLUGIN_ROOT,
     PROJECT_ROOT: projectRoot,
-    OUTPUT_DIR: outputDir,
+    OUTPUT_DIR: runDir,
     CODE_DIR: codeDir,
     BRIEF_PATH: briefPath,
     POLICY: policyName,
     RUN_ID: runId,
     GATE_INSTRUCTION: GATE_MODES[gateMode],
-    HANDOVER: renderHandover({ mode, intent, seed: args.seed }),
+    HANDOVER: renderHandover({ mode: runMode, intent, seed: args.seed }),
   };
-  const promptText = renderPrompt(readFileSync(promptPath, "utf-8"), renderValues);
-
-  const policy = loadPolicyFile(policyName);
-  const pin = readPin(policy);
-  // Fails before spending anything if the driver script and the policy have
-  // drifted apart — the only point where the pin is reliably enforceable
-  // (the stream never echoes back which model actually answered).
-  assertPinnedInvocation({ model: pin.model, effort: pin.effort }, policy);
-
-  const gpt = policy.models.find((m) => m.id === "gpt");
-  const codexArgs = buildCodexArgs({ pin, promptText, cwd: projectRoot });
+  const promptText = threadId ? null : renderPrompt(readFileSync(promptPath, "utf-8"), renderValues);
+  const previous = previousRunEnd(earlier);
+  let nextPrompt = threadId ? resumePrompt(gateMode, previous) : promptText;
+  const argvFor = (prompt, resumeThreadId) =>
+    buildCodexArgs({ pin, promptText: prompt, cwd: projectRoot, codexHome, resumeThreadId, skipGitRepoCheck });
 
   if (args["dry-run"]) {
-    // Everything above this line is the part worth checking without paying
-    // for a turn: pins resolved, argv built, artifacts directory chosen.
-    console.log(JSON.stringify({ policy: policyName, pin, run_id: runId, output_dir: outputDir, argv: codexArgs }, null, 2));
+    say(
+      JSON.stringify(
+        { policy: policyName, pin, run_id: runId, output_dir: runDir, code_dir: codeDir, gates: gateMode, argv: argvFor(nextPrompt, threadId) },
+        null,
+        2,
+      ),
+    );
     return 0;
   }
 
-  mkdirSync(outputDir, { recursive: true });
-  renderSkills(outputDir, renderValues);
-  const started = new Date().toISOString();
-  // `--codex-bin` covers machines where codex is not globally installed —
-  // an npx wrapper, a version-managed install, a CI image that vendors it
-  // somewhere specific. Without it the driver dies with a bare ENOENT that
-  // says nothing about what to do next.
-  const codexBin = args["codex-bin"] ?? "codex";
-  const maxTurns = Number(args["max-turns"] ?? DEFAULT_MAX_TURNS);
-  if (!Number.isInteger(maxTurns) || maxTurns < 1) {
-    throw new Error(`run: --max-turns=${args["max-turns"]} must be a positive integer.`);
-  }
-
-  // One `codex exec` turn does not finish a real project — it ends when the
-  // session hits its context ceiling, with exit 0 and no error. Resume the
-  // same session until the pipeline writes SUMMARY.md, or the cap is hit.
-  //
-  // `--resume=<id>` picks up a session from an earlier driver invocation
-  // instead of starting a new one. Without it, continuing an interrupted run
-  // means a fresh session that has to re-read every artifact to work out what
-  // is already done — correct, but it pays for context the old session still
-  // holds.
-  const resumeFrom = args.resume ?? null;
-  let result = await spawnCodex(
-    resumeFrom
-      ? buildCodexArgs({ pin, promptText: RESUME_PROMPT, cwd: projectRoot, resumeThreadId: resumeFrom })
-      : codexArgs,
-    { cwd: projectRoot, codexBin },
-  );
-  if (result.status === null && /ENOENT/.test(result.stderr ?? "")) {
-    throw new Error(
-      `run: could not launch '${codexBin}'. Install it (npm install -g @openai/codex), ` +
-        `or point at it explicitly with --codex-bin=<path>.`,
+  mkdirSync(runDir, { recursive: true });
+  // A resumed run keeps the playbooks its session already read.
+  if (!run.resume || run.resume.foreignThread || !existsSync(join(runDir, "skills"))) renderSkills(runDir, renderValues);
+  if (run.resume?.foreignThread) {
+    warn(
+      `run ${runId}: no run folder under ${join(projectRoot, ".sdlc", "runs")} records thread ${threadId}; its earlier ` +
+        `turns' cost is not in ${runDir}, and the first resumed turn is priced at the thread's whole running total ` +
+        "(flagged baseline_unknown). If that run used --output-dir, stop this one and pass the same --output-dir again.",
     );
   }
-
-  let stdout = result.stdout;
-  // A resumed stream may not re-emit thread.started, so fall back to the id
-  // we resumed from — otherwise the loop cannot resume a second time.
-  const threadId = threadIdFrom(result.stdout) ?? resumeFrom;
-  let invocations = 1;
-  const telemetryPath = join(outputDir, "telemetry.jsonl");
-  let capStop = null;
-
-  while (
-    invocations < maxTurns &&
-    result.status === 0 &&
-    threadId &&
-    !runIsComplete(outputDir) &&
-    !(capStop = costCapStop(policy, telemetryPath))
-  ) {
-    console.log(
-      `run ${runId}: session incomplete after invocation ${invocations} ` +
-        `(no SUMMARY.md yet) — resuming ${threadId}`,
-    );
-    result = await spawnCodex(
-      buildCodexArgs({ pin, promptText: RESUME_PROMPT, cwd: projectRoot, resumeThreadId: threadId }),
-      { cwd: projectRoot, codexBin },
-    );
-    // Concatenated, so cost and event accounting cover every turn — the
-    // modeled-cost reader sums each turn.completed it finds.
-    stdout += result.stdout;
-    invocations += 1;
-  }
-
-  if (!runIsComplete(outputDir)) {
-    console.log(
-      `run ${runId}: stopped after ${invocations} invocation(s) without SUMMARY.md — ` +
-        (capStop
-          ? `cost cap reached. ${capStop}`
-          : (invocations >= maxTurns
-              ? `hit --max-turns=${maxTurns}.`
-              : `codex exited ${result.status}.`) +
-            " Artifacts so far are in the output directory; re-run to continue."),
-    );
-  }
-
-  const jsonlPath = join(outputDir, "driver-events.jsonl");
-  writeFileSync(jsonlPath, stdout, "utf-8");
-
-  const { events, rejection, modeled } = buildRunArtifacts({
-    // The accumulated stream across every resumed turn, not just the last —
-    // using result.stdout here would silently drop the cost and events of
-    // every turn but the final one.
-    jsonl: stdout,
-    pin,
+  configureSinks({ runLogPath: join(runDir, "orchestrator.log") });
+  const driverAuth = await readDriverAuth({ spawnFn, codexBin, cwd: projectRoot, env });
+  const driver = {
     pricing: gpt.pricing,
-    passId: runId,
+    model: pin.model,
+    policyName: policy.name ?? policyName,
+    policyVersion: policy.version ?? 1,
+    pin,
+    sandbox: SANDBOX_MODE,
+    approvalPolicy: APPROVAL_POLICY,
+    auth: driverAuth,
+  };
+  const telemetryPath = join(runDir, "telemetry.jsonl");
+  const gatesPath = join(runDir, "gates.jsonl");
+  const stderrLogPath = join(runDir, "driver-stderr.log");
+  const modeledPath = join(runDir, "driver-cost-modeled.jsonl");
+  const runStartedAtMs = Date.parse(recorded.at ?? "") || Date.now();
+
+  const tracker = new DriverTurnTracker();
+  for (const r of earlier) tracker.push(r);
+  const record = (rec) => {
+    appendRecord(runDir, rec);
+    for (const turn of tracker.push({ v: 1, ...rec })) {
+      if (turn.status !== "complete") continue;
+      appendFileSync(modeledPath, JSON.stringify(driverCostRow(turn, { runId, ...driver })) + "\n");
+    }
+  };
+
+  log("info", "run.start", {
+    run_id: runId,
+    mode: runMode,
+    intent,
+    policy: policyName,
+    gates: gateMode,
+    resume: threadId ?? undefined,
   });
 
-  // Modeled driver cost goes in its own file, labelled, never mixed into the
-  // bridge's own vendor-metered telemetry.jsonl (D4).
-  const modeledPath = join(outputDir, "driver-cost-modeled.jsonl");
-  writeFileSync(modeledPath, modeled.map((e) => JSON.stringify(e)).join("\n") + (modeled.length ? "\n" : ""), "utf-8");
-
-  const totalModeled = modeled.reduce((sum, e) => sum + e.cost_usd, 0);
-  const manifest = {
-    run_id: runId,
-    policy: policyName,
-    // Recorded so a reader can tell whether a person actually reviewed the
-    // gates or the run approved itself.
-    gates: gateMode,
-    pin: { ...pin, sandbox: SANDBOX_MODE, approval_policy: APPROVAL_POLICY },
-    started_at: started,
-    ended_at: new Date().toISOString(),
-    codex_exit_status: result.status,
-    driver_turns: modeled.length,
-    // How many times the driver invoked codex. Distinct from driver_turns,
-    // which counts model turns inside those invocations — a resumed run has
-    // more of both, and only this one says how often the session had to be
-    // picked back up.
-    codex_invocations: invocations,
-    // Whether the pipeline actually reached its final phase. A run that ran
-    // out of turns still exits 0 with useful artifacts, so this is the field
-    // that distinguishes "finished" from "stopped partway".
-    completed: runIsComplete(outputDir),
-    cost_cap_stop: capStop,
-    driver_cost_usd_modeled: Math.round(totalModeled * 1e6) / 1e6,
-    pin_rejection: rejection,
-    events_captured: events.length,
+  const signals = deps.signals ?? process;
+  const graceMs = deps.killGraceMs ?? KILL_GRACE_MS;
+  let stopping = null;
+  let child = null;
+  let killTimer = null;
+  const lines = createLineReader(stdin);
+  if (gateMode === "prompt") lines.attach();
+  const childAlive = () => child && child.pid !== undefined && child.exitCode === null && child.signalCode === null;
+  const killGroup = (sig) => {
+    if (!childAlive()) return;
+    try {
+      if (process.platform === "win32") child.kill(sig);
+      else process.kill(-child.pid, sig);
+    } catch {
+      try { child.kill(sig); } catch { /* already gone */ }
+    }
   };
-  writeFileSync(join(outputDir, "driver-manifest.json"), JSON.stringify(manifest, null, 2) + "\n", "utf-8");
+  const onSignal = (sig) => {
+    if (stopping) {
+      killGroup("SIGKILL");
+      return;
+    }
+    stopping = sig;
+    // Forward first: after SIGHUP the terminal is gone, and nothing printed here can reach it.
+    killGroup(sig);
+    killTimer = setTimeout(() => killGroup("SIGKILL"), graceMs);
+    killTimer.unref?.();
+    lines.cancel();
+    warn(`run ${runId}: ${sig} received — stopping codex and writing the run record.`);
+  };
+  const handlers = FORWARDED_SIGNALS.map((sig) => [sig, () => onSignal(sig)]);
+  for (const [sig, handler] of handlers) signals.on(sig, handler);
+  const onExit = () => killGroup("SIGKILL");
+  process.on("exit", onExit);
 
-  if (rejection) {
-    console.error(`run: the codex CLI rejected the pinned model or effort — ${rejection}`);
-    return 1;
+  let invocation = invocationCount(earlier);
+  let resumeAfter = previous?.outcome ?? null;
+  let gateAnswer = false;
+  /** Set when the person answered a gate with abort: the run ends there whether or not the conductor records it. */
+  let typedAbort = null;
+  let turnsUsed = 0;
+  let outcome = null;
+  let reason = null;
+  let lastEnd = null;
+  const recordGateAbort = (gate, note) => {
+    try {
+      appendFileSync(gatesPath, JSON.stringify({ gate, decision: "aborted", note, recorded_by: "run.mjs" }) + "\n");
+    } catch { /* the run record still says why */ }
+  };
+
+  try {
+    for (;;) {
+      if (stopping) {
+        outcome = "interrupted";
+        reason = `the driver received ${stopping}`;
+        break;
+      }
+      const capBefore = costCapStop(policy, telemetryPath);
+      if (capBefore) {
+        outcome = "cost_cap";
+        reason = capBefore;
+        break;
+      }
+
+      invocation += 1;
+      if (!gateAnswer) turnsUsed += 1;
+      const mode = threadId ? "resume" : "fresh";
+      const startedAt = clock();
+      const startedAtMs = Date.parse(startedAt);
+      const gatesBefore = countLines(gatesPath);
+      const evidenceBefore = snapshotStopEvidence(runDir, projectRoot);
+      const events = [];
+      let stderrPending = "";
+      let stderrTail = "";
+      let headerWritten = false;
+      const stderrLine = (line) => {
+        const clean = redactText(line);
+        try { appendFileSync(stderrLogPath, `${clean}\n`); } catch { /* the console copy still shows it */ }
+        warn(`codex[${invocation}]: ${clean}`);
+        stderrTail = `${stderrTail}${clean}\n`.slice(-STDERR_TAIL_MAX);
+      };
+
+      const result = await spawnCodex(argvFor(nextPrompt, threadId), {
+        spawnFn,
+        cwd: projectRoot,
+        env,
+        codexBin,
+        invocation,
+        resumeThreadId: threadId,
+        clock,
+        onSpawned: (c) => {
+          child = c;
+          const pid = c?.pid ?? null;
+          record({
+            kind: "invocation_start",
+            run_id: runId,
+            invocation,
+            at: startedAt,
+            mode,
+            resume_thread_id: threadId,
+            resume_after: resumeAfter,
+            policy: policyName,
+            pin: { model: pin.model, effort: pin.effort },
+            gates: gateMode,
+            max_turns: maxTurns,
+            codex_bin: codexBin,
+            cwd: projectRoot,
+            pid,
+            pgid: pid !== null && process.platform !== "win32" ? pid : null,
+            driver_pid: process.pid,
+            run_mode: runMode ?? null,
+            intent: intent ?? null,
+            code_dir: codeDir,
+            brief_path: briefPath,
+            gate_answer: gateAnswer,
+          });
+          if (stopping) killGroup(stopping);
+        },
+        onRecord: (rec) => {
+          record(rec);
+          if (rec.kind === "codex") events.push({ ...rec.event, invocation });
+        },
+        onStderr: (chunk) => {
+          if (!headerWritten) {
+            headerWritten = true;
+            const how = mode === "resume" ? `resume ${threadId}` : "fresh";
+            try { appendFileSync(stderrLogPath, `--- invocation ${invocation} ${startedAt} ${how} ---\n`); } catch { /* see above */ }
+          }
+          stderrPending += chunk;
+          let i;
+          while ((i = stderrPending.indexOf("\n")) !== -1) {
+            stderrLine(stderrPending.slice(0, i));
+            stderrPending = stderrPending.slice(i + 1);
+          }
+        },
+      });
+      if (stderrPending) stderrLine(stderrPending);
+      child = null;
+      clearTimeout(killTimer);
+      resumeAfter = null;
+      if (result.threadId) threadId = result.threadId;
+      lastEnd = {
+        kind: "invocation_end",
+        invocation,
+        at: clock(),
+        thread_id: threadId,
+        exit_status: result.exitStatus,
+        // A codex that handles the forwarded signal exits with a code; the record still names the signal.
+        signal: result.signal ?? (stopping && !result.spawnError ? stopping : null),
+        ended_by: result.spawnError ? "spawn_error" : stopping ? "driver_signal" : "exit",
+        turns: result.turns,
+        incomplete: result.turns.started > result.turns.completed,
+        stderr_tail: stderrTail,
+      };
+      record(lastEnd);
+      regenerateDriverFiles({ runDir, runId, driver });
+
+      if (stopping) {
+        outcome = "interrupted";
+        reason = `the driver received ${stopping}`;
+        break;
+      }
+
+      const stop = result.spawnError
+        ? null
+        : stopCheck({
+            runDir,
+            projectRoot,
+            runId,
+            gateMode,
+            startedAtMs,
+            gatesLinesBefore: gatesBefore,
+            runStartedAtMs,
+            events,
+            before: evidenceBefore,
+          });
+      if (typedAbort && stop?.outcome !== "aborted") {
+        recordGateAbort(typedAbort.gate, "the person answered abort at the terminal");
+        outcome = "aborted";
+        reason = `gate ${typedAbort.gate ?? "?"} aborted at the terminal`;
+        break;
+      }
+      typedAbort = null;
+      if (result.spawnError) {
+        outcome = "codex_failed";
+        reason = /ENOENT/.test(result.spawnError)
+          ? `could not launch '${codexBin}'. Install it (npm install -g @openai/codex), or point at it with --codex-bin=<path>.`
+          : `codex failed to start: ${result.spawnError}`;
+        break;
+      }
+
+      const waiting = stop?.outcome === "gate_pending" || stop?.outcome === "question_pending";
+      if (!stop || waiting) {
+        // Before a waiting gate too: a run over its cap ends here instead of asking for an answer it cannot act on.
+        const capAfter = costCapStop(policy, telemetryPath);
+        if (capAfter) {
+          outcome = "cost_cap";
+          reason = !waiting
+            ? capAfter
+            : `${capAfter} ${stop.outcome === "gate_pending" ? `Gate ${stop.gate ?? "?"}` : "The conductor's question"} is still waiting for an answer.`;
+          break;
+        }
+      }
+      if (waiting) {
+        const isGate = stop.outcome === "gate_pending";
+        if (!threadId) {
+          outcome = "codex_failed";
+          reason = `${isGate ? "a gate" : "a question"} is waiting, but codex reported no thread id to resume with the answer`;
+          break;
+        }
+        const text = lastAgentMessage(events);
+        let answer = await lines.ask((dropped) => {
+          say("");
+          say(isGate ? `── Gate ${stop.gate ?? "?"} is waiting for your answer ──` : "── The conductor has a question for you ──");
+          if (text) say(text);
+          else if (!isGate && stop.question) say(stop.question);
+          if (dropped) say(`(ignored ${dropped} line${dropped === 1 ? "" : "s"} typed before this question)`);
+          writeQuietly(stdout, `${isGate ? gateQuestion(stop.gate) : "Your answer:"} `);
+        });
+        if (answer === null && !stopping) await new Promise((r) => setTimeout(r, END_OF_INPUT_SETTLE_MS));
+        if (stopping) {
+          outcome = "interrupted";
+          reason = `the driver received ${stopping}`;
+          break;
+        }
+        answer = answer?.trim() ?? "";
+        if (!answer) {
+          outcome = "aborted";
+          if (!isGate) {
+            reason = "no answer to the conductor's question";
+            break;
+          }
+          reason = `no answer at gate ${stop.gate ?? "?"}`;
+          recordGateAbort(stop.gate, "no answer at the terminal");
+          break;
+        }
+        nextPrompt = isGate ? gateAnswerPrompt(stop.gate, answer, gateMode) : questionAnswerPrompt(answer, gateMode);
+        typedAbort = isGate && /^abort/i.test(answer) ? { gate: stop.gate } : null;
+        gateAnswer = true;
+        continue;
+      }
+      if (stop) {
+        outcome = stop.outcome;
+        reason = stop.reason;
+        break;
+      }
+      if (result.exitStatus !== 0) {
+        outcome = "codex_failed";
+        reason = `codex exited ${result.exitStatus ?? result.signal}`;
+        break;
+      }
+      if (!threadId) {
+        outcome = "codex_failed";
+        reason = "codex reported no thread id, so the session cannot be resumed";
+        break;
+      }
+      if (turnsUsed >= maxTurns) {
+        outcome = "max_turns";
+        reason = `--max-turns=${maxTurns} reached before the run finished`;
+        break;
+      }
+      say(`run ${runId}: invocation ${invocation} ended before the run finished — resuming ${threadId} (${turnsUsed}/${maxTurns})`);
+      nextPrompt = resumePrompt(gateMode);
+      gateAnswer = false;
+    }
+
+    const exitCode = outcomeExitCode(outcome, stopping);
+    record({
+      kind: "run_end",
+      invocation,
+      at: clock(),
+      outcome,
+      deliberate: outcome === "completed" ? null : isDeliberate(outcome),
+      reason,
+      exit_code: exitCode,
+      // A run stopped before its first spawn has no invocation_start; --resume reads its settings from here.
+      run_id: runId,
+      policy: policyName,
+      gates: gateMode,
+      run_mode: runMode ?? null,
+      intent: intent ?? null,
+      code_dir: codeDir,
+      brief_path: briefPath,
+    });
+    const { driverManifest: m } = await finalizeRun({
+      projectRoot,
+      runDir,
+      runId,
+      mode: runMode ?? null,
+      outcome,
+      deliberate: isDeliberate(outcome),
+      reason,
+      policyName,
+      codeDir,
+      records: readRunRecords(runDir),
+      driver,
+    });
+    log(outcome === "completed" ? "info" : "warn", "run.end", {
+      run_id: runId,
+      outcome: runLogOutcome(outcome),
+      driver_outcome: outcome,
+      reason,
+      exit_code: exitCode,
+    });
+
+    say("");
+    say(`run ${runId}: ${outcome} — ${reason}`);
+    if (outcome === "codex_failed" && lastEnd?.stderr_tail) {
+      warn("  last lines codex wrote to stderr:");
+      for (const line of lastEnd.stderr_tail.trimEnd().split("\n").slice(-10)) warn(`    ${line}`);
+      warn(`  full log: ${stderrLogPath}`);
+    }
+    if (m.pin_rejection) warn(`  the codex CLI rejected the pinned model or effort — ${m.pin_rejection}`);
+    for (const w of m.codex_warnings ?? []) warn(`  codex warning: ${w}`);
+    const atLeast = m.driver_turns_incomplete ? "at least " : "";
+    const incompleteNote = m.driver_turns_incomplete ? ` (${m.driver_turns_incomplete} incomplete: cost not known, not $0)` : "";
+    say(`  invocations ${m.codex_invocations}, turns ${m.driver_turns}${incompleteNote}, driver cost (modeled) ${atLeast}$${m.driver_cost_usd_modeled}`);
+    say(`  run folder:  ${runDir}`);
+    if (existsSync(REPORT_MJS)) say(`  Cost report: node ${shellQuote(REPORT_MJS)} ${shellQuote(runDir)}`);
+    if (outcome !== "completed") {
+      const outputDir = runDir === runDirFor(projectRoot, runId) ? "" : ` --output-dir=${shellQuote(runDir)}`;
+      say(`  Continue:    node ${shellQuote(join(CODEX_DIR, "run.mjs"))} --resume=${runId} --project-root=${shellQuote(projectRoot)}${outputDir}`);
+    }
+    return exitCode;
+  } finally {
+    killGroup("SIGKILL");
+    for (const [sig, handler] of handlers) (signals.off ?? signals.removeListener).call(signals, sig, handler);
+    process.off("exit", onExit);
+    clearTimeout(killTimer);
+    lines.close();
   }
-  console.log(
-    `run ${runId} finished: exit=${result.status} turns=${modeled.length} ` +
-      `driver_cost_usd(modeled)=${manifest.driver_cost_usd_modeled} artifacts=${outputDir}`,
-  );
-  // A run whose cost nobody reads has not demonstrated anything. Name the
-  // command rather than printing the report inline — the report is long, and
-  // stdout here is a summary line the caller may be parsing.
-  console.log(`\n  Cost report:  node tools/report.mjs '${outputDir}'`);
-  console.log(`                add --markdown to paste it somewhere.`);
-  return result.status === 0 && !capStop ? 0 : 1;
 }
 
 if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
-  try {
-    process.exit(await main(parseArgs(process.argv.slice(2))));
-  } catch (err) {
-    console.error(`run failed: ${err?.message ?? err}`);
-    process.exit(1);
-  }
+  ignoreWriteErrors(process.stdout);
+  ignoreWriteErrors(process.stderr);
+  process.exit(await main(process.argv.slice(2)));
 }

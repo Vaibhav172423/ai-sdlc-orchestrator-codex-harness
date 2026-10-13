@@ -278,16 +278,10 @@ test("the greenfield skill's inline brief sections match docs/brief-template.md"
   }
 });
 
-test("run.mjs flags are documented in the --name=value form it actually parses", () => {
-  // run.mjs's parseArgs splits on the first '=' and nothing else, so a
-  // documented `--intent bugfix` sets `intent: true` and drops the value —
-  // no error, flag silently ignored. The brownfield guide shipped exactly
-  // that until it was checked.
-  //
-  // Scoped to run.mjs on purpose: verify-setup.mjs and setup-policy.mjs
-  // deliberately accept BOTH forms (setup-policy carries a comment about a
-  // prompt that used the space form and silently got null), so the same
-  // spelling is correct there and wrong here.
+test("run.mjs flags are documented in the --name=value form", () => {
+  // run.mjs accepts both forms, but the skills keep one spelling so a
+  // pasted command reads the same everywhere and a value that starts with
+  // `--` cannot be mistaken for the next flag.
   const valueFlags = ["--brief", "--project-root", "--output-dir", "--policy", "--gates",
     "--code-dir", "--run-id", "--mode", "--intent", "--seed", "--codex-bin", "--prompt-file"];
 
@@ -298,7 +292,7 @@ test("run.mjs flags are documented in the --name=value form it actually parses",
       for (const flag of valueFlags) {
         assert.doesNotMatch(
           block, new RegExp(`\\${flag}\\s+(?!\\\\)[<\\w'"]`),
-          `${name}: '${flag} value' is not parsed by run.mjs — write '${flag}=value'`,
+          `${name}: write '${flag}=value', the form every skill uses`,
         );
       }
     }

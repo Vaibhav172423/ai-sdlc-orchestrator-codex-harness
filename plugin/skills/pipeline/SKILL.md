@@ -251,8 +251,11 @@ verdict as final.
 
 **Greenfield mode.** Bootstrap the env fixture first — this is required for any app whose codegen produced a validating `ConfigModule` (or equivalent) at boot. The codegen phase is contractually required (see Phase 5 acceptance criteria and the senior review's env-fixture check) to emit `.env.example` (docs) and `.env.test` (fixture values that satisfy the declared schema).
 
+Run it from the code directory, not the run folder — `<output_dir>` holds the run record and has
+no `package.json`.
+
 ```bash
-cd <output_dir>
+cd <code_dir>
 # Only copy .env.test → .env when neither exists. Never overwrite an existing .env —
 # a real .env holds real secrets and belongs to the user.
 if [ -f .env.test ] && [ ! -f .env ]; then cp .env.test <that folder, absolute>/.env; fi
@@ -271,7 +274,8 @@ cd <repo-root>   # NOT <output_dir> — the app-under-test is the user's actual 
 If codegen introduced new required env vars:
 1. Do not write `.env.example` or any other `.env*` file: the write hook refuses every one of them while the run's contract is live, whatever the allowlist says.
 2. Print the list of new keys to the operator with a mini-gate: *"Codegen introduced N new required env vars: X, Y, Z. Add them to `.env.example` and populate them in your .env before Phase 7 continues, or say `skip` to run Phase 7 anyway (tests requiring these keys will fail)."*
-3. Wait for the user's response before invoking the test command.
+3. Wait for the user's response before invoking the test command. On the `run.mjs` route, put the
+   question to them the way your gate instruction says (under `--gates=prompt`, `question.json`).
 
 The test command in brownfield is `baseline.test_command` (confirmed at Gate 0), not hardcoded `npm test`. Working directory is the repo root (not `<output_dir>`); in monorepos, use the per-package scope from `baseline.monorepo.packages[].test_command` for whichever package the changed files belong to.
 
@@ -304,7 +308,7 @@ Phase 6.
 
 Read all events in `<telemetry_path>`. Build rollup manifest using the `buildManifest` shape (see `plugin/mcp/model-dispatch/src/telemetry.ts`). Write `<output_dir>/manifest.json`. Also write a brief `<output_dir>/SUMMARY.md` with: total cost of dispatched work, breakdown, links to key artifacts, and this line verbatim under the total:
 
-> Conductor (driver) cost is not included. A run started with `run.mjs` models it after the run into `driver-cost-modeled.jsonl`; a run started from an interactive `$mmo-codex:*` skill does not measure it at all.
+> Conductor (driver) cost is not included. A run started with `run.mjs` models it into `driver-cost-modeled.jsonl` as each turn completes; a run started from an interactive `$mmo-codex:*` skill does not measure it at all.
 
 Do not try to account for the driver's cost yourself — see the telemetry contract below.
 
@@ -380,11 +384,12 @@ with `phase: <name>, task_type: "skipped"` so downstream summaries stay complete
 
 ## HITL gate prompt templates
 
-**Gate delivery.** You print the gate block yourself and wait for the user's reply. Every gate is
-a fenced `> ⏸ **HITL Gate <N> — <Title>**` block (templates below), printed verbatim. **Persist
-the gate-pending state to `.sdlc/local/state.json` before printing** — if the session dies
-mid-gate, session-hydrate detects a non-terminal state and re-prompts on the next
-`$mmo-codex:brownfield` invocation. No new command needed.
+**Gate delivery.** You print the gate block yourself, then follow the gate instruction you were
+given: wait for the user's reply in a session, or, on the `run.mjs` route, record the gate in
+`gates.jsonl` as that instruction says and end your turn. Never answer a gate on the user's
+behalf. Every gate is a fenced `> ⏸ **HITL Gate <N> — <Title>**` block (templates below), printed
+verbatim. **Persist the gate-pending state to `<output_dir>/state.json` before printing**, so a
+session that dies mid-gate leaves a record of the open gate in the run's own folder.
 
 **Gate record.** Once the user's reply settles a gate, append one line to
 `<output_dir>/gates.jsonl` (for brownfield, `.sdlc/runs/<run-id>/gates.jsonl`) before you act on it:
@@ -402,7 +407,7 @@ refuses while it holds neither an approved Gate 4 nor an abort.
 
 > ⏸ **HITL Gate 0 — Discovery Confirmation**
 >
-> I read your repo and produced `<sdlc_root>/runs/<run-id>/discovery.md`. Confirm:
+> I read your repo and produced `<output_dir>/discovery.md`. Confirm:
 >
 > - **Stack:** `<top-detected stacks>` — correct? add/override?
 > - **Test command:** `<detected>` — enter to accept, or paste the command.
@@ -529,8 +534,8 @@ Event shape:
 }
 ```
 
-**Your own loop cost is recorded for you only on the `run.mjs` route.** There, the driver reads the
-`codex exec --json` event stream after the run and derives the conductor's token usage from it, writing those events with
+**Your own loop cost is recorded for you only on the `run.mjs` route.** There, the driver records the
+`codex exec --json` event stream as it arrives and derives the conductor's token usage from it, writing those events with
 `provenance: "modeled"` — modeled from token counts at the pinned rates, because this runtime
 reports no wallet figures. On the interactive skill route nothing reads that stream, so the
 conductor's cost goes unmeasured — say so in `SUMMARY.md` rather than estimating it. Never invent token counts or cost for your own work: a guessed figure

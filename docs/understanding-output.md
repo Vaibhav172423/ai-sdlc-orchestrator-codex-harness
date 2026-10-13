@@ -2,13 +2,13 @@
 
 > **For:** reading the cost report and the raw files a run leaves behind. **Also see:** [methodology.md](methodology.md) · [running.md](running.md) · [architecture.md](architecture.md)
 
-Everything a run produces lands under the output directory — `.sdlc/` unless `--output-dir` says otherwise. Nothing is uploaded off the machine.
+Each run's files land in its own folder, `.sdlc/runs/<run-id>/`. Project-level state stays in `.sdlc/`. Nothing is uploaded off the machine.
 
-Render the report:
+Render the report for one run:
 
 ```bash
-node tools/report.mjs .sdlc              # terminal
-node tools/report.mjs .sdlc --markdown   # pasteable
+node tools/report.mjs .sdlc/runs/<run-id>              # terminal
+node tools/report.mjs .sdlc/runs/<run-id> --markdown   # pasteable
 ```
 
 ## The report, section by section
@@ -38,6 +38,8 @@ The `Prov` column is the provenance of that phase's events:
 
 The conductor's own token consumption, one row per `codex exec` turn.
 
+codex reports each turn's usage as the thread's running total, and `codex exec resume` carries that total into the next invocation, so each turn is priced as the difference from the previous total. A turn that failed or was cut off mid-way is recorded as incomplete: its cost is unknown, not $0. Tokens of a failed turn show up in the next completed turn's running total.
+
 This is a separate section, not a line in the table above, and the two totals are never added together. Codex reports token counts but no money at all, so this figure is derived rather than measured — and a driver running on a ChatGPT seat may have cost nothing in money. A combined number would be neither metered nor modeled. [methodology.md](methodology.md) is the long form.
 
 ### Packets that hit the output cap
@@ -54,16 +56,29 @@ The provenance key, a per-provenance count of dispatched events, and a note if t
 
 ## The raw files
 
+In each run's folder, `.sdlc/runs/<run-id>/`:
+
 | File | Contents |
 |---|---|
 | `telemetry.jsonl` | One JSON line per model call. The source of everything in the report. |
 | `manifest.json` | Rollup of the telemetry — totals, per-phase, per-module, per-task-type — plus the run's artifacts. |
-| `SUMMARY.md` | Written only by the final phase, which is what makes it the completion signal the driver watches for. |
-| `runs/<run-id>/provenance.json` | Every file the run touched, with its pre-run hash. The input `$mmo-codex:revert` reads. |
-| `local/guard-decisions.jsonl` | One line per hooked call while a brownfield contract binds, allow or deny, with the reason. Outside a run, only refusals, and only where `.sdlc/` already exists. |
-| `local/state.json` | The pipeline's current state, including a gate that was pending when a session died. |
-| `gates.jsonl` | One line per gate decision, including `auto-approved` ones, so an unattended run leaves the same audit trail as an attended one. |
+| `SUMMARY.md` | Written by the final phase. A run counts as completed only once this exists and Gate 4 is accepted. |
+| `gates.jsonl` | One line per gate decision, including `auto-approved` and `pending` ones, so an unattended run leaves the same audit trail as an attended one. When you abort a relayed gate (or give no answer) and the conductor does not record it, `run.mjs` adds the `aborted` line with `"recorded_by": "run.mjs"`. |
+| `state.json` | The gate that is waiting for an answer, written before the gate is printed. |
+| `provenance.json` | Brownfield: every file the run touched, with its pre-run hash. The input `$mmo-codex:revert` reads. |
+| `orchestrator.log` | `run.start` and `run.end` lines, then the bridge's log of each dispatch. |
+| `driver-events.jsonl` | `run.mjs` runs: one JSON line per record. `invocation_start` and `invocation_end` bracket each `codex exec`, `codex` lines carry each raw event with its arrival time, and `run_end` names the outcome and exit code. Written as events arrive. |
+| `driver-stderr.log` | `run.mjs` runs: what codex wrote to stderr, with a header line per invocation. |
+| `driver-cost-modeled.jsonl` | `run.mjs` runs: one modeled row per conductor turn, `status` `complete` or `incomplete`. |
+| `driver-manifest.json` | `run.mjs` runs: the pins, how the run ended (`outcome`, `exit_code`), incomplete turns, codex warnings, the thread ids, and the modeled driver cost. |
 | `delegation/` | Agent-path runs only. Per delegated packet: the task brief, the worker's usage sidecar, and a receipt. |
+
+In `.sdlc/`, shared by every run in the project:
+
+| File | Contents |
+|---|---|
+| `local/guard-decisions.jsonl` | One line per hooked call while a brownfield contract binds, allow or deny, with the reason. Outside a run, only refusals, and only where `.sdlc/` already exists. |
+| `local/write-contract.json` | The brownfield write contract frozen at Gate 0. |
 
 ### `telemetry.jsonl`
 
@@ -84,7 +99,7 @@ One event per line. The fields that matter when reading by hand:
 
 ### `provenance.json`
 
-Written per run under `runs/<run-id>/`. For each touched file: path, whether it was tracked and committed before the run, and its pre-run hash. `$mmo-codex:revert` restores tracked files with git and untracked ones from a per-run backup, and refuses when a later run has touched the same file — printing a three-way diff instead of guessing.
+Written per run in `.sdlc/runs/<run-id>/`. For each touched file: path, whether it was tracked and committed before the run, and its pre-run hash. `$mmo-codex:revert` restores tracked files with git and untracked ones from a per-run backup, and refuses when a later run has touched the same file — printing a three-way diff instead of guessing.
 
 ### `guard-decisions.jsonl`
 
@@ -118,4 +133,4 @@ string says on the row itself.
 
 ## What is not here
 
-No transcript of the conductor session is stored in the output directory — codex keeps its own session history under `~/.codex/`. If a run needs explaining after the fact, `telemetry.jsonl` plus `gates.jsonl` plus `guard-decisions.jsonl` is the audit trail this harness guarantees.
+No transcript of the conductor session is stored in the run folder beyond codex's event stream in `driver-events.jsonl` on `run.mjs` runs — codex keeps its own session history under `~/.codex/`. If a run needs explaining after the fact, `telemetry.jsonl` plus `gates.jsonl` plus `guard-decisions.jsonl` is the audit trail this harness guarantees.

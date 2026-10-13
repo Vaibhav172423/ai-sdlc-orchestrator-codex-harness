@@ -87,16 +87,19 @@ The skill asks for what it needs, checks the setup before spending anything, and
 gate for your answer.
 
 **Headless — from a shell.** The driver spawns its own conductor and exits when the run
-finishes:
+ends:
 
 ```bash
 node plugin/codex/run.mjs \
   --brief='path/to/brief.md' \
   --project-root=. \
-  --output-dir=.sdlc \
+  --mode=greenfield \
+  --gates=auto-approve \
   --policy=gpt-plus-flash \
   --run-id=pass1
 ```
+
+The run's record lands in `.sdlc/runs/pass1/`.
 
 ### Which to use
 
@@ -110,7 +113,7 @@ the driver from inside a session would bill the same work twice.
 ## Start with `--dry-run`
 
 ```bash
-node plugin/codex/run.mjs --brief='path/to/brief.md' --output-dir=.sdlc --dry-run
+node plugin/codex/run.mjs --brief='path/to/brief.md' --mode=greenfield --gates=auto-approve --dry-run
 ```
 
 This renders the conductor prompt and the exact `codex exec` argv, prints them, and exits without
@@ -123,21 +126,26 @@ shaped correctly. Drop the flag to run for real.
 |---|---|---|
 | `--brief=<path>` | — | The brief the run builds from. Greenfield takes a project brief; brownfield takes an intent brief. |
 | `--project-root=<path>` | current directory | The repo the run works against. |
-| `--output-dir=<path>` | `<project-root>/.sdlc` | Where artifacts and telemetry land. |
+| `--output-dir=<path>` | `<project-root>/.sdlc/runs/<run-id>` | Greenfield only: a different run folder inside the project. It may not be the project root, a folder inside `.sdlc` other than the run's own, or a folder that overlaps the code directory. Pass it again on `--resume`. |
 | `--policy=<name>` | `gpt-plus-flash` | Routing policy for this run. A per-run override; it does not rewrite the project default. |
-| `--code-dir=<path>` | `<project-root>/src` | Where generated code goes. In brownfield this is the repo root, since edits land across the existing tree. |
-| `--gates=<mode>` | `prompt` | `prompt`, `auto-approve`, or `auto-abort`. See below. |
-| `--mode=<mode>` | inferred | `greenfield` or `brownfield`. Omit to let the conductor work it out from the brief and the repo. |
+| `--code-dir=<path>` | `<project-root>/src` (greenfield), `<project-root>` (brownfield) | Where generated code goes. It must stay inside the project and outside `.sdlc`. |
+| `--gates=<mode>` | `prompt` | `prompt`, `auto-approve`, or `auto-abort`. See below. `prompt` needs a terminal. |
+| `--mode=<mode>` | inferred | `greenfield` or `brownfield`. Omit to let the conductor work it out from the brief and the repo. A folder that is not a git repository needs `--mode=greenfield`. |
 | `--intent=<id>` | — | Brownfield job type: `docs`, `bugfix`, `feature-extend`, `feature-new`, `refactor`, `test`, `deps`. Rejected with `--mode=greenfield`, which has no intents. |
 | `--seed=<text>` | — | The job in the user's own words; answers the interview's first question. |
-| `--max-turns=<n>` | 12 | How many `codex exec` invocations one run may use. A single turn hits the session context ceiling partway through a real project, so the driver resumes until the pipeline writes `SUMMARY.md`. |
-| `--run-id=<id>` | generated timestamp | Run identifier; also names the run's directory under `.sdlc/runs/`. |
+| `--max-turns=<n>` | 12 | How many `codex exec` invocations one driver process may use. A single turn hits the session context ceiling partway through a real project, so the driver resumes until the run ends. A gate answer's invocation does not count. |
+| `--run-id=<id>` | `YYYYMMDD-HHMMSS-<intent or mode>-<6 hex>` | Run identifier; also names the run's folder under `.sdlc/runs/`. |
+| `--resume=<id>` | — | Continue a stopped run, by run id or by the codex thread id it recorded. See below. |
 | `--prompt-file=<path>` | the bundled conductor prompt | Use a different conductor prompt. |
 | `--codex-bin=<path>` | `codex` on PATH | For a non-global codex install. |
 | `--dry-run` | off | Render and exit. |
 
-If `--output-dir` already exists its contents are overwritten. Use a fresh `--run-id` and a fresh
-output directory to keep prior data.
+Flags take `--name=value` or `--name value`. An unknown flag or a flag with no value exits 2.
+`--output-dir` and `--code-dir` resolve against `--project-root`; `--brief`, `--prompt-file` and
+`--codex-bin` resolve against the directory you run the command from.
+
+Every run gets its own folder. A `--run-id` that already has a record is refused rather than
+overwritten; continue that run with `--resume`, or pick a new id.
 
 ## Gates
 
@@ -158,8 +166,8 @@ Gates 1–3 take `approved`, `revise: <comments>`, or `abort`. Gate 4 takes `acc
 
 | Mode | Behaviour |
 |---|---|
-| `prompt` | Stop and wait for an answer. The default. |
-| `auto-approve` | Print what was produced, record the decision as `auto-approved`, continue. What CI usually wants for a known-good replay. |
+| `prompt` | Ask you at the terminal. The conductor records the gate as pending and ends its turn; the driver prints the gate, reads your answer, and resumes the session with it. Its other questions (the brownfield job type and interview, the Phase 7 environment check) reach you the same way. Only a line you type after the question answers it; anything typed earlier is ignored. `abort`, an empty answer, or end of input aborts the run at that gate. The default. Refused (exit 2) when stdin is not a terminal. |
+| `auto-approve` | Print what was produced, record the decision as `auto-approved`, continue. What CI usually wants for a known-good replay. A question the run cannot go on without stops it (exit 4) with the question in `stop.json`. |
 | `auto-abort` | Print the gate and stop. A run that drifts into needing a human never quietly proceeds. |
 
 `auto-approve` is the one to think twice about: it accepts a security review nobody read. Use it
@@ -192,14 +200,15 @@ supply the answers up front:
 
 ```bash
 node plugin/codex/run.mjs \
-  --brief=intent-brief.md --project-root=. --output-dir=.sdlc \
+  --brief=intent-brief.md --project-root=. \
   --mode=brownfield --intent=bugfix \
   --seed='login returns 500 on empty password' \
   --gates=auto-approve
 ```
 
-`--intent` skips the job-type question; `--seed` answers the interview's first one. Gate 0 still
-re-confirms the scope, and under `auto-approve` it is answered rather than skipped.
+`--intent` skips the job-type question; `--seed` answers the interview's first one. The rest of
+the interview is not asked: the brief is drafted from the seed. Gate 0 still re-confirms the scope,
+and under `auto-approve` it is answered rather than skipped.
 
 ## Bring your own brief
 
@@ -209,7 +218,10 @@ architecture phases expect its section headings — save it anywhere, and point 
 For a brownfield run you can skip writing one: the interview builds an intent brief from your
 answers and writes it to `intent_brief.md`.
 
-## What lands in the output directory
+## What lands in the run folder
+
+Each run writes to `.sdlc/runs/<run-id>/`. Project-level state — `project.json`, the write
+contract and its decision log under `local/`, the baseline, the ledger — stays in `.sdlc/`.
 
 | File | Written by | Contents |
 |---|---|---|
@@ -222,16 +234,22 @@ answers and writes it to `intent_brief.md`.
 | `manifest.json` | Phase 9 | Rollup of the whole run |
 | `SUMMARY.md` | Phase 9 | Total cost, breakdown, links to artifacts |
 | `gates.jsonl` | each gate | Gate decisions |
-| `driver-events.jsonl` | the driver | The raw `codex exec` event stream |
-| `driver-cost-modeled.jsonl` | the driver | The conductor's own token usage, priced |
-| `driver-manifest.json` | the driver | The pins the run ran under |
+| `preflight.json` | Phase -1 | Whether every model the run dispatches to is reachable |
+| `state.json` | each gate | The gate that is waiting for an answer |
+| `stop.json` | the conductor | Why it stopped the run, when no other record says so |
+| `question.json` | the conductor | `--gates=prompt`: a question for you that is not a gate |
+| `orchestrator.log` | the driver and the bridge | `run.start` and `run.end`, then each dispatch |
+| `driver-events.jsonl` | the driver | Every `codex exec` invocation's start and end, and each codex event as it arrived |
+| `driver-stderr.log` | the driver | What codex wrote to stderr, per invocation |
+| `driver-cost-modeled.jsonl` | the driver | The conductor's own token usage, priced per turn |
+| `driver-manifest.json` | the driver | The pins, how the run ended, its exit code, and the driver cost |
 
 Brownfield adds `discovery.md`, `intent_brief.md`, and `provenance.json`.
 
 ## Reading the cost
 
 ```bash
-node tools/report.mjs .sdlc --markdown
+node tools/report.mjs .sdlc/runs/<run-id> --markdown
 ```
 
 The report separates dispatched work (vendor-metered) from the driver loop (modeled, and kept out
@@ -241,8 +259,25 @@ each one.
 
 ## Running again
 
-Give each run its own `--run-id` and its own `--output-dir`. Runs are not incremental — a second
-run over the same output directory overwrites the first.
+Each run gets its own folder under `.sdlc/runs/`, so a second run never touches the first. Runs
+are not incremental: a new run starts from the brief again.
+
+## How a run ends
+
+The driver resumes the session until something in the run folder says the run ended, and its
+exit code says how:
+
+| Exit | Outcome | What happened |
+|---|---|---|
+| 0 | `completed` | Phase 9 wrote `SUMMARY.md` and Gate 4 was accepted |
+| 1 | `codex_failed`, `pin_rejected` | codex exited non-zero (its stderr is printed and kept in `driver-stderr.log`), or rejected the pinned model or effort |
+| 2 | — | A usage error, or a refusal before anything was spent |
+| 3 | `max_turns` | `--max-turns` invocations ran out before the run finished |
+| 4 | `aborted`, `halted`, `refused`, `stopped`, `cost_cap` | A stop on purpose: an aborted gate, a preflight halt, a refused write, the conductor's `stop.json`, or the cost cap |
+| 128+n | `interrupted` | The driver received signal n: 130 for Ctrl-C, 143 for `kill`, 129 when its terminal closes |
+
+The cost cap is checked before every `codex exec` and after each one, before a waiting gate is put to
+you: a run over its cap stops at exit 4 without asking.
 
 ## Resuming a partial run
 
@@ -250,23 +285,35 @@ Two different things are called resuming here, and only one of them is something
 
 **Within a run, automatically.** One `codex exec` turn cannot finish a real project — it ends when
 the session hits its context ceiling, with exit 0 and no error. The driver resumes the same
-session until the pipeline writes `SUMMARY.md` or `--max-turns` (default 12) is reached. Nothing
-to do; a run that takes several turns is the normal case, not a fault.
+session until the run ends or `--max-turns` (default 12) is reached. Nothing to do; a run that
+takes several turns is the normal case, not a fault.
 
-**After an interruption, by hand.** If the driver itself died — a killed terminal, a machine
-restart — pass the session id back:
+**After a stop, by hand.** Continue any run that did not complete with its run id. The driver
+prints the exact command as `Continue:` when it stops:
 
 ```bash
-node plugin/codex/run.mjs --resume=<session-id> --project-root=. --output-dir=.sdlc
+node plugin/codex/run.mjs --resume=pass1 --project-root=.
 ```
 
-The id is the one codex emits in its first `thread.started` event, recorded in the run's log.
-Without `--resume`, continuing means a fresh session that re-reads every artifact to work out
-what is already done. That is correct, and it pays again for context the old session still holds.
+The driver finds `.sdlc/runs/pass1/`, resumes the codex thread recorded there, and appends to the
+same record. The run keeps its policy, mode and intent, and `--brief` is not needed. `--gates`
+may change between invocations; without it the run keeps the last gate mode. A completed run is
+not resumed, and neither is a run whose driver is still running (mid-turn, or waiting at a gate in
+another terminal). A run in a custom `--output-dir` needs the same `--output-dir` again.
 
-**A gate that was open when the session died** is recovered separately: the conductor writes the
-pending gate to `.sdlc/local/state.json` before printing it, and session-hydrate re-prompts on the
-next invocation rather than treating the gate as answered.
+Resuming a run that stopped on purpose (an aborted gate, a preflight halt, a refused write,
+`stop.json`, the cost cap) continues past that stop: the conductor is told you chose to go on and
+takes up the step again under the new `--gates`. For example, `--gates=auto-abort` stops at
+Gate 1 so you can read `requirements.md`, and `--resume=pass1 --gates=auto-approve` then goes on.
 
-Telemetry is written incrementally, so an interrupted run leaves valid partial data in its output
-directory. Re-running with the same `--run-id` overwrites it — use a new id to keep it.
+`--resume` also takes the codex thread id from the run's `driver-events.jsonl`. A thread id that
+no folder under `.sdlc/runs/` (or the `--output-dir` you pass) records starts a new run folder:
+its first turn is priced at the thread's whole running total and flagged `baseline_unknown`.
+
+**Stopping a run.** Press Ctrl-C, `kill <pid>` the driver, or close its terminal. It forwards the
+signal to codex, kills codex after 10 seconds if it has not stopped, records the interrupted turn,
+and exits. Do not use `kill -9` on the driver: it cannot forward that. If you did, stop codex with
+`kill -- -<pgid>`, using the `pgid` in the last `invocation_start` line of `driver-events.jsonl`.
+
+Telemetry and the driver record are written as the run goes, so an interrupted run leaves valid
+partial data in its folder.

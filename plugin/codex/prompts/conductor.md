@@ -94,7 +94,7 @@ different things depending on which one you last read.
  4. plan_task_packets            → packets.json
  5. execute_packets              → for each: dispatch → validate → integrate → retry on failure
  6. senior_code_review           → review.json + refinement packets, then re-execute those
- 7. test_run                     → npm install && npm test; debug failures via dispatched packets
+ 7. test_run                     → in {{CODE_DIR}}: npm install && npm test; debug failures via dispatched packets
  8. security_review              → security_review.md
     ── GATE 3 ────────────────────────────────
  9. generate_final_report        → manifest.json rollups
@@ -122,11 +122,17 @@ the most expensive kind, because every later phase inherits it.
 ## Two directories, both given to you
 
 - **`{{CODE_DIR}}`** — the application being built: source, tests, `package.json`, README.
-- **`{{OUTPUT_DIR}}`** — the run record: `requirements.md`, `design.md`, `packets.json`,
-  `telemetry.jsonl`, `manifest.json`, the reviews, the final report.
+  Phase 7 installs and runs the tests here, never in the run folder.
+- **`{{OUTPUT_DIR}}`** — the run folder: `requirements.md`, `design.md`, `packets.json`,
+  `telemetry.jsonl`, `gates.jsonl`, `manifest.json`, the reviews, the final report.
 
 Never write run bookkeeping into the code directory, and never write application code into the
-output directory. Both paths arrive resolved; do not invent your own.
+run folder. Both paths arrive resolved; do not invent your own.
+
+Your run id is `{{RUN_ID}}` and your run folder is `{{OUTPUT_DIR}}`. Wherever the pipeline or the
+brownfield guide says `<output_dir>` or `.sdlc/runs/<run-id>/`, it means this folder. Do not
+generate another run id: the write contract's `run_id`, every packet's `pass_id` and every
+`write-provenance.mjs --run-id` use `{{RUN_ID}}`.
 
 ## TaskPacket — every dispatch needs all of these
 
@@ -156,11 +162,16 @@ than failing downstream. If you get such a refusal, fix the packet — do not ro
 - **Gate 3** — after `security_review.md`
 - **Gate 4** — after the final report
 
-At every gate, whatever the mode, append one line to `{{OUTPUT_DIR}}/gates.jsonl`:
+At every gate, whatever the mode, append one line to `{{OUTPUT_DIR}}/gates.jsonl`, with the
+decision under the key `decision`:
 
 ```json
-{"gate": 1, "artifact": "requirements.md", "decision": "approved|auto-approved|aborted", "note": "<one line>"}
+{"gate": 1, "artifact": "requirements.md", "decision": "pending|approved|accepted|auto-approved|revise|rejected|aborted", "note": "<one line>"}
 ```
+
+`pending` is only for a gate you are handing to a person and ending your turn on. Gate 4 records
+`accepted`, `auto-approved` or `rejected`. The run counts as finished only once Phase 9 has
+written `SUMMARY.md` and Gate 4 is recorded as accepted or auto-approved.
 
 A run whose gates were not actually reviewed by a person must say so in that record. A reader
 looking at the artifacts later cannot tell the difference otherwise, and "a human approved this"
@@ -172,6 +183,16 @@ Write artifacts with your normal editing tool. A write gate may be active: if a 
 refused, the refusal names the path and the rule it hit. Do not try to route around a refused
 write — surface it to the user and stop. In particular, never edit the write contract itself to
 widen your own permissions.
+
+## Stopping a run
+
+The driver reads why your turn ended from files, not from your prose: an `aborted` gate line, a
+`preflight.json` with `ok: false`, a refused write, or the cost cap. If you stop the run for any
+other reason, write `{"reason": "<one line>"}` to `{{OUTPUT_DIR}}/stop.json` before ending your
+turn. A pending gate line or a `question.json` (the gate instruction above says when) means you are
+waiting for the person. A turn that ends without any of these is read as running out of context,
+and the session is resumed. Each record counts only for the turn that wrote it: when a resumed run
+has to stop again, write a new one.
 
 ## Retries
 

@@ -3,7 +3,8 @@
  * conductor's dispatch tool (plugin/codex/dispatch.mjs).
  *
  * Everything here is offline and free: the bridge connection is injected,
- * and codex itself is never spawned. What these tests actually protect is
+ * and codex itself is never spawned (driver-lifecycle.test.mjs drives the
+ * whole loop against a stand-in codex). What these tests actually protect is
  * the argv the fairness argument rests on — every pin in
  * docs/verification/p1-codex-runtime.md's "Pins chosen" table has to
  * survive into the real invocation, and two of them (the sandbox network
@@ -26,12 +27,16 @@ import {
   GATE_MODES,
   renderHandover,
   validIntents,
-  runIsComplete,
   costCapStop,
   threadIdFrom,
   RESUME_PROMPT,
+  resumePrompt,
+  gateAnswerPrompt,
+  questionAnswerPrompt,
+  createLineReader,
   DEFAULT_MAX_TURNS,
   parseArgs as parseRunArgs,
+  main as runMain,
   SANDBOX_MODE,
   APPROVAL_POLICY,
 } from "../../plugin/codex/run.mjs";
@@ -128,6 +133,29 @@ test("parseArgs handles --key=value and bare flags", () => {
   assert.deepEqual(args, { policy: "x", "dry-run": true, "output-dir": "/o" });
 });
 
+test("parseArgs takes the space form too: --max-turns 5 is 5, not one turn", () => {
+  assert.deepEqual(parseRunArgs(["--max-turns", "5"]), { "max-turns": "5" });
+  assert.deepEqual(parseRunArgs(["--output-dir", ".sdlc/runs/x"]), { "output-dir": ".sdlc/runs/x" });
+  assert.deepEqual(parseRunArgs(["--dry-run"]), { "dry-run": true });
+  assert.deepEqual(parseRunArgs(["--dry-run=false"]), { "dry-run": false });
+});
+
+test("parseArgs refuses a missing value, an unknown flag, a stray word and a repeat", () => {
+  assert.throws(() => parseRunArgs(["--resume"]), /--resume needs a value/);
+  assert.throws(() => parseRunArgs(["--resume", "--dry-run"]), /--resume needs a value/);
+  assert.throws(() => parseRunArgs(["--policy="]), /needs a value/);
+  assert.throws(() => parseRunArgs(["--bogus"]), /unknown flag --bogus/);
+  assert.throws(() => parseRunArgs(["stray"]), /unexpected argument 'stray'/);
+  assert.throws(() => parseRunArgs(["--gates=auto-approve", "--gates=prompt"]), /more than once/);
+  assert.throws(() => parseRunArgs(["--dry-run=yes"]), /takes no value/);
+});
+
+test("a usage error exits 2 before anything is spent", async () => {
+  for (const argv of [["--max-turns=0"], ["--max-turns=1.5"], ["--max-turns=abc"], ["--bogus"], ["--resume"]]) {
+    assert.equal(await runMain(argv, { cwd: tmpdir() }), 2, argv.join(" "));
+  }
+});
+
 // ── run.mjs: conductor prompt rendering ──────────────────────────────────
 
 test("renderPrompt substitutes every placeholder it is given", () => {
@@ -177,6 +205,23 @@ test("the shipped conductor prompt quotes paths that may contain spaces", () => 
   );
 });
 
+test("the conductor prompt names the run id and folder, the stop record and where tests run", () => {
+  const promptPath = join(
+    dirname(fileURLToPath(import.meta.url)),
+    "..", "..", "plugin", "codex", "prompts", "conductor.md",
+  );
+  const rendered = renderPrompt(readFileSync(promptPath, "utf-8"), {
+    PLUGIN_ROOT: "/plug", PROJECT_ROOT: "/proj", OUTPUT_DIR: "/proj/.sdlc/runs/r9",
+    CODE_DIR: "/proj/src", BRIEF_PATH: "/proj/brief.md", POLICY: "gpt-plus-flash", RUN_ID: "r9",
+    GATE_INSTRUCTION: "gate text", HANDOVER: "",
+  });
+  assert.match(rendered, /Your run id is `r9` and your run folder is `\/proj\/\.sdlc\/runs\/r9`/);
+  assert.match(rendered, /Do not\s+generate another run id/);
+  assert.match(rendered, /`\/proj\/\.sdlc\/runs\/r9\/stop\.json`/);
+  assert.match(rendered, /7\. test_run +→ in \/proj\/src:/);
+  assert.match(rendered, /"decision": "pending\|/);
+});
+
 test("the shipped conductor prompt states the authors-no-content rule", () => {
   const promptPath = join(
     dirname(fileURLToPath(import.meta.url)),
@@ -189,8 +234,21 @@ test("the shipped conductor prompt states the authors-no-content rule", () => {
 
 // ── run.mjs: gate modes ──────────────────────────────────────────────────
 
-test("the default gate mode tells the conductor to wait for a person", () => {
-  assert.match(GATE_MODES.prompt, /wait for their answer/i);
+test("the default gate mode records the gate as pending and ends the turn, so run.mjs can relay it", () => {
+  assert.match(GATE_MODES.prompt, /"decision": "pending"/);
+  assert.match(GATE_MODES.prompt, /end your turn/i);
+  assert.match(GATE_MODES.prompt, /next message/i);
+  assert.match(GATE_MODES.prompt, /Never record a decision they did not give/);
+  assert.ok(!/\{\{/.test(GATE_MODES.prompt), "it is rendered into the prompt, so it may not carry a placeholder");
+});
+
+test("under prompt, a question that is not a gate is relayed through question.json; unattended, it stops the run", () => {
+  assert.match(GATE_MODES.prompt, /brownfield job type or interview, the Phase 7 environment check/);
+  assert.match(GATE_MODES.prompt, /\{"question": "<the question, one line>"\} to question\.json/);
+  for (const mode of ["auto-approve", "auto-abort"]) {
+    assert.match(GATE_MODES[mode], /Do not ask a question you cannot receive an answer to/);
+    assert.match(GATE_MODES[mode], /stop\.json/);
+  }
 });
 
 test("auto-approve tells the conductor not to ask a question it cannot receive an answer to", () => {
@@ -261,9 +319,11 @@ const REAL_STREAM = [
 
 const PRICING = { input: 2.0, input_cached: 0.2, output: 12.0 };
 
+const POLICY_REF = { name: "gpt-seat-plus-flash", version: 1 };
+
 test("buildRunArtifacts models the driver's own cost from real turn usage", () => {
   const { modeled, rejection } = buildRunArtifacts({
-    jsonl: REAL_STREAM, pin: PIN, pricing: PRICING, passId: "run-1",
+    jsonl: REAL_STREAM, pin: PIN, pricing: PRICING, passId: "run-1", policy: POLICY_REF,
     now: () => "2026-08-31T00:00:00.000Z",
   });
   assert.equal(rejection, null);
@@ -278,9 +338,25 @@ test("buildRunArtifacts models the driver's own cost from real turn usage", () =
 
 test("buildRunArtifacts surfaces a pin rejection from the stream", () => {
   const rejected = '{"type":"turn.failed","error":{"message":"[ReasoningEffortParam] [reasoning.effort] [invalid_enum_value] bad"}}';
-  const { rejection } = buildRunArtifacts({ jsonl: rejected, pin: PIN, pricing: PRICING, passId: "r" });
+  const { rejection } = buildRunArtifacts({ jsonl: rejected, pin: PIN, pricing: PRICING, passId: "r", policy: POLICY_REF });
   assert.ok(rejection, "a rejected pin must be detected, not silently reported as a clean run");
   assert.match(rejection, /invalid_enum_value/);
+});
+
+test("buildRunArtifacts names the policy the run used, not a hard-coded one", () => {
+  const { modeled } = buildRunArtifacts({
+    jsonl: REAL_STREAM, pin: PIN, pricing: PRICING, passId: "r", policy: loadPolicyFile("gpt-seat-plus-flash"),
+  });
+  assert.equal(modeled[0].routing.policy_name, "gpt-seat-plus-flash");
+});
+
+test("buildRunArtifacts prices a resumed thread once, from its running total", () => {
+  const fixtures = join(dirname(fileURLToPath(import.meta.url)), "fixtures", "codex-0.160.1");
+  const jsonl = ["exec1", "exec2", "exec3"].map((f) => readFileSync(join(fixtures, `${f}.jsonl`), "utf-8")).join("");
+  const { modeled } = buildRunArtifacts({ jsonl, pin: PIN, pricing: PRICING, passId: "r", policy: POLICY_REF });
+  assert.deepEqual(modeled.map((r) => r.input_tokens + r.input_tokens_cached), [1000, 3000, 5000]);
+  const total = modeled.reduce((s, r) => s + r.cost_usd, 0);
+  assert.ok(Math.abs(total - 0.01494) < 1e-9, `three invocations price at the last running total, got ${total}`);
 });
 
 // ── dispatch.mjs: the conductor's bridge tool ────────────────────────────
@@ -513,20 +589,6 @@ test("an empty handover leaves no stray placeholder in the rendered prompt", () 
 // that looks successful is the worst shape this failure could take, so the
 // driver now resumes the session until the pipeline signals completion.
 
-test("runIsComplete keys on SUMMARY.md, the artifact only the final phase writes", () => {
-  // Deliberately an artifact, not a phrase in the model's prose — a model
-  // can improvise "the run is complete"; it cannot improvise a file the
-  // final phase is contractually required to produce.
-  const dir = mkdtempSync(join(tmpdir(), "mmo-complete-"));
-  try {
-    assert.equal(runIsComplete(dir), false);
-    writeFileSync(join(dir, "requirements.md"), "partial work");
-    assert.equal(runIsComplete(dir), false, "mid-pipeline artifacts are not completion");
-    writeFileSync(join(dir, "SUMMARY.md"), "done");
-    assert.equal(runIsComplete(dir), true);
-  } finally { rmSync(dir, { recursive: true, force: true }); }
-});
-
 test("costCapStop lets the run resume under the cap and stops it once the cap is spent", () => {
   const dir = mkdtempSync(join(tmpdir(), "mmo-cap-"));
   try {
@@ -583,6 +645,79 @@ test("a resumed turn keeps the pin, the sandbox and the write-contract hook", ()
   assert.ok(args.includes(`sandbox_mode="${SANDBOX_MODE}"`), "sandbox must survive a resume");
   assert.ok(args.some((a) => a.includes("write-contract-check.mjs")), "hook must survive a resume");
   assert.ok(args.some((a) => a.includes("network_access=true")), "bridge needs the network grant");
+});
+
+test("a resumed invocation is told its gate mode and never to answer a pending gate", () => {
+  for (const mode of Object.keys(GATE_MODES)) {
+    const text = resumePrompt(mode);
+    assert.ok(text.startsWith(RESUME_PROMPT));
+    assert.ok(text.includes(`Gate mode for this invocation: ${GATE_MODES[mode]}`), mode);
+  }
+  assert.match(RESUME_PROMPT, /do not answer it yourself/i);
+  assert.match(RESUME_PROMPT, /record why before you end your turn/i);
+  assert.doesNotMatch(RESUME_PROMPT, /say why again/i, "a stop with no new record reads as a context-ceiling stop");
+});
+
+test("a resume after a deliberate stop says the person chose to continue past it", () => {
+  const after = { outcome: "aborted", reason: "gate 1 aborted: auto-abort" };
+  const text = resumePrompt("auto-approve", after);
+  assert.match(text, /last stopped on purpose \(aborted: gate 1 aborted: auto-abort\)/);
+  assert.match(text, /resumed it with --gates=auto-approve: they chose to continue past that stop/);
+  assert.match(text, /write a new record first/);
+  assert.ok(text.endsWith(`Gate mode for this invocation: ${GATE_MODES["auto-approve"]}`));
+  for (const outcome of ["max_turns", "interrupted", "codex_failed", "killed"]) {
+    assert.equal(resumePrompt("prompt", { outcome }), resumePrompt("prompt"), outcome);
+  }
+});
+
+test("a question's answer is passed through as the person's words, with the gate mode", () => {
+  const text = questionAnswerPrompt("bugfix\n", "prompt");
+  assert.match(text, /^Answer from the person to your question: bugfix\n/);
+  assert.ok(text.includes(GATE_MODES.prompt));
+});
+
+test("the terminal reader drops input typed before the question and reads the line after it", async () => {
+  const { PassThrough } = await import("node:stream");
+  const stdin = new PassThrough();
+  const reader = createLineReader(stdin);
+  reader.attach();
+  stdin.write("stale\n\n");
+  let dropped = null;
+  const answer = reader.ask((n) => {
+    dropped = n;
+    setImmediate(() => stdin.write("approved\n"));
+  });
+  assert.equal(await answer, "approved");
+  assert.equal(dropped, 2);
+
+  const next = reader.ask(() => setImmediate(() => reader.cancel()));
+  assert.equal(await next, null, "cancel ends the wait");
+  assert.equal(await reader.ask(), null, "and every later one");
+  reader.close();
+});
+
+test("the terminal reader answers null at end of input", async () => {
+  const { PassThrough } = await import("node:stream");
+  const stdin = new PassThrough();
+  const reader = createLineReader(stdin);
+  stdin.end("typed before the question\n");
+  assert.equal(await reader.ask(), null);
+  reader.close();
+});
+
+test("a gate answer is passed through as the person's words, with the gate mode", () => {
+  const text = gateAnswerPrompt(2, "revise: add rate limits\n", "prompt");
+  assert.match(text, /^Gate 2 answer from the person: revise: add rate limits\n/);
+  assert.ok(text.includes(GATE_MODES.prompt));
+});
+
+test("buildCodexArgs passes --skip-git-repo-check only when asked, right after --json", () => {
+  for (const resumeThreadId of [null, "abc-123"]) {
+    const argv = buildCodexArgs({ pin: PIN, promptText: "x", hookPath: "/h", skipGitRepoCheck: true, resumeThreadId });
+    assert.equal(argv[argv.indexOf("--json") + 1], "--skip-git-repo-check");
+    assert.ok(argv.indexOf("--skip-git-repo-check") < argv.indexOf("--"));
+    assert.ok(!buildCodexArgs({ pin: PIN, promptText: "x", hookPath: "/h", resumeThreadId }).includes("--skip-git-repo-check"));
+  }
 });
 
 test("the resume prompt tells the model not to redo finished work", () => {

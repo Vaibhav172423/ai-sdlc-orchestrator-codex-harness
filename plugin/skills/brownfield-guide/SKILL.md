@@ -48,7 +48,7 @@ Read the JSON. Three cases:
   node '{{PLUGIN_ROOT}}/scripts/write-contract.mjs' --abandon --run-id=<run_id> --reason='discarded at resume' --project-root='{{PROJECT_ROOT}}'
   ```
   An exit 2 saying the run holds no write contract means it never reached Gate 0; carry on. Then
-  clear `.sdlc/local/state.json` and continue to step 2.
+  clear that run's gate-pending state (`.sdlc/runs/<run_id>/state.json`) and continue to step 2.
 
   When `resume.write_contract` is `"live"`, that run never ended: its write contract still binds
   this repository in every Codex session, and `phase` may be `null`. Say so in the question:
@@ -129,7 +129,11 @@ printed the git-init guidance.
 
 # 4. Intent brief — pick the intent and describe the job
 
-Two things to collect from the user. Both go into `.sdlc/runs/<run-id>/intent_brief.md`.
+Two things to collect from the user. Both go into `.sdlc/runs/<run-id>/intent_brief.md`. On the
+`run.mjs` route, every question in this step goes to the user the way your gate instruction says:
+under `--gates=prompt` through `question.json`, one question per turn; under the unattended modes
+it is not asked, and a question the run cannot go on without stops the run with the question in
+`stop.json`.
 
 **a. Intent.**
 
@@ -261,19 +265,22 @@ record), and stop.
 Follow [plugin/skills/pipeline/SKILL.md](../pipeline/SKILL.md) with:
 - `mode: brownfield`
 - `intent: <from Gate 0>`
-- `run_id: <YYYYMMDD-HHMMSS-<intent>-<slug>>`
+- `run_id: {{RUN_ID}}` — the id the invoking route handed over. Do not generate another; the
+  write contract, every packet's `pass_id` and every provenance call use this one.
 - `intent_brief_path: .sdlc/runs/<run-id>/intent_brief.md`
 - `baseline_path: .sdlc/baseline/current.json`
 - `policy: <as configured by setup — see the Policy bullet of Gate 0>`
 - `code_dir: <the project's working directory — the repo root, since edits land across the
   existing tree, not into one generated folder>`
-- `output_dir: .sdlc/runs/<run-id>` — where `requirements.md`, `design.md`,
-  `security_review.md`, `packets.json`, `telemetry.jsonl`, `manifest.json`, and the final report
-  land for this run.
+- `output_dir: {{OUTPUT_DIR}}` (that is, `.sdlc/runs/<run-id>`) — where `requirements.md`,
+  `design.md`, `security_review.md`, `packets.json`, `telemetry.jsonl`, `gates.jsonl`,
+  `state.json`, `manifest.json`, and the final report land for this run. Every
+  `.sdlc/runs/<run-id>/` path in this guide is this folder.
 
 Drive phases 1 through 9 with gates 1, 2, 3, 4 as usual — but branched by intent (see the Intent
-matrix in SKILL.md). At each gate, print the gate prompt and wait for the user; do not answer on
-their behalf.
+matrix in SKILL.md). At each gate, print the gate prompt and follow the gate instruction you were
+given; never answer a gate on the user's behalf. Phase 7 runs the test command from the repo
+root.
 
 # 7. Close out
 
@@ -318,7 +325,7 @@ Do not propose a follow-up run.
 
 ```bash
 node plugin/codex/run.mjs \
-  --brief=<intent-brief.md> --project-root=<path> --output-dir=<path> \
+  --brief=<intent-brief.md> --project-root=<path> \
   --mode=brownfield \
   --intent=<docs|bugfix|feature-extend|feature-new|refactor|test|deps> \
   --seed='<the job in one line>' \
@@ -326,8 +333,9 @@ node plugin/codex/run.mjs \
   --policy=<name>
 ```
 
-Flags take the `--name=value` form. `--name value` is not parsed — the value is dropped and the
-flag reads as a bare `true`.
+A brownfield run's record always lands in `.sdlc/runs/<run-id>/` under the project root; there is
+no `--output-dir` for brownfield. The project must be a git repository. `--gates=prompt` needs a
+person at the terminal; an unattended run passes `--gates=auto-approve` or `--gates=auto-abort`.
 
 `--mode`, `--intent` and `--seed` supply the handover described at the top of this file, so
 step 4 does not ask what it has already been told. **An unattended run needs at least
