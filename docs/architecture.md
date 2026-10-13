@@ -26,11 +26,20 @@ flowchart TD
     Disp --> Cond
 ```
 
-The conductor dispatches by running a shell command. `dispatch.mjs` is an ordinary MCP client that spawns the bridge, calls one tool, and exits. That is why dispatch needs a session permitted to open pipes to a child process — see the sandbox entry in [troubleshooting.md](troubleshooting.md#dispatch-and-the-bridge).
+In a codex session there is no `run.mjs`: the session is the conductor, and the same shell command reaches the bridge. The conductor dispatches by running a shell command. `dispatch.mjs` is an ordinary MCP client that spawns the bridge, calls one tool, and exits. That is why dispatch needs a session permitted to open pipes to a child process — see the sandbox entry in [troubleshooting.md](troubleshooting.md#dispatch-and-the-bridge).
 
-## 2. The driver — `plugin/codex/run.mjs`
+## 2. The two entry points
 
-Spawns `codex exec` with a pinned model, reasoning effort, sandbox and approval policy, then resumes the same session until the pipeline signals completion.
+A run starts one of two ways, and both render the same playbooks into `<run folder>/skills/` and end through `plugin/codex/run-finalize.mjs`.
+
+| Route | Starts the run | Ends the run | Records |
+|---|---|---|---|
+| In a codex session, from a `$mmo-codex:*` skill | `plugin/codex/start-run.mjs`: checks the session's model and effort, resolves the policy, creates the run folder, renders the playbooks, writes `run.json` | `plugin/codex/end-run.mjs --outcome=<outcome>`: closes `run.json`, logs `run.end`, then the run-end steps | `run.json`, `driver-session.jsonl` (a marker per start, dispatch and collection), `orchestrator.log` |
+| Headless, `plugin/codex/run.mjs` | Spawns `codex exec` with a pinned model, reasoning effort, sandbox and approval policy, and resumes the same session until the run ends | Its own run end, with the outcome its records show | `driver-events.jsonl`, `driver-stderr.log`, `driver-cost-modeled.jsonl`, `driver-manifest.json` |
+
+The run-end steps are the same on both routes: the conductor's cost read from its codex session file into `driver-usage.json` (cross-checked against the exec stream on a headless run), a brownfield run's write contract ended with the run's outcome, `manifest.json`, and `report.md`.
+
+The rest of this section is the headless driver.
 
 - **Completion signal.** The latest Gate 4 line in `gates.jsonl` accepts the run, and a `SUMMARY.md` that `plugin/scripts/write-manifest.mjs` wrote after it: Phase 9 runs the script, and Gate 4's acceptance runs it again with `--status=accepted`. The model writes neither `manifest.json` nor `SUMMARY.md`, and `manifest.json` records the summary's hash, so a hand-written summary never reads as completion.
 - **Why resuming is normal.** One turn ends when the session hits its context ceiling — exit 0, no error. `--max-turns` (default 12) caps how many turns one run may use.
@@ -71,9 +80,9 @@ The `openai` and `codex-cli` adapters reach the same model. They are separate be
 
 Routing is data, not code. Each policy declares `models:` (id, adapter, model name, auth, and a `pricing:` block that records the dated price list's card in `src/prices.ts` and is billed only under `pricing_override: true`) and `rules:` (a `when:` clause matched against phase and retry count, and the model to `use:`). First match wins; a bare `when:` is the fallback.
 
-Two guardrails ship on: a mechanical packet that fails validation twice escalates to the judgment tier on the third attempt, and `hard_cost_cap_usd` stops the run once the dispatched cost in `telemetry.jsonl` plus the conductor's modeled cost reaches it. The bridge refuses every dispatch after that point (`src/costCap.ts`), and `run.mjs` stops resuming the session and records `cost_cap_stop` in `driver-manifest.json`. `src/sessionUsage.ts` reads the conductor's cost from the same run folder, from one source: the complete rows of `driver-cost-modeled.jsonl`, else `driver-usage.json`, else the conductor's codex session file. A headless run names the conductor's thread in `driver-events.jsonl`; an interactive run names it in `driver-session.jsonl`, where `dispatch.mjs` appends a marker on every call. The refusal message gives both parts and says which is modeled.
+Two guardrails ship on: a mechanical packet that fails validation twice escalates to the judgment tier on the third attempt, and `hard_cost_cap_usd` stops the run once the dispatched cost in `telemetry.jsonl` plus the conductor's modeled cost reaches it. The bridge refuses every dispatch after that point (`src/costCap.ts`), and `run.mjs` stops resuming the session and records `cost_cap_stop` in `driver-manifest.json`. `src/sessionUsage.ts` reads the conductor's cost from the same run folder, from one source: `driver-usage.json` when nothing was recorded after it was collected, else the complete rows of `driver-cost-modeled.jsonl`, else the conductor's codex session file. A headless run names the conductor's thread in `driver-events.jsonl`; an interactive run names it in `driver-session.jsonl`, where `dispatch.mjs` appends a marker on every call. The refusal message gives both parts and says which is modeled.
 
-The three selectable policies are described in [running.md](running.md#policies).
+The four selectable policies are described in [running.md](running.md#policies).
 
 ## 6. The two Gemini doors
 
@@ -121,10 +130,10 @@ What the contract does and does not guarantee is stated plainly in the [README](
 
 ## 8. Telemetry — `plugin/codex/telemetry/`
 
-Two sources feed one file:
+Two sources, two files:
 
-- **Dispatched work.** Every `execute_with_model` call writes an event with vendor-reported token counts. `provenance: "vendor"`.
-- **The driver loop.** `event-reader.mjs` parses the `codex exec --json` event stream and builds one row per turn from its usage figures, priced from the dated price list on the turn's day (`src/driverPricing.ts`). At every run end, `run-finalize.mjs` runs `collect-driver-usage.mjs`, which reads the same conductor from codex's session file into `driver-usage.json`, response by response, and on a `run.mjs` run cross-checks the two token for token. `provenance: "modeled"` — codex reports tokens but no money, so the cost is derived from the list.
+- **Dispatched work, in `telemetry.jsonl`.** Every `execute_with_model` attempt writes an event with the token counts the vendor reported, labelled `vendor`, `estimated` or `modeled` per attempt ([methodology.md](methodology.md#every-cost-event-carries-a-provenance-label)).
+- **The driver loop, in `driver-cost-modeled.jsonl` and `driver-usage.json`.** On a `run.mjs` run, `event-reader.mjs` parses the `codex exec --json` event stream and builds one row per turn from its usage figures, priced from the dated price list on the turn's day (`src/driverPricing.ts`). At every run end, on both routes, `run-finalize.mjs` runs `collect-driver-usage.mjs`, which reads the conductor from codex's session file into `driver-usage.json`, response by response, and on a `run.mjs` run cross-checks the two token for token ([headless-runs.md](headless-runs.md)). `provenance: "modeled"` — codex reports tokens but no money, so the cost is derived from the list.
 
 The report adds the two into a run total and keeps the modeled figure out of the vendor-metered total. Why is in [methodology.md](methodology.md), and how the report lays them out is in [understanding-output.md](understanding-output.md).
 

@@ -55,7 +55,7 @@ Two kinds of file come out of a run, and the report (`plugin/scripts/report.mjs`
 
 | File | What it holds |
 |---|---|
-| `telemetry.jsonl` | Every dispatched model call, metered through the bridge |
+| `telemetry.jsonl` | Every dispatched model call, recorded by the bridge with its provenance |
 | `driver-cost-modeled.jsonl`, or `driver-usage.json` when present | The conductor's own token usage, priced at the pin |
 
 Codex reports no wallet figures whatsoever, so the driver leg's cost can only ever be modeled.
@@ -131,6 +131,26 @@ const inputFreshCost  = (tokens.input        / 1_000_000) * pricing.input;
 const inputCachedCost = (tokens.input_cached / 1_000_000) * pricing.input_cached;
 const outputCost      = (tokens.output       / 1_000_000) * pricing.output;
 ```
+
+### The conductor's tokens, read twice
+
+The conductor's cost is read from codex's session file
+(`$CODEX_HOME/sessions/YYYY/MM/DD/rollout-*-<thread id>.jsonl`), one usage record per model
+response. That is the only reading a run in a codex session has. A `run.mjs` run has a second
+one: the `turn.completed` events of `codex exec --json`, which report the thread's running total.
+At the run's end, `collect-driver-usage.mjs` compares the two per thread and per invocation, in
+codex's own buckets (input with cached input inside it, cached input, output with reasoning inside
+it, reasoning):
+
+| Verdict | Booked figure | Label |
+|---|---|---|
+| Every bucket equal (`equal`, or `equal_with_explained_gap` when the session file also holds compaction calls or turns the stream never reported) | The session file | `verified` |
+| A bucket differs, or a turn cannot be matched (`mismatch`) | The session file | `UNVERIFIED`, with the bucket and the difference |
+| The totals cannot be matched (`unexplained_gap`, `reset`, `no_exec_usage`, `unchecked`) | The session file | `UNVERIFIED` |
+| No readable session file (`no_session_file`) | The exec stream | `UNVERIFIED` |
+
+Token counts are what the check proves; the dollars then follow from the price list.
+[headless-runs.md](headless-runs.md) is the procedure, and how to read the result.
 
 ### Failed and abandoned calls
 
@@ -254,8 +274,10 @@ total as a mixture and look at the underlying events before quoting it.
 
 ## Reproducibility
 
-Every run records the pins it ran under in `driver-manifest.json`: the model, the reasoning
-effort, the sandbox mode, and the approval policy, plus the policy file that won
-(`policy_source`, `policy_path`, `policy_sha256`). A cost comparison between two runs is only
+A `run.mjs` run records the pins it ran under in `driver-manifest.json`: the model, the
+reasoning effort, the sandbox mode, and the approval policy, plus the policy file that won
+(`policy_source`, `policy_path`, `policy_sha256`). A run in a codex session records the pin, the
+same policy fields, and the model and effort the session ran on at each start
+(`starts[].session_model`) in `run.json`. A cost comparison between two runs is only
 meaningful if those pins match, which is why the report prints them in its header rather than
 leaving them in a file.

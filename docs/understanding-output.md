@@ -11,6 +11,11 @@ node plugin/scripts/report.mjs .sdlc/runs/<run-id>              # terminal
 node plugin/scripts/report.mjs .sdlc/runs/<run-id> --markdown   # pasteable
 ```
 
+Every run end also writes the markdown report to `report.md` in the run folder. The commands on
+this page run from a clone. In an installed plugin the scripts sit in the plugin's own folder,
+`"$(ls -d ~/.codex/plugins/cache/tilicho-ai-labs/mmo-codex/*/ | tail -1)scripts/"`, and the run's
+end prints the report command in full as `Cost report:`.
+
 ## The report, section by section
 
 | You pass | The report shows |
@@ -145,7 +150,7 @@ One event per line. The fields that matter when reading by hand:
 
 | Field | What it holds |
 |---|---|
-| `phase` | Pipeline phase — `requirements_analysis`, `codegen`, and so on. `driver_loop` marks a conductor turn rather than a dispatched packet. |
+| `phase` | Pipeline phase — `requirements_analysis`, `codegen`, and so on. Conductor turns are not here: they are in `driver-cost-modeled.jsonl` with `phase: "driver_loop"`, and a `driver_loop` row in this file is counted as runner overhead. |
 | `model` / `model_id` | Which model ran, and through which door. On Gemini events this is what distinguishes the model door from the agent door. |
 | `provenance` | `vendor`, `estimated`, `modeled`, or `none`. Decides which report total the event lands in. `none` marks a phase that made no model call at all. |
 | `input_tokens` / `input_tokens_cached` / `output_tokens` | Token counts. Input is **exclusive** of cached input — see below. |
