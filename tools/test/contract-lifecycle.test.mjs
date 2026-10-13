@@ -5,7 +5,7 @@
  */
 import { after, test } from "node:test";
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { EventEmitter } from "node:events";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -22,6 +22,7 @@ import "./lib/stand-ins.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const FAKE = join(HERE, "fixtures", "fake-codex.mjs");
+const HOOK = join(HERE, "..", "..", "plugin", "codex", "hooks", "write-contract-check.mjs");
 const THREAD = "01a10f3e-4db6-7a70-8d73-a94d86244d4d";
 const SESSION_HOME = sessionHome([THREAD]);
 after(() => rmSync(SESSION_HOME, { recursive: true, force: true }));
@@ -195,6 +196,70 @@ test("session: end-run switches the contract off, start-run --resume puts it bac
     assert.equal(r.code, 2);
     assert.match(r.err, /run s1 ended aborted, so it does not resume/);
     assert.equal(readFileSync(join(p.runDir("s1"), "run.json"), "utf-8"), before, "nothing is written");
+  } finally { p.done(); }
+});
+
+/** What Codex does before it runs `command` in a session whose plugin hook is trusted: the hook judges the call. */
+function hookJudges(root, command) {
+  const r = spawnSync(process.execPath, [HOOK], { input: JSON.stringify({ cwd: root, tool_name: "Bash", tool_input: { command } }), encoding: "utf8" });
+  assert.equal(r.status, 0, r.stderr);
+  assert.equal(r.stdout, "", "the hook allows the guard check");
+}
+const sh = (command, cwd) => spawnSync("/bin/sh", ["-c", command], { cwd, encoding: "utf8" });
+
+test("session: a resumed run prints the guard check, and it passes only on a hook decision from the resuming session", async () => {
+  const p = repo();
+  try {
+    let r = await session(startMain, p.root, ["--mode=brownfield", "--run-id=s2", "--intent=bugfix"]);
+    assert.equal(r.code, 0, r.err);
+    assert.doesNotMatch(r.out, /guard_check:/, "a fresh run checks the guard at Gate 0");
+    freezeContract({ projectRoot: p.root, runId: "s2", allowlist: ["src/**"] });
+    r = await session(endMain, p.root, [`--run-dir=${p.runDir("s2")}`, "--outcome=stopped", "--reason=the session is closing"]);
+    assert.equal(r.code, 0, r.err);
+
+    r = await session(startMain, p.root, ["--resume=s2"]);
+    assert.equal(r.code, 0, r.err);
+    const check = /^guard_check: (.*)$/m.exec(r.out)?.[1];
+    assert.ok(check, r.out);
+    assert.match(check, /write-contract\.mjs' --assert-guard-live --run-id=s2 --project-root='[^']*my repo'$/);
+    assert.match(r.out, /^First: run guard_check in a shell call of its own, before any write\./m);
+    assert.match(r.out, /and continue the run from its first incomplete phase\./);
+
+    // A session whose hook does not run: no decision is recorded for the call, and the check ends the run.
+    let c = sh(check, p.root);
+    assert.equal(c.status, 2, c.stdout + c.stderr);
+    assert.match(c.stderr, /did not run in this session/);
+    assert.equal(p.lock("s2").end_outcome, "refused");
+    assert.equal(p.contract().active, false);
+
+    // After the person trusts the hook, the run resumes again and the hook judges the check's own call.
+    r = await session(startMain, p.root, ["--resume=s2"]);
+    assert.equal(r.code, 0, r.err);
+    hookJudges(p.root, check);
+    c = sh(check, p.root);
+    assert.equal(c.status, 0, c.stderr);
+    assert.match(c.stdout, /the write guard is live for run s2 \(wired by plugin\)/);
+    assert.equal(p.contract().active, true);
+  } finally { p.done(); }
+});
+
+test("session: resuming a run that is still live checks the guard again too", async () => {
+  const p = repo();
+  try {
+    let r = await session(startMain, p.root, ["--mode=brownfield", "--run-id=s3", "--intent=bugfix"]);
+    assert.equal(r.code, 0, r.err);
+    freezeContract({ projectRoot: p.root, runId: "s3", allowlist: ["src/**"] });
+    const gate0 = `node '${join(HERE, "..", "..", "plugin", "scripts", "write-contract.mjs")}' --assert-guard-live --run-id=s3 --project-root='${p.root}'`;
+    hookJudges(p.root, gate0);
+    assert.equal(sh(gate0, p.root).status, 0, "Gate 0's check in the first session");
+
+    r = await session(startMain, p.root, ["--resume=s3"]);
+    assert.equal(r.code, 0, r.err);
+    assert.match(r.out, /^write_contract: live$/m);
+    const check = /^guard_check: (.*)$/m.exec(r.out)?.[1];
+    const c = sh(check, p.root);
+    assert.equal(c.status, 2, "the first session's decisions do not count for the resumed one");
+    assert.equal(p.lock("s3").end_outcome, "refused");
   } finally { p.done(); }
 });
 

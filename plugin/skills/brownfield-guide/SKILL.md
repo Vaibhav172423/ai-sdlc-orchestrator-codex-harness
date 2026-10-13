@@ -57,10 +57,13 @@ node '{{PLUGIN_ROOT}}/scripts/session-hydrate.mjs' --json --sdlc='{{PROJECT_ROOT
   Would you like to resume it, or start fresh?"* Accept `resume`, `discard`, or `abort`. If
   `resume` in a session: end this session's new run (`--outcome=stopped`, reason `resumed run
   <run_id>`), run `node '{{PLUGIN_ROOT}}/codex/start-run.mjs' --resume=<run_id>`, and follow the
-  playbooks it prints from the first incomplete phase. When `resume.route` is `headless`, that
-  run was started by `run.mjs` and resumes only there (`run.mjs --resume=<run_id>`), so offer
-  `discard` and `abort` only. If `discard`, end that run first, so its write contract stops
-  binding:
+  playbooks it prints from the first incomplete phase. When it prints a `guard_check:` line, run
+  that command first, in a shell call of its own, before any write: this session may not run the
+  write hook (a hook the user has not trusted, or one an update changed). If it exits non-zero,
+  print its message and stop; it has ended the run and switched its contract off. When
+  `resume.route` is `headless`, that run was started by `run.mjs` and resumes only there
+  (`run.mjs --resume=<run_id>`), so offer `discard` and `abort` only. If `discard`, end that run
+  first, so its write contract stops binding:
   ```bash
   node '{{PLUGIN_ROOT}}/scripts/write-contract.mjs' --abandon --run-id=<run_id> --reason='discarded at resume' --project-root='{{PROJECT_ROOT}}'
   ```
@@ -378,8 +381,9 @@ the provenance record as well.
 
 **Any other stop after Gate 0** (a halt, a refusal, a cost cap, a failure) needs no contract
 command: recording the end with that outcome ends the run's contract and closes its provenance
-record, and `start-run.mjs --resume={{RUN_ID}}` puts the contract back. On the `run.mjs` route the
-driver does both.
+record, and `start-run.mjs --resume={{RUN_ID}}` puts the contract back and prints a `guard_check:`
+command, which the resumed session runs in a shell call of its own before any write. On the
+`run.mjs` route the driver does both.
 
 Do not propose a follow-up run.
 

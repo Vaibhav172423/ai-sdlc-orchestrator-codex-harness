@@ -404,12 +404,19 @@ test("reopenRun puts a stopped run's frozen contract back and makes its lock liv
   } finally { cleanup(dir); }
 });
 
-test("reopenRun is a no-op for a run with no lock or a live one", () => {
+test("reopenRun leaves a run with no lock alone, and keeps a live one live with the resume stamped in its lock", () => {
   const dir = makeGitRepo();
   try {
     assert.deepEqual(reopenRun({ projectRoot: dir, runId: "r1" }), { run_id: "r1", reopened: false, live: false });
-    freezeContract({ projectRoot: dir, runId: "r1", allowlist: ["src/**"] });
-    assert.deepEqual(reopenRun({ projectRoot: dir, runId: "r1" }), { run_id: "r1", reopened: false, live: true });
+    assert.equal(existsSync(join(dir, ".sdlc")), false);
+    const { sha256 } = freezeContract({ projectRoot: dir, runId: "r1", allowlist: ["src/**"] });
+    const at = new Date("2030-01-01T00:00:00.000Z");
+    assert.deepEqual(reopenRun({ projectRoot: dir, runId: "r1", now: at }), { run_id: "r1", reopened: false, live: true });
+    const lock = readJson(lockFile(dir, "r1"));
+    assert.deepEqual(lock.reopened_at, [at.toISOString()]);
+    assert.equal(lock.ended_at, null);
+    assert.equal(sha(readFileSync(contractPath(dir))), sha256, "the contract is not touched");
+    assert.equal(contractTampered(dir), null);
   } finally { cleanup(dir); }
 });
 
@@ -534,6 +541,35 @@ test("assert-guard-live with no row since the freeze exits 2, says the guard did
     assert.match(r.stderr, /\/hooks/);
     assert.equal(readJson(lockFile(dir, "r1")).end_outcome, "refused");
     assert.equal(readJson(contractPath(dir)).active, false);
+  } finally { cleanup(dir); }
+});
+
+test("assert-guard-live after a resume counts only hook rows since the latest resume", () => {
+  const dir = makeGitRepo();
+  const decisions = join(dir, ".sdlc", "local", "guard-decisions.jsonl");
+  const row = (ts) => appendFileSync(decisions, JSON.stringify({ ts, decision: "allow", run_id: "r1", wired_by: "plugin" }) + "\n");
+  try {
+    freezeContract({ projectRoot: dir, runId: "r1", allowlist: ["src/**"], now: new Date("2030-01-01T00:00:00.000Z") });
+    row("2030-01-01T00:00:01.000Z");
+    assert.equal(cli(["--assert-guard-live", "--run-id=r1", `--project-root=${dir}`], dir).status, 0, "Gate 0's check passes");
+    endRun({ projectRoot: dir, runId: "r1", outcome: "stopped", now: new Date("2030-01-01T00:01:00.000Z") });
+
+    reopenRun({ projectRoot: dir, runId: "r1", now: new Date("2030-01-02T00:00:00.000Z") });
+    let r = cli(["--assert-guard-live", "--run-id=r1", `--project-root=${dir}`], dir);
+    assert.equal(r.status, 2, "the earlier session's rows do not prove the hook runs in this one");
+    assert.match(r.stderr, /did not run in this session/);
+    assert.equal(readJson(lockFile(dir, "r1")).end_outcome, "refused");
+    assert.equal(readJson(contractPath(dir)).active, false);
+
+    reopenRun({ projectRoot: dir, runId: "r1", now: new Date("2030-01-03T00:00:00.000Z") });
+    row("2030-01-03T00:00:05.000Z");
+    r = cli(["--assert-guard-live", "--run-id=r1", `--project-root=${dir}`], dir);
+    assert.equal(r.status, 0, r.stderr);
+    assert.equal(readJson(contractPath(dir)).active, true);
+
+    reopenRun({ projectRoot: dir, runId: "r1", now: new Date("2030-01-04T00:00:00.000Z") });
+    assert.equal(cli(["--assert-guard-live", "--run-id=r1", `--project-root=${dir}`], dir).status, 2,
+      "a run resumed while still live is checked again too");
   } finally { cleanup(dir); }
 });
 

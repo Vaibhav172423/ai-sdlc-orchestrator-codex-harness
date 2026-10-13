@@ -99,11 +99,11 @@ A PreToolUse hook on `apply_patch` and `Bash`. The script only reads the call an
 | Step | Command | Effect |
 |---|---|---|
 | Gate 0 approved | `--freeze --run-id=<id> --allowlist='<json>' [--off-limits='<json>'] [--strict-write=off] [--intent=<id>]` | Writes `.sdlc/local/write-contract.json` (project defaults from `.sdlc/project.json` merged in), `runs/<id>/write-contract.frozen.json` and `runs/<id>/write-contract.lock.json` with the SHA-256, then opens `runs/<id>/provenance.json`. Refused outside a git project's root, for a second freeze of one run, and while another run is live. |
-| Right after | `--assert-guard-live` | Passes when the decision log holds a row for the run stamped after the freeze. Otherwise ends the run and exits 2, saying the guard did not run. |
+| Right after, and after every resume | `--assert-guard-live` | Passes when the decision log holds a row for the run stamped after the freeze, or after the latest resume in the lock's `reopened_at`. Otherwise ends the run and exits 2, saying the guard did not run. |
 | Gate 4 answered | `--close --run-id=<id>` | Needs an accepted Gate 4 or an abort in `runs/<id>/gates.jsonl`. Writes the lock's end record, closes `provenance.json`, then switches the contract off. |
 | The person ends a run | `--abandon --run-id=<id> [--reason=<text>]` | The same end, as `aborted`. Frees a project held by a killed session or a changed contract. |
 | Any other run end | `endRun()` | `run-finalize.mjs` calls it with the run's outcome, from `run.mjs` and from `end-run.mjs`. A run that never froze, or whose close-out ended it, is left as it is. |
-| `--resume` | `reopenRun()` | `run.mjs --resume` and `start-run.mjs --resume` call it before anything runs. A stopped run reopens with its frozen bytes and its provenance record; one that ended `completed` or `aborted` is refused (exit 2). A fresh brownfield `run.mjs` run is refused before spending while another run holds the project. |
+| `--resume` | `reopenRun()` | `run.mjs --resume` and `start-run.mjs --resume` call it before anything runs. A stopped run reopens with its frozen bytes and its provenance record; one that ended `completed` or `aborted` is refused (exit 2). Every resume of a frozen run, a still-live one included, is stamped in `reopened_at`, and `start-run.mjs` prints the guard check for the session to run before its first write. A fresh brownfield `run.mjs` run is refused before spending while another run holds the project. |
 
 **Rule order** for each path a write names, judged as written and again with every link resolved:
 

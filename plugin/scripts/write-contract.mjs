@@ -40,6 +40,8 @@ const SCRIPT_PATH = fileURLToPath(import.meta.url);
 const shq = (s) => `'${String(s).replace(/'/g, "'\\''")}'`;
 /** The command the person runs to end a run, ready to paste. */
 export const abandonCommand = (runId, root) => `node ${shq(SCRIPT_PATH)} --abandon --run-id=${runId} --project-root=${shq(root)}`;
+/** The guard check, run in a shell call of its own after a freeze or a resume. */
+export const guardCheckCommand = (runId, root) => `node ${shq(SCRIPT_PATH)} --assert-guard-live --run-id=${runId} --project-root=${shq(root)}`;
 
 const PERSON_DECIDES = "A wider scope is the person's decision, for a new run with its own Gate 0: stop and tell the person which path is needed and why.";
 
@@ -204,15 +206,21 @@ export function endRun({ projectRoot, runId, outcome, reason = null, now } = {})
   return result;
 }
 
-/** For `--resume`: puts a stopped run's frozen contract back and makes its lock live again. */
+/**
+ * For `--resume`: puts a stopped run's frozen contract back and makes its lock live again. Every resume of a frozen
+ * run, one still live included, is stamped in the lock's `reopened_at`, so the guard check that follows counts only
+ * hook decisions made in the resuming session.
+ */
 export function reopenRun({ projectRoot, runId, now } = {}) {
   requireRunId(runId);
   const root = resolve(String(projectRoot ?? process.cwd()));
   const lock = readLock(root, runId);
   if (!lock) return { run_id: runId, reopened: false, live: false };
+  const reopenedAt = [...(Array.isArray(lock.reopened_at) ? lock.reopened_at : []), nowIso(now)];
   if (!lock.ended_at) {
     const bad = contractTampered(root);
     if (bad) refuse(`run ${runId} cannot resume: ${bad}`);
+    writeWhole(lockPath(root, runId), jsonBytes({ ...lock, reopened_at: reopenedAt }));
     return { run_id: runId, reopened: false, live: true };
   }
   if (FINAL_OUTCOMES.has(lock.end_outcome)) {
@@ -232,10 +240,7 @@ export function reopenRun({ projectRoot, runId, now } = {}) {
   const before = readContractBytes(root);
   writeWhole(contractPath, frozen);
   try {
-    writeWhole(lockPath(root, runId), jsonBytes({
-      ...lock, ended_at: null, end_outcome: null, end_reason: null,
-      reopened_at: [...(Array.isArray(lock.reopened_at) ? lock.reopened_at : []), nowIso(now)],
-    }));
+    writeWhole(lockPath(root, runId), jsonBytes({ ...lock, ended_at: null, end_outcome: null, end_reason: null, reopened_at: reopenedAt }));
   } catch (err) {
     if (before) writeWhole(contractPath, before);
     refuse(`run ${runId}'s lock could not be reopened (${err?.message ?? err})`);
@@ -287,9 +292,9 @@ export const GUARD_NOT_LIVE =
   "mmo-codex's PreToolUse hook, then start the run again.";
 
 /**
- * Proves the write hook ran in this session after the freeze: a decision row for the live run, stamped at or after
- * frozen_at. The hook records a row for every call while a contract binds, this script's own Bash call included.
- * Without one the run is ended (outcome `refused`) and the contract switched off.
+ * Proves the write hook ran in this session: a decision row for the live run, stamped at or after the freeze or, for a
+ * resumed run, its latest resume. The hook records a row for every call while a contract binds, this script's own
+ * Bash call included. Without one the run is ended (outcome `refused`) and the contract switched off.
  */
 export function assertGuardLive({ projectRoot, runId, now } = {}) {
   const root = gitProjectRoot(projectRoot);
@@ -304,9 +309,11 @@ export function assertGuardLive({ projectRoot, runId, now } = {}) {
   const tampered = contractTampered(root);
   if (tampered) refuse(tampered);
 
+  const since = [contract.frozen_at, ...(Array.isArray(lock.reopened_at) ? lock.reopened_at : [])]
+    .filter((t) => typeof t === "string").sort().pop() ?? "";
   const text = readRegularTail(join(root, DECISIONS_REL_PATH), 1024 * 1024)?.toString("utf8") ?? "";
   const row = text.split("\n").reverse().map((l) => { try { return JSON.parse(l); } catch { return null; } })
-    .find((r) => r && r.run_id === contract.run_id && typeof r.ts === "string" && r.ts >= contract.frozen_at);
+    .find((r) => r && r.run_id === contract.run_id && typeof r.ts === "string" && r.ts >= since);
   if (row) return { live: true, run_id: contract.run_id, wired_by: row.wired_by ?? null };
   endRun({ projectRoot: root, runId: contract.run_id, outcome: "refused", reason: "the write guard did not run in this session", now });
   return { live: false, run_id: contract.run_id };
@@ -372,7 +379,7 @@ export function main(argv = process.argv.slice(2), { stdout = process.stdout, st
       });
       sayProvenance(provenance, runId, { stdout, stderr });
       stdout.write(`write-contract: frozen for run ${runId} (${contract.allowlist.length} allowlist, ${contract.off_limits.length} off-limits pattern(s)${contract.strict ? "" : ", strict off"})\n`);
-      stdout.write(`write-contract: check the guard next, in a tool call of its own: node ${shq(SCRIPT_PATH)} --assert-guard-live --run-id=${runId} --project-root=${shq(root)}\n`);
+      stdout.write(`write-contract: check the guard next, in a tool call of its own: ${guardCheckCommand(runId, root)}\n`);
       return EXIT_OK;
     }
     if (a.mode === "--close") {

@@ -40,7 +40,7 @@ import { assertResumePolicy, policyRecord, resolveRunPolicy, RunRefusal } from "
 import { checkSessionModel } from "./session-model.mjs";
 import { staleBridgeBuild, staleBuildWarning } from "./bridge-build.mjs";
 import { appendSessionMarker } from "./session-marker.mjs";
-import { ContractRefusal, reopenRun } from "../scripts/write-contract.mjs";
+import { ContractRefusal, guardCheckCommand, reopenRun } from "../scripts/write-contract.mjs";
 import { isRunId, runDirFor } from "../scripts/lib/run-id.mjs";
 import { isMain } from "../scripts/lib/is-main.mjs";
 import { configureSinks, log } from "../scripts/lib/log.mjs";
@@ -346,6 +346,8 @@ export async function startRun(args, deps = {}) {
     brownfield_guide: mode === "brownfield" ? guide : null,
     read_first: mode === "brownfield" ? guide : playbook,
     write_contract: contract?.live ? (contract.reopened ? "reopened" : "live") : null,
+    // The resuming session may not run the hook (untrusted, or changed by an update): checked again before any write.
+    guard_check: contract?.live ? guardCheckCommand(runId, projectRoot) : null,
     warnings: staleWarning ? [staleWarning] : [],
     end_run:
       `node ${shellQuote(join(pluginRoot, "codex", "end-run.mjs"))} --run-dir=${shellQuote(runDir)} ` +
@@ -361,7 +363,7 @@ export function formatStart(result) {
   ];
   const keys = [
     "run_id", "run_dir", "project_root", "code_dir", "brief", "intent", "intent_brief", "policy",
-    "write_contract", "plugin_root", "playbook", "brownfield_guide", "end_run",
+    "write_contract", "guard_check", "plugin_root", "playbook", "brownfield_guide", "end_run",
   ];
   for (const key of keys) {
     if (result[key] === null || result[key] === undefined) continue;
@@ -371,8 +373,15 @@ export function formatStart(result) {
   }
   lines.push(`gates: ${result.gates} — ${result.gate_instruction}`);
   lines.push("");
+  if (result.guard_check) {
+    lines.push(
+      "First: run guard_check in a shell call of its own, before any write. It proves the write hook runs in this " +
+        "session; if it exits non-zero, print its message and stop.",
+    );
+  }
+  const follow = result.resumed ? "continue the run from its first incomplete phase" : "follow it";
   lines.push(
-    `Next: read ${result.read_first} and follow it. Read only the rendered copies in ${join(result.run_dir, "skills")}; ` +
+    `Next: read ${result.read_first} and ${follow}. Read only the rendered copies in ${join(result.run_dir, "skills")}; ` +
       "the plugin's own skills/*/SKILL.md files carry unfilled placeholders.",
   );
   lines.push(
