@@ -35,8 +35,15 @@ All of the above open PRs targeting **`develop`**, never `main` directly.
 
 1. Fork the repo (or branch directly if you have write access), create a feature branch off `develop`.
 2. Make your change. Keep the diff focused; one topic per PR.
-3. Run `npm test` from the repo root. It runs the tooling suite and then the MCP server's own, and every one of them is offline and free — no credential is read and no API call is made, so there is no reason not to run it.
-4. Run `node tools/setup.mjs` on a clean clone to verify it still passes.
+3. Run `npm test` from the repo root. It runs the tooling suite and then the MCP server's own, and both are offline and free: no credential is read and no API call is made. The tooling suite needs root `npm ci` and the server built once (`npm ci && npm run build` in `plugin/mcp/model-dispatch`, the same steps CI runs). The table lists what keeps it off your machine's own state.
+
+   | Piece | What it does |
+   |---|---|
+   | `tools/test/lib/stand-ins.mjs` | Preloaded by `npm test`. Puts stand-in `codex`, `gcloud` and `npm` first on `PATH` and points `CODEX_HOME` at a temporary directory, so your `~/.codex` is never read or written. |
+   | `tools/test/lib/sandbox.mjs` | `codexSandbox()` gives a test its own temporary `HOME` and `CODEX_HOME`. The setup-wizard tests run inside one. |
+   | `tools/test/offline.test.mjs` | Fails when a root test runs `codex`, `gcloud` or a script that does, outside the stand-ins. |
+   | `tools/test/node-floor.test.mjs` | Holds every `package.json` to one `engines.node` floor, CI to that Node major, and every locked package to that floor. |
+4. Run `node tools/setup.mjs` on a clean clone to verify it still passes. Unlike `npm test`, it uses your real `codex`: its last step registers the bridge in `~/.codex/config.toml`.
 5. If you touched the plugin code, run a full pass locally and confirm the report still renders sensibly.
 6. Open a pull request. Describe what changed and why in one or two paragraphs.
 

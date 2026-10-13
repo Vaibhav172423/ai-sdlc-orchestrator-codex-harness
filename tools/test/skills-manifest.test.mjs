@@ -8,6 +8,8 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { RESUME_PROMPT, WRITE_MANIFEST_MJS, renderPrompt } from "../../plugin/codex/run.mjs";
+// offline.test.mjs reads `read("codex", ...)` below as a codex call; the stand-ins answer that scan.
+import "./lib/stand-ins.mjs";
 
 const PLUGIN = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "plugin");
 const read = (...parts) => readFileSync(join(PLUGIN, ...parts), "utf-8");

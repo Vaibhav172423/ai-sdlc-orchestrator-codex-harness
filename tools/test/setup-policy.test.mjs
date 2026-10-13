@@ -14,6 +14,9 @@ import { mkdtempSync, existsSync, readFileSync, rmSync, mkdirSync, writeFileSync
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+// The agent-path policies make --check-creds run `gcloud auth application-default
+// print-access-token`; the stand-ins put an offline gcloud first on PATH.
+import "./lib/stand-ins.mjs";
 
 const SCRIPT = resolve(fileURLToPath(import.meta.url), "..", "..", "..", "plugin", "scripts", "setup-policy.mjs");
 
@@ -236,7 +239,7 @@ function seedPolicies() {
 
 // `node` is spawned by absolute path so a test can empty PATH — which is how
 // the "gcloud cannot be executed" case is reproduced without a sandbox.
-function checkCreds(policy, { home, policiesDir, env = {}, path } = {}) {
+function checkCreds(policy, { home, policiesDir, env = {}, emptyPath = false } = {}) {
   const dir = newTmpDir();
   try {
     const scrubbed = { ...process.env, HOME: home, ...env };
@@ -244,7 +247,7 @@ function checkCreds(policy, { home, policiesDir, env = {}, path } = {}) {
     delete scrubbed.GEMINI_API_KEY;
     delete scrubbed.GOOGLE_APPLICATION_CREDENTIALS;
     if (policiesDir) scrubbed.SDLC_POLICIES_DIR_FOR_TESTS = policiesDir;
-    if (path !== undefined) scrubbed.PATH = path;
+    if (emptyPath) scrubbed.PATH = "";
     const r = spawnSync(process.execPath, [SCRIPT, "--check-creds", `--policy=${policy}`], {
       cwd: dir,
       encoding: "utf8",
@@ -317,7 +320,7 @@ test("a Vertex probe that could not RUN falls back to the credential file, not t
   const home = homeWithAdc();
   const policiesDir = seedPolicies();
   try {
-    const parsed = checkCreds("with-agent", { home, policiesDir, path: "" });
+    const parsed = checkCreds("with-agent", { home, policiesDir, emptyPath: true });
     assert.equal(parsed.ok, true, `unrunnable probe + valid ADC must pass, got ${JSON.stringify(parsed)}`);
   } finally { cleanup(policiesDir); cleanup(home); }
 });
@@ -327,12 +330,25 @@ test("an unrunnable Vertex probe with no credential file behind it is still repo
   const home = homeWithoutAdc();
   const policiesDir = seedPolicies();
   try {
-    const parsed = checkCreds("with-agent", { home, policiesDir, path: "" });
+    const parsed = checkCreds("with-agent", { home, policiesDir, emptyPath: true });
     assert.equal(parsed.ok, false);
     assert.ok(
       parsed.missing.some((m) => m.kind === "vertex_adc"),
       `must still report the agent tier as unauthenticated: ${JSON.stringify(parsed)}`,
     );
+  } finally { cleanup(policiesDir); cleanup(home); }
+});
+
+test("--check-creds asks the offline gcloud stand-in, never a real gcloud", () => {
+  // with-agent carries an antigravity-worker leaf, so --check-creds probes
+  // gcloud for a live token. A real gcloud would contact Google from a test.
+  const home = homeWithoutAdc();
+  const policiesDir = seedPolicies();
+  try {
+    const parsed = checkCreds("with-agent", { home, policiesDir });
+    const adc = parsed.missing.find((m) => m.kind === "vertex_adc");
+    assert.ok(adc, `the agent tier must be reported: ${JSON.stringify(parsed)}`);
+    assert.match(adc.reason, /stand-in for tests: no network/);
   } finally { cleanup(policiesDir); cleanup(home); }
 });
 

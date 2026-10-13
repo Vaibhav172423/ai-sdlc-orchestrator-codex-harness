@@ -7,6 +7,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { writeMmoSelectFile } from "../../plugin/codex/mmoSelect.mjs";
+import "./lib/stand-ins.mjs";
 
 const REPO = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
 const SCRIPT = join(REPO, "plugin", "scripts", "setup-policy.mjs");

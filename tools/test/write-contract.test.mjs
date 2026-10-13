@@ -17,6 +17,7 @@ import {
 } from "../../plugin/scripts/write-contract.mjs";
 import { contractTampered, liveLock } from "../../plugin/scripts/lib/contract-lock.mjs";
 import { OFF_LIMITS_DEFAULT } from "../../plugin/scripts/lib/off-limits.mjs";
+import "./lib/stand-ins.mjs";
 
 const SCRIPT = resolve(fileURLToPath(import.meta.url), "..", "..", "..", "plugin", "scripts", "write-contract.mjs");
 const SKILLS = resolve(fileURLToPath(import.meta.url), "..", "..", "..", "plugin", "skills");

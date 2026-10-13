@@ -18,6 +18,7 @@ import { buildCodexArgs, spawnCodex } from "../../plugin/codex/run.mjs";
 import { runDispatch } from "../../plugin/codex/dispatch.mjs";
 import { argvPin } from "../../plugin/codex/telemetry/fairnessPin.mjs";
 import { isReplayFixture, loadPolicyFromPath, resolvePolicy } from "../../plugin/mcp/model-dispatch/dist/policy.js";
+import "./lib/stand-ins.mjs";
 
 const REPO = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
 const RUN = join(REPO, "plugin", "codex", "run.mjs");
