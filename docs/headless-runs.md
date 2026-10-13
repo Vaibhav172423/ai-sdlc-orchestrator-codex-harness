@@ -66,7 +66,7 @@ codex login status
 
 `codex login status` should say you are logged in using an API key. `run.mjs` records that as
 `driver_auth: "api_key"` in `driver-manifest.json`, and the report then tells you to compare the
-conductor's tokens with the OpenAI usage dashboard (step 7). Keep `CODEX_HOME` exported in every
+conductor's tokens with the OpenAI usage dashboard (step 8). Keep `CODEX_HOME` exported in every
 shell that runs or reads the run: codex writes the session files the check reads under
 `$CODEX_HOME/sessions/`.
 
@@ -75,7 +75,7 @@ changes: OpenAI does not bill a seat's tokens, so the dashboard shows the judgme
 
 ## 3. Check before you spend
 
-From the folder the run will work in:
+From the project folder, once step 4 or 5 has created it, and before its `run.mjs` command:
 
 ```bash
 node ~/mmo-codex/plugin/codex/verify-setup.mjs --project-root="$PWD"
