@@ -34,18 +34,24 @@ export function regenerateDriverFiles({ runDir, runId, records = readRunRecords(
 }
 
 /**
- * ctx: {projectRoot, runDir, runId, mode, outcome, deliberate, reason,
- * policyName, codeDir, records, driver}. `driver` carries what pricing the
+ * ctx: {route, projectRoot, runDir, runId, mode, outcome, deliberate, reason,
+ * policyName, codeDir, records, driver}. `route` is 'headless' (run.mjs, the
+ * default) or 'interactive' (end-run.mjs). `driver` carries what pricing the
  * conductor needs: {pricing, model, policyName, policyVersion, pin, sandbox,
- * approvalPolicy, auth}.
+ * approvalPolicy, auth}; an interactive run has no driver-events.jsonl, so it
+ * has neither `driver` nor driver files to regenerate.
  */
 export async function finalizeRun(ctx) {
-  const records = ctx.records ?? readRunRecords(ctx.runDir);
-  const { manifest } = regenerateDriverFiles({
-    runDir: ctx.runDir,
-    runId: ctx.runId,
-    records,
-    driver: { policyName: ctx.policyName, ...ctx.driver },
-  });
-  return { driverManifest: manifest };
+  const out = { driverManifest: null };
+  if (ctx.route !== "interactive") {
+    const records = ctx.records ?? readRunRecords(ctx.runDir);
+    const { manifest } = regenerateDriverFiles({
+      runDir: ctx.runDir,
+      runId: ctx.runId,
+      records,
+      driver: { policyName: ctx.policyName, ...ctx.driver },
+    });
+    out.driverManifest = manifest;
+  }
+  return out;
 }

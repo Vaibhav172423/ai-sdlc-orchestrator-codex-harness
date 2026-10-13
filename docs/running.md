@@ -238,7 +238,9 @@ contract and its decision log under `local/`, the baseline, the ledger — stays
 | `state.json` | each gate | The gate that is waiting for an answer |
 | `stop.json` | the conductor | Why it stopped the run, when no other record says so |
 | `question.json` | the conductor | `--gates=prompt`: a question for you that is not a gate |
-| `orchestrator.log` | the driver and the bridge | `run.start` and `run.end`, then each dispatch |
+| `orchestrator.log` | the driver or the start and end scripts, the conductor, the bridge | `run.start` and `run.end`; the conductor's `phase.start`, `phase.end`, `phase.skip`, `gate.open` and `gate.resolved`; each dispatch |
+| `run.json` | the start and end scripts | Session runs: the route (`interactive`), mode, intent, policy, each start, and how the run ended |
+| `skills/` | the driver or the start script | The playbooks rendered with this run's paths: `pipeline.md`, `brownfield-guide.md`, `discovery.md`, `roles/*.md`. The conductor reads these, never the plugin's own `SKILL.md` files |
 | `driver-events.jsonl` | the driver | Every `codex exec` invocation's start and end, and each codex event as it arrived |
 | `driver-stderr.log` | the driver | What codex wrote to stderr, per invocation |
 | `driver-cost-modeled.jsonl` | the driver | The conductor's own token usage, priced per turn |

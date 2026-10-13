@@ -81,8 +81,8 @@ Do not stop and do not ask for a restart — read the file directly and follow i
 cat "$(ls -d ~/.codex/plugins/cache/tilicho-ai-labs/mmo-codex/*/skills/setup/SKILL.md | tail -1)"
 ```
 
-Substitute the real paths for its `{{PLUGIN_ROOT}}` and `{{PROJECT_ROOT}}` placeholders —
-`PLUGIN_ROOT` is the `PATH` column from step 2, `PROJECT_ROOT` is the current directory.
+Substitute the real path for its `<plugin-root>` — the `PATH` column from step 2. Its commands
+pass the current directory as the project with `"$(pwd)"`.
 
 ### The one command that matters most
 

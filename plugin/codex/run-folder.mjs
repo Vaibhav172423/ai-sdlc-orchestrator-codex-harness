@@ -12,9 +12,18 @@ import { parseDriverRecords } from "../mcp/model-dispatch/dist/driverUsage.js";
 export { isRunId, runDirFor, RUN_ID_RE };
 
 export const DRIVER_EVENTS = "driver-events.jsonl";
+/** The record start-run.mjs keeps for a run started in a codex session. */
+export const SESSION_RUN_RECORD = "run.json";
 
 /** Files that only a run writes. A fresh run refuses a folder holding any of them. */
-export const RUN_RECORD_FILES = [DRIVER_EVENTS, "SUMMARY.md", "manifest.json", "gates.jsonl", "telemetry.jsonl"];
+export const RUN_RECORD_FILES = [DRIVER_EVENTS, SESSION_RUN_RECORD, "SUMMARY.md", "manifest.json", "gates.jsonl", "telemetry.jsonl"];
+
+function sessionRunHint(runDir, runId) {
+  return (
+    `run ${runId} already has a record from a codex session (${join(runDir, SESSION_RUN_RECORD)}); ` +
+    `continue it from a session with start-run.mjs --resume=${runId}`
+  );
+}
 
 /** A bad flag or a refusal before anything is spent: exit 2. */
 export class UsageError extends Error {
@@ -195,6 +204,9 @@ function refuseExistingRecord(runDir, runId) {
       `run ${runId} already has a record at ${runDir}; continue it with --resume=${runId}, or choose a new --run-id.`,
     );
   }
+  if (existsSync(join(runDir, SESSION_RUN_RECORD))) {
+    throw new UsageError(`${sessionRunHint(runDir, runId)}, or choose a new --run-id.`);
+  }
   const leftovers = RUN_RECORD_FILES.filter((f) => existsSync(join(runDir, f)));
   if (leftovers.length) {
     throw new UsageError(
@@ -261,6 +273,9 @@ export function resolveRun({ projectRoot, resume, runIdFlag, outputDir, mode, in
     return { runId, runDir, records: [], resume: { threadId: resume, foreignThread: true } };
   }
 
+  if (isRunId(resume) && existsSync(join(runDirFor(projectRoot, resume), SESSION_RUN_RECORD))) {
+    throw new UsageError(`--resume=${resume}: ${sessionRunHint(runDirFor(projectRoot, resume), resume)}.`);
+  }
   throw new UsageError(
     `--resume=${resume}: no run record under ${join(projectRoot, ".sdlc", "runs")} names it. ` +
       "Pass a run id (the folder name) or a codex thread id.",

@@ -1,9 +1,17 @@
 ---
 name: pipeline
-description: The end-to-end AI-SDLC workflow definition consumed by the conductor. Defines the state machine, TaskPacket schema, HITL gates, telemetry contract, and the prompts/templates for each phase. The conductor reads this skill to know exactly what to do at each step.
+description: "The conductor's playbook: state machine, TaskPacket schema, HITL gates and telemetry contract. A run reads the copy rendered into .sdlc/runs/<run-id>/skills/pipeline.md; this file is not runnable as is. Start a run with $mmo-codex:greenfield or $mmo-codex:brownfield."
 ---
 
 # AI-SDLC Workflow — Conductor Playbook
+
+**Follow only the rendered copy.** If the file you opened ends in `/skills/pipeline/SKILL.md`, it is
+the plugin's unrendered source: its commands hold double-brace markers where real paths belong,
+and none of them runs. Do not follow it. Follow the `greenfield` skill (a new app) or the
+`brownfield` skill (an existing repository) instead, at `<plugin-root>/skills/greenfield/SKILL.md`
+or `<plugin-root>/skills/brownfield/SKILL.md`, where `<plugin-root>` is two folders above this file.
+Ask the user which one if the request does not say. Its start script renders a runnable copy of
+this playbook into `.sdlc/runs/<run-id>/skills/pipeline.md`.
 
 This skill is the source of truth for the conductor. When invoked under `$mmo-codex:pass`, the conductor follows the state machine below.
 
@@ -166,7 +174,7 @@ When the app uses a validating `ConfigModule` (or Joi / Zod / envalid equivalent
 
 ### Brownfield-mode task types (v1)
 
-The table above is greenfield-Nest-centric. In brownfield mode (`mode: brownfield`), packets use a **stack-agnostic** base set of primitives plus an optional `subtype` hint that the loaded stack adapter (`plugin/skills/pipeline/stacks/*.md`) resolves to concrete codegen guidance.
+The table above is greenfield-Nest-centric. In brownfield mode (`mode: brownfield`), packets use a **stack-agnostic** base set of primitives plus an optional `subtype` hint that the loaded stack adapter (`{{PLUGIN_ROOT}}/skills/pipeline/stacks/*.md`) resolves to concrete codegen guidance.
 
 | task_type | Purpose | Common `subtype` values |
 |---|---|---|
@@ -213,8 +221,8 @@ Every attempt emits its own TelemetryEvent with `attempt_number`, `ceiling_used`
 
 ### Phase 5 — execute_packets
 
-Emit `phase.start` before the first packet and `phase.end` after the last — see "Run logging" in
-the conductor prompt. This is the phase with the most silence between pre-flight and Gate 1 otherwise:
+Emit `phase.start` before the first packet and `phase.end` after the last — see "Run logging"
+below. This is the phase with the most silence between pre-flight and Gate 1 otherwise:
 every dispatch inside the loop below already logs itself via the bridge (`route.decide`,
 `dispatch.start`/`.end`), but nothing marks the loop's own boundaries without this call.
 
@@ -385,23 +393,26 @@ with `phase: <name>, task_type: "skipped"` so downstream summaries stay complete
 ## HITL gate prompt templates
 
 **Gate delivery.** You print the gate block yourself, then follow the gate instruction you were
-given: wait for the user's reply in a session, or, on the `run.mjs` route, record the gate in
-`gates.jsonl` as that instruction says and end your turn. Never answer a gate on the user's
-behalf. Every gate is a fenced `> ⏸ **HITL Gate <N> — <Title>**` block (templates below), printed
-verbatim. **Persist the gate-pending state to `<output_dir>/state.json` before printing**, so a
-session that dies mid-gate leaves a record of the open gate in the run's own folder.
+given: in a session, the `gates:` line the start script printed; on the `run.mjs` route, the
+conductor prompt's "Approval gates" section. Never answer a gate on the user's behalf. Every gate
+is a fenced `> ⏸ **HITL Gate <N> — <Title>**` block (templates below), printed verbatim.
+**Persist the gate-pending state to `<output_dir>/state.json` before printing**, so a session that
+dies mid-gate leaves a record of the open gate in the run's own folder.
 
-**Gate record.** Once the user's reply settles a gate, append one line to
-`<output_dir>/gates.jsonl` (for brownfield, `.sdlc/runs/<run-id>/gates.jsonl`) before you act on it:
+**Gate record.** On both routes, append every gate decision, Gate 0 included, as a new line to
+`{{OUTPUT_DIR}}/gates.jsonl` before you act on it, with the decision under the key `decision`:
 
 ```json
-{"gate": 4, "artifact": "SUMMARY.md", "decision": "approved", "note": "<one line>"}
+{"gate": 1, "artifact": "requirements.md", "decision": "approved|revise|aborted|accepted|rejected|auto-approved", "note": "<one line>"}
 ```
 
-`decision` is `approved` or `aborted` (a headless run's prompt adds `auto-approved`); record
-Gate 4's `accept` as `approved`. A `revise:` or `reject:` reply records nothing: revise, then show
-the gate again. The brownfield close-out (`write-contract.mjs --close`) reads this file and
-refuses while it holds neither an approved Gate 4 nor an abort.
+In a session, write the line once the user has replied, or as you continue under
+`--gates=auto-approve`. Gate 4 records `accepted`, `auto-approved` or `rejected`. The end command
+in "Run logging" refuses `--outcome=completed` until the latest Gate 4 line in this file is
+`accepted` or `auto-approved`. The brownfield close-out (`write-contract.mjs --close`) reads this
+file too and refuses while it holds neither an accepted Gate 4 nor an abort. On the `run.mjs`
+route the conductor prompt also has you record `pending` before you end your turn on a gate.
+Log each gate's opening and resolution as "Run logging" below says.
 
 ### Gate 0 — Brownfield only, before Gate 1
 
@@ -411,9 +422,9 @@ refuses while it holds neither an approved Gate 4 nor an abort.
 >
 > - **Stack:** `<top-detected stacks>` — correct? add/override?
 > - **Test command:** `<detected>` — enter to accept, or paste the command.
-> - **Policy:** `<the default_policy field setup wrote to .sdlc/project.json>` — accept, or
->   name another on-disk policy for this run only (e.g. `gpt-plus-flash`). To change the project's
->   persistent default, re-run setup (`node '{{PLUGIN_ROOT}}/scripts/setup-policy.mjs'`
+> - **Policy:** `{{POLICY}}`, the policy every dispatch in this run uses — accept, or name
+>   another on-disk policy (e.g. `gpt-plus-flash`) and the run restarts with it. To change the
+>   project's persistent default, re-run setup (`node '{{PLUGIN_ROOT}}/scripts/setup-policy.mjs'`
 >   — this is the one command that opens a browser; every other setup step is terminal-only).
 > - **Existing AI setup:** `<verbatim list from Tier 1 group 6>` — is any of this
 >   authoritative and off-limits? **(default: OFF-LIMITS, do not touch)**
@@ -433,8 +444,8 @@ refuses while it holds neither an approved Gate 4 nor an abort.
 >
 > Reply: `approved`, `revise: <comments>`, or `abort`.
 
-On `approved`, freeze the write contract with `write-contract.mjs`, as step 5 of
-[the brownfield guide](../brownfield-guide/SKILL.md) shows:
+On `approved`, freeze the write contract with `write-contract.mjs`, as step 5 of the brownfield
+guide, `{{OUTPUT_DIR}}/skills/brownfield-guide.md`, shows:
 
 ```bash
 node '{{PLUGIN_ROOT}}/scripts/write-contract.mjs' --freeze --run-id=<run-id> \
@@ -461,7 +472,7 @@ contract changed after its freeze makes the hook refuse every write. If either c
 non-zero, print its message and stop. While the contract is live the run writes its own
 `.sdlc/runs/<run-id>/` folder and, outside it, only the allowlist.
 
-**Ending a brownfield run.** After the user accepts Gate 4 and its `approved` line is in
+**Ending a brownfield run.** After the user accepts Gate 4 and its `accepted` line is in
 `gates.jsonl`, `write-contract.mjs --close --run-id=<run-id>` ends the run and switches the
 contract off, before the ledger rows are written. An abort at any gate appends that gate's
 `aborted` line, then runs `write-contract.mjs --abandon --run-id=<run-id>
@@ -493,6 +504,65 @@ explicitly.
 > The full SDLC pass is complete.
 > Total cost: $X.XX  ·  Files: N  ·  Tests: passing/total
 > Reply `accept` to finalize the manifest, or `reject: <comments>` to revise.
+
+---
+
+## Run logging
+
+The run's log is `{{OUTPUT_DIR}}/orchestrator.log`. The bridge logs each dispatch there itself; you
+add the phase boundaries, the gates, and on a run started in a session, the end of the run.
+
+**Phase boundaries.** At the start and end of each phase you run (`requirements_analysis`,
+`architecture_design`, `plan_task_packets`, `execute_packets`, `senior_code_review`, `test_run`,
+`security_review`, `generate_final_report`, plus `discovery` and `change_plan` in brownfield):
+
+```bash
+node '{{PLUGIN_ROOT}}/scripts/mmo-log.mjs' --event=phase.start --run-dir='{{OUTPUT_DIR}}' --run-id={{RUN_ID}} --phase=<phase>
+node '{{PLUGIN_ROOT}}/scripts/mmo-log.mjs' --event=phase.end --run-dir='{{OUTPUT_DIR}}' --run-id={{RUN_ID}} --phase=<phase>
+```
+
+A phase the intent matrix marks SKIP gets `--event=phase.skip --phase=<phase> --reason=<matrix
+cell>` instead of the pair.
+
+**Gates.** When you print a gate block, and again once its decision line is in `gates.jsonl`:
+
+```bash
+node '{{PLUGIN_ROOT}}/scripts/mmo-log.mjs' --event=gate.open --run-dir='{{OUTPUT_DIR}}' --run-id={{RUN_ID}} --gate=<N>
+node '{{PLUGIN_ROOT}}/scripts/mmo-log.mjs' --event=gate.resolved --run-dir='{{OUTPUT_DIR}}' --run-id={{RUN_ID}} --gate=<N> --decision=<decision>
+```
+
+`<decision>` is the value you wrote under `decision`. A `pending` line is not a resolution: log
+`gate.resolved` once the answer is recorded. `gates.jsonl` stays the gate record; these lines put
+each gate in the log's timeline.
+
+**The end of the run.** Who records it depends on how the run started:
+
+- **Started by `run.mjs`** (the run folder holds `driver-events.jsonl`): the driver logs `run.start`
+  and `run.end` itself. Record why you stopped the way the conductor prompt says; do not run the
+  command below.
+- **Started from a `$mmo-codex:*` skill in a session** (the run folder holds `run.json`): the start
+  script logged `run.start`. Record the end with:
+
+```bash
+node '{{PLUGIN_ROOT}}/codex/end-run.mjs' --run-dir='{{OUTPUT_DIR}}' --outcome=<outcome> --reason='<one line>'
+```
+
+| Outcome | When |
+|---|---|
+| `completed` | Gate 4 is recorded as `accepted` in `gates.jsonl` and Phase 9 wrote `SUMMARY.md`. The script refuses `completed` otherwise. |
+| `aborted` | A gate was answered `abort`, or the user stopped the run. |
+| `halted` | Preflight returned `ok: false`, or a pre-check step failed. |
+| `refused` | The write guard refused a write, and you stopped as the rules say. |
+| `cost_cap` | A dispatch failed with `COST_CAP_EXCEEDED`. |
+| `stopped` | Any other deliberate stop, such as setup not done for this project. |
+| `failed` | An error the run could not get past. |
+
+Every outcome but `completed` needs `--reason`. Run it once Gate 4 is accepted and before the final
+report, or right after you tell the user why the run stopped. Its `Cost report:` line gives the
+cost report command for the run folder, or says this install has none; then build the breakdown
+from `{{OUTPUT_DIR}}/telemetry.jsonl`. Running the same command again keeps the recorded end and
+repeats only the run-end steps. A Gate 4 `reject` sends the run back for changes; it does not end
+the run.
 
 ---
 

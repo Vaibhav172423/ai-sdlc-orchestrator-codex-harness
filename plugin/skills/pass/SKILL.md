@@ -74,21 +74,51 @@ code says how the run ended:
 When the user invokes this skill directly with flags in their message, do not shell out to
 `run.mjs` — you are already the conductor it would have spawned, and spawning another would bill
 the same work twice. Instead, read the flags out of the user's text, resolve them against the
-defaults in the table above, and follow
-[plugin/skills/pipeline/SKILL.md](../pipeline/SKILL.md) yourself with those settings.
+defaults in the table above, and start the run with the start script, which takes the same
+spelling for the flags a session run uses:
+
+```bash
+node '<plugin-root>/codex/start-run.mjs' --mode=<greenfield|brownfield> [--policy=<name>] [--brief=<path>] [--code-dir=<path>] [--intent=<id>] [--gates=<mode>] [--run-id=<id>] [--resume=<run-id>]
+```
+
+`<plugin-root>` is this plugin's own folder: the path codex gave for this skill ends in
+`/skills/pass/SKILL.md`, and the plugin root is that path with the ending removed. Pick `--mode`
+yourself when the user did not: `greenfield` for a new app in a folder that is not a git
+repository, `brownfield` otherwise. `--brief` is greenfield only; a brownfield intent brief goes to
+the guide's step 4b. `--output-dir`, `--seed` and `--max-turns` belong to `run.mjs` only. If the
+start script exits non-zero, show the user its message and stop.
+
+It prints the run folder and the rendered playbooks. Follow the `playbook` it printed
+(`<run folder>/skills/pipeline.md`); read only those rendered copies, never the plugin's own
+`skills/*/SKILL.md`, which carry unfilled placeholders. For a greenfield run, hand the playbook
+this from the start script's output:
+
+- `mode: greenfield`
+- `run_id:` the printed `run_id`. Do not generate another; every packet's `pass_id` uses it.
+- `output_dir:` the printed `run_dir`. Wherever the playbook says `<output_dir>`, it means this
+  folder.
+- `code_dir:` the printed `code_dir`. Generated code goes here, and Phase 7 runs the tests here.
+- `brief_path:` the printed `brief`.
+- `policy:` the printed `policy`.
+- `telemetry_path:` `telemetry.jsonl` in the run folder.
 
 Honor `--gates` as written: under `auto-approve` print each gate block and continue without
 waiting; under `auto-abort` print the gate and stop the run; under `prompt` (or when the flag is
-absent) wait for the user as normal.
+absent) wait for the user as normal. The `gates:` line the start script printed is your gate
+instruction for this run. Follow it at every gate, and record each decision as a new line in
+`gates.jsonl` in the run folder, in the shape that line gives. The run's end record counts the run
+as completed only after an accepted Gate 4 line there.
 
-For a brownfield run, take the intent from the user's text and follow
-[plugin/skills/brownfield-guide/SKILL.md](../brownfield-guide/SKILL.md) from step 4
-with `intent:` pre-set — Gate 0 still fires, and under `auto-approve` it is answered rather than
-skipped.
+For a brownfield run, take the intent from the user's text and follow the `brownfield_guide` it
+printed (`<run folder>/skills/brownfield-guide.md`) from step 4 with `intent:` pre-set — Gate 0
+still fires, and under `auto-approve` it is answered rather than skipped.
+
+When the run ends, record it with the `end_run` command the start script printed; the playbook's
+"Run logging" section lists the outcomes.
 
 # Requirements before starting
 
-- The dispatch bridge must be built. `node '{{PLUGIN_ROOT}}/codex/verify-setup.mjs' --fix` builds
+- The dispatch bridge must be built. `node '<plugin-root>/codex/verify-setup.mjs' --fix` builds
   it; `$mmo-codex:setup` wraps that with everything else.
 - The credentials the resolved policy needs must be present. Preflight (pipeline phase -1) proves
   this before any billable phase runs — do not skip it, and do not start a run on a policy whose

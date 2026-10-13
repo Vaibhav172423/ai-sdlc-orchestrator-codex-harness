@@ -1,7 +1,15 @@
 ---
 name: brownfield-guide
-description: "The shared seven-step operating manual for running the SDLC pipeline against an existing codebase. Every brownfield entry point delegates here, optionally handing over a chosen intent and the user's own description of the job."
+description: "The shared seven-step operating manual for SDLC work on an existing codebase. Every brownfield entry point renders a copy into .sdlc/runs/<run-id>/skills/brownfield-guide.md and follows that; this file is not runnable as is. Start with $mmo-codex:brownfield or a job type's own skill."
 ---
+
+**Follow only the rendered copy.** If the file you opened ends in
+`/skills/brownfield-guide/SKILL.md`, it is the plugin's unrendered source: its commands hold
+double-brace markers where real paths belong, and none of them runs. Do not follow it. Follow the
+`brownfield` skill at `<plugin-root>/skills/brownfield/SKILL.md` instead, where `<plugin-root>` is two
+folders above this file, or the job type's own skill (`<plugin-root>/skills/bugfix/SKILL.md` and so
+on) when the user already named one. Its start script renders a runnable copy of this manual into
+`.sdlc/runs/<run-id>/skills/brownfield-guide.md`.
 
 You are the conductor, following this operating manual. Work through the steps in order. Do not skip
 a step because the answer seems obvious. Do not begin the pipeline until Gate 0 is approved.
@@ -10,12 +18,17 @@ a step because the answer seems obvious. Do not begin the pipeline until Gate 0 
 refuse politely and point them at SETUP.md. This command is for the task work; setup is one-time
 per machine and happens separately.
 
+**Every stop ends the run's record.** Wherever this manual stops — setup not done, a failed
+pre-check, a Gate 0 `abort` — and once the run completes, record the end with the end command in
+the pipeline playbook's "Run logging" section (`{{OUTPUT_DIR}}/skills/pipeline.md`) and the
+outcome it lists. On the `run.mjs` route the driver records it instead.
+
 **The handover.** The invoking command's prompt may contain a block naming `intent:` and/or
 `seed_description:`. Read it before step 4:
 
 - `intent: <id>` present — the job type is already chosen. Skip step 4a's question entirely;
   Gate 0 still re-confirms it. `<id>` must be one of the ids in
-  [plugin/config/intents.json](/plugin/config/intents.json).
+  `{{PLUGIN_ROOT}}/config/intents.json`.
 - `seed_description:` present and non-empty — the user's own words for the job, typed after the
   command. Step 4b treats this as the answer to the interview's first question and asks only the
   remaining ones.
@@ -42,8 +55,10 @@ Read the JSON. Three cases:
 - **`resume.pending: true` with `kind: "run"`** — a previous task run was interrupted at phase
   &lt;phase&gt;. Print *"A previous &lt;intent&gt; run (`&lt;run_id&gt;`) was interrupted at phase &lt;phase&gt;.
   Would you like to resume it, or start fresh?"* Accept `resume`, `discard`, or `abort`. If
-  `resume`, follow the resume path in [plugin/skills/pipeline/SKILL.md](../pipeline/SKILL.md).
-  If `discard`, end that run first, so its write contract stops binding:
+  `resume` in a session: end this session's new run (`--outcome=stopped`, reason `resumed run
+  <run_id>`), run `node '{{PLUGIN_ROOT}}/codex/start-run.mjs' --resume=<run_id>`, and follow the
+  playbooks it prints from the first incomplete phase. If `discard`, end that run first, so its
+  write contract stops binding:
   ```bash
   node '{{PLUGIN_ROOT}}/scripts/write-contract.mjs' --abandon --run-id=<run_id> --reason='discarded at resume' --project-root='{{PROJECT_ROOT}}'
   ```
@@ -107,8 +122,8 @@ relay them rather than debugging the server:
   `node '{{PLUGIN_ROOT}}/codex/run.mjs' --brief=<file> --project-root='{{PROJECT_ROOT}}'`
 
 If any pre-check step fails, **do not proceed to Gate 0.** Print the reported remediation and
-offer inline choices (fix now / switch policy / abort). Do not kick the user out to external
-fixes.
+offer inline choices (fix now / switch policy / abort). Switching policy restarts the run, as
+Gate 0's Policy line describes. Do not kick the user out to external fixes.
 
 # 3. Discovery — Tier 1 (with adaptive profile if triggered)
 
@@ -139,7 +154,7 @@ it is not asked, and a question the run cannot go on without stops the run with 
 
 - **Handover carries `intent: <id>`** — already chosen. Skip the question; read `title`,
   `summary`, and `interview` for `<id>` from
-  [plugin/config/intents.json](/plugin/config/intents.json) and continue to step 4b.
+  `{{PLUGIN_ROOT}}/config/intents.json` and continue to step 4b.
 - **No handover** — ask which job type. Show the seven options with one-line examples, drawn
   from `intents.json`'s `title` and `example` fields, so the choice is meaningful:
 
@@ -193,7 +208,7 @@ Fill in "Files in scope" and "Files off-limits" with your best guess based on di
 
 The one confirmation moment before real work begins. Fires unconditionally — even when the
 handover pre-set `intent` and `seed_description`, nothing below is skipped. Print the gate
-template from [plugin/skills/pipeline/SKILL.md](../pipeline/SKILL.md) (search for
+template from the pipeline playbook, `{{OUTPUT_DIR}}/skills/pipeline.md` (search for
 "Gate 0"), filling in:
 
 - **Stack** — top-detected from `baseline.stacks`. Ask if it's right; accept overrides.
@@ -203,14 +218,24 @@ template from [plugin/skills/pipeline/SKILL.md](../pipeline/SKILL.md) (search fo
   it is null, setup was not completed for this project — abort Gate 0 and tell the user to
   run setup first (see [SETUP.md](/SETUP.md) §5b — the one setup step that opens a browser
   for the policy console). Do not silently default and do not launch the console from here.
-  Otherwise show the resolved name; accept, or accept an on-disk policy name for this run only
-  — a per-run override does not overwrite the project default.
+  Otherwise show `{{POLICY}}`, the policy this run dispatches with. It was resolved when the run
+  started and every dispatch command in the playbook already carries it, so it cannot change
+  mid-run. If the user names another on-disk policy, restart the run with it: in a session, end
+  this run (`--outcome=aborted`, reason `restart with policy <name>`), run
+  `node '{{PLUGIN_ROOT}}/codex/start-run.mjs' --mode=brownfield --intent=<confirmed intent> --policy=<name>`,
+  and follow the guide it prints from step 1, reusing the answers the user already gave. On the
+  `run.mjs` route, record Gate 0 as `aborted` with that note and tell the user to rerun with
+  `--policy=<name>`. A `routing-policy.yaml` at the project root outranks `--policy`; when the
+  start script printed `(from routing-policy.yaml)`, say that file decides the policy instead of
+  restarting. Neither way changes the project default.
 - **Existing AI setup** — verbatim list from `baseline.ai_configs_detected`. Default is
   **OFF-LIMITS** for all of them. User can move any into the allowlist by naming it explicitly.
 - **Intent** — from step 4a. Re-confirm, even when the handover pre-set it.
 - **File scope** — the allowlist and off-limits proposed from step 4b. Let the user edit.
 
-Reply options: `approved` / `revise: <comments>` / `abort`.
+Reply options: `approved` / `revise: <comments>` / `abort`. Record the answer as a Gate 0 line in
+`{{OUTPUT_DIR}}/gates.jsonl`, in the shape the pipeline playbook's "Gate record" paragraph gives,
+and log the gate (`--gate=0`) as its "Run logging" section says.
 
 **Cost projection (single line at the bottom, before the reply prompt).** From a rough
 per-intent × baseline-size table, print *"Typical cost for a &lt;intent&gt; run on a repo this size:
@@ -258,11 +283,11 @@ elsewhere only inside the allowlist.
 On `revise: <comments>` — rewrite the affected parts and re-show Gate 0.
 
 On `abort` — nothing is frozen yet. Do not delete the run directory (leave it as a partial
-record), and stop.
+record), record the end (`--outcome=aborted`), and stop.
 
 # 6. Run the pipeline
 
-Follow [plugin/skills/pipeline/SKILL.md](../pipeline/SKILL.md) with:
+Follow the pipeline playbook, `{{OUTPUT_DIR}}/skills/pipeline.md`, with:
 - `mode: brownfield`
 - `intent: <from Gate 0>`
 - `run_id: {{RUN_ID}}` — the id the invoking route handed over. Do not generate another; the
@@ -278,17 +303,18 @@ Follow [plugin/skills/pipeline/SKILL.md](../pipeline/SKILL.md) with:
   `.sdlc/runs/<run-id>/` path in this guide is this folder.
 
 Drive phases 1 through 9 with gates 1, 2, 3, 4 as usual — but branched by intent (see the Intent
-matrix in SKILL.md). At each gate, print the gate prompt and follow the gate instruction you were
-given; never answer a gate on the user's behalf. Phase 7 runs the test command from the repo
-root.
+matrix in the pipeline playbook). At each gate, print the gate prompt and follow the gate
+instruction you were given (in a session, the `gates:` line the start script printed), and append
+the decision to `{{OUTPUT_DIR}}/gates.jsonl` as the playbook's "Gate record" paragraph says. Never
+answer a gate on the user's behalf. Phase 7 runs the test command from the repo root.
 
 # 7. Close out
 
 When the user replies `accept` at Gate 4, record it in `.sdlc/runs/<run-id>/gates.jsonl` as
-`approved`, one line:
+`accepted`, one line:
 
 ```json
-{"gate": 4, "artifact": "SUMMARY.md", "decision": "approved", "note": "<one line>"}
+{"gate": 4, "artifact": "SUMMARY.md", "decision": "accepted", "note": "<one line>"}
 ```
 
 Then:
@@ -297,13 +323,15 @@ Then:
    ```bash
    node '{{PLUGIN_ROOT}}/scripts/write-contract.mjs' --close --run-id=<run-id> --project-root='{{PROJECT_ROOT}}'
    ```
-   It refuses while `gates.jsonl` records neither an approved Gate 4 nor an abort. If it exits
+   It refuses while `gates.jsonl` records neither an accepted Gate 4 nor an abort. If it exits
    non-zero, print its message and stop: the message names the `--abandon` command the user runs
    to end the run. The ledger below sits outside the run's folder, so it is written only after
    this step.
 2. Append a row to `.sdlc/ledger.md` (human-readable) and `.sdlc/ledger.json` (machine mirror).
 3. Update the project fingerprint record with a link to the ledger.
-4. Print the report to the user with cost breakdown, files touched, and (if applicable) the
+4. Record the end (`--outcome=completed`, after Gate 4 is accepted). Its `Cost report:` line gives
+   the cost report command for this run folder, or says this install has none.
+5. Print the report to the user with cost breakdown, files touched, and (if applicable) the
    `git reset` command the report provides as the escape hatch.
 
 **An abort at Gate 1, 2, 3 or 4** ends the run too. Append the gate's `aborted` line, with that
@@ -314,8 +342,8 @@ gate's number and artifact (here, an abort at Gate 2):
 ```
 
 then run
-`node '{{PLUGIN_ROOT}}/scripts/write-contract.mjs' --abandon --run-id=<run-id> --reason='aborted at gate <N>' --project-root='{{PROJECT_ROOT}}'`
-and stop. Keep the reason plain words.
+`node '{{PLUGIN_ROOT}}/scripts/write-contract.mjs' --abandon --run-id=<run-id> --reason='aborted at gate <N>' --project-root='{{PROJECT_ROOT}}'`,
+record the end (`--outcome=aborted`), and stop. Keep the reason plain words.
 
 Do not propose a follow-up run.
 
@@ -342,4 +370,4 @@ step 4 does not ask what it has already been told. **An unattended run needs at 
 `--intent`**: under `--gates=auto-approve` there is no user to answer step 4a's question and
 stdin is closed.
 
-See [the pass skill](../pass/SKILL.md) for the full flag contract.
+See the `$mmo-codex:pass` skill for the full flag contract.

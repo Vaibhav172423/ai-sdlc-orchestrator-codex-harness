@@ -1,0 +1,201 @@
+/**
+ * The record a run started from a `$mmo-codex:*` skill keeps in its folder:
+ * `run.json` (route, settings, each start, how it ended), the outcomes it may
+ * end with, and the evidence a completed run needs. No dependency outside
+ * node, like render.mjs.
+ */
+import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
+
+export const PLUGIN_ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
+export const RUN_JSON = "run.json";
+export const RUN_JSON_VERSION = 1;
+export const ROUTE = "interactive";
+export const DEFAULT_POLICY = "gpt-plus-flash";
+
+/** How a run in a session may end. `deliberate` matches run-record.mjs's OUTCOMES. */
+export const INTERACTIVE_OUTCOMES = {
+  completed: { deliberate: null, when: "Gate 4 is recorded as accepted and Phase 9 wrote SUMMARY.md" },
+  aborted: { deliberate: true, when: "a gate was answered abort, or the user stopped the run" },
+  halted: { deliberate: true, when: "preflight returned ok: false, or a pre-check step failed" },
+  refused: { deliberate: true, when: "the write guard refused a write and the run stopped" },
+  cost_cap: { deliberate: true, when: "a dispatch failed with COST_CAP_EXCEEDED" },
+  stopped: { deliberate: true, when: "any other deliberate stop" },
+  failed: { deliberate: false, when: "an error the run could not get past" },
+};
+
+/** What the model does at a gate in a session, per --gates. */
+export const INTERACTIVE_GATE_MODES = {
+  prompt:
+    "The user is in this session. At each gate, print the gate block and wait for their reply; " +
+    "never answer a gate for them.",
+  "auto-approve":
+    "Unattended replay. At each gate, print the gate block, record the decision as auto-approved, " +
+    "and continue without waiting. If an artifact looks wrong enough that a reviewer would reject " +
+    "it, say so in the gate record.",
+  "auto-abort":
+    "At the first gate, print the gate block, record the decision as aborted, and end the run there " +
+    "(outcome aborted).",
+};
+
+export const GATE_RECORD =
+  'Record every gate decision as a new line in gates.jsonl in the run folder: {"gate": N, ' +
+  '"artifact": "<file>", "decision": "<approved|revise|aborted|accepted|rejected|auto-approved>", ' +
+  '"note": "<one line>"}.';
+
+/** The run-log vocabulary orchestrator.log speaks (Claude parity): completed, aborted or failed. */
+export function runLogOutcome(outcome) {
+  if (outcome === "completed") return "completed";
+  if (outcome === "failed") return "failed";
+  return "aborted";
+}
+
+export class UsageError extends Error {
+  constructor(message) {
+    super(message);
+    this.name = "UsageError";
+  }
+}
+
+/** `--k=v` and `--k v`; an unknown flag, a stray word or a missing value is a UsageError. */
+export function parseFlags(argv, { value = [], boolean = [], script, hints = {} }) {
+  const args = {};
+  const known = () => [...value, ...boolean].map((f) => `--${f}`).join(", ");
+  for (let i = 0; i < argv.length; i++) {
+    const raw = String(argv[i]);
+    if (!raw.startsWith("--") || raw === "--") {
+      throw new UsageError(`unexpected argument '${raw}': every ${script} option is a --flag. Known flags: ${known()}.`);
+    }
+    const eq = raw.indexOf("=");
+    const name = eq === -1 ? raw.slice(2) : raw.slice(2, eq);
+    if (Object.prototype.hasOwnProperty.call(args, name)) throw new UsageError(`--${name} is given more than once.`);
+    if (boolean.includes(name)) {
+      const v = eq === -1 ? "true" : raw.slice(eq + 1);
+      if (v !== "true" && v !== "false") throw new UsageError(`--${name} takes no value (or =true / =false).`);
+      args[name] = v === "true";
+    } else if (value.includes(name)) {
+      let v = eq === -1 ? argv[i + 1] : raw.slice(eq + 1);
+      if (eq === -1) {
+        if (v === undefined || String(v).startsWith("--")) throw new UsageError(`--${name} needs a value (--${name}=<value>).`);
+        i += 1;
+      }
+      if (String(v) === "") throw new UsageError(`--${name} needs a value (--${name}=<value>).`);
+      args[name] = String(v);
+    } else {
+      throw new UsageError(hints[name] ?? `unknown flag --${name}. Known flags: ${known()}.`);
+    }
+  }
+  return args;
+}
+
+export function shellQuote(value) {
+  return `'${String(value).replace(/'/g, "'\\''")}'`;
+}
+
+export function readRunJson(runDir) {
+  const path = join(runDir, RUN_JSON);
+  if (!existsSync(path)) return null;
+  try {
+    const parsed = JSON.parse(readFileSync(path, "utf-8"));
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+export function writeRunJson(runDir, record) {
+  mkdirSync(runDir, { recursive: true });
+  const path = join(runDir, RUN_JSON);
+  const tmp = `${path}.${process.pid}.tmp`;
+  writeFileSync(tmp, JSON.stringify(record, null, 2) + "\n", "utf-8");
+  renameSync(tmp, path);
+}
+
+/** Every gates.jsonl line that parses, in order. Model-written lines carry `decision` or `status`. */
+export function gateLines(runDir) {
+  const path = join(runDir, "gates.jsonl");
+  if (!existsSync(path)) return [];
+  const out = [];
+  for (const line of readFileSync(path, "utf-8").split("\n")) {
+    if (!line.trim()) continue;
+    try {
+      const rec = JSON.parse(line);
+      if (rec && typeof rec === "object" && !Array.isArray(rec)) out.push(rec);
+    } catch { /* a torn or hand-edited line is skipped */ }
+  }
+  return out;
+}
+
+function gateNumber(value) {
+  if (typeof value === "number") return value;
+  const m = /(\d+)/.exec(String(value ?? ""));
+  return m ? Number(m[1]) : null;
+}
+
+const GATE_4_ACCEPTED = new Set(["accepted", "accept", "approved", "auto-approved"]);
+
+/**
+ * What a completed session run needs: SUMMARY.md, and the latest Gate 4 line
+ * accepting it (a later reject sends the run back for changes).
+ */
+export function checkCompleted(runDir) {
+  const summary = existsSync(join(runDir, "SUMMARY.md"));
+  const gate4 = gateLines(runDir).filter((g) => gateNumber(g.gate) === 4).at(-1) ?? null;
+  const gate4Decision = gate4 ? String(gate4.decision ?? gate4.status ?? "").trim().toLowerCase() : null;
+  const missing = [];
+  if (!summary) missing.push("SUMMARY.md in the run folder (Phase 9)");
+  if (!gate4) missing.push("a Gate 4 line in gates.jsonl");
+  else if (!GATE_4_ACCEPTED.has(gate4Decision)) missing.push(`Gate 4 accepted (the latest Gate 4 line says '${gate4Decision}')`);
+  return { summary, gate4Decision, ok: missing.length === 0, missing };
+}
+
+export function pluginVersion(pluginRoot = PLUGIN_ROOT) {
+  try {
+    return JSON.parse(readFileSync(join(pluginRoot, ".codex-plugin", "plugin.json"), "utf-8")).version ?? null;
+  } catch {
+    return null;
+  }
+}
+
+/** Job types from plugin/config/intents.json. */
+export function intentIds(pluginRoot = PLUGIN_ROOT) {
+  const raw = JSON.parse(readFileSync(join(pluginRoot, "config", "intents.json"), "utf-8"));
+  return (Array.isArray(raw) ? raw : (raw.intents ?? [])).map((i) => i.id);
+}
+
+const POLICY_NAME_RE = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
+
+function policyFile(pluginRoot, name) {
+  return join(pluginRoot, "config", "policies", `${name}.yaml`);
+}
+
+function projectDefaultPolicy(projectRoot) {
+  try {
+    const name = JSON.parse(readFileSync(join(projectRoot, ".sdlc", "project.json"), "utf-8")).default_policy;
+    return typeof name === "string" && name ? name.replace(/\.ya?ml$/, "") : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * The policy this run uses, in the order the bridge applies:
+ * `<root>/routing-policy.yaml`, then --policy, then the project's
+ * default_policy, then gpt-plus-flash. `name` is what dispatch commands pass
+ * as --policy.
+ */
+export function resolveRunPolicy({ projectRoot, policy, pluginRoot = PLUGIN_ROOT }) {
+  const override = join(projectRoot, "routing-policy.yaml");
+  const fromProject = projectDefaultPolicy(projectRoot);
+  const name = policy ?? fromProject ?? DEFAULT_POLICY;
+  const source = policy ? "--policy" : fromProject ? "project.json" : "default";
+  if (existsSync(override)) return { name, source: "routing-policy.yaml", path: override };
+  if (!POLICY_NAME_RE.test(name) || !existsSync(policyFile(pluginRoot, name))) {
+    throw new UsageError(
+      `policy '${name}' (from ${source}) is not a file in ${join(pluginRoot, "config", "policies")}. ` +
+        "Pass --policy=<name> with a policy that exists, or fix the project's default with $mmo-codex:policy change.",
+    );
+  }
+  return { name, source, path: policyFile(pluginRoot, name) };
+}

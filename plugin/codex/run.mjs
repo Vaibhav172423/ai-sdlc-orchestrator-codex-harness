@@ -18,7 +18,7 @@
  * 128+signal when interrupted.
  */
 
-import { appendFileSync, readFileSync, writeFileSync, mkdirSync, existsSync } from "node:fs";
+import { appendFileSync, readFileSync, mkdirSync, existsSync } from "node:fs";
 import { spawn, spawnSync } from "node:child_process";
 import { homedir } from "node:os";
 import { dirname, isAbsolute, join, resolve } from "node:path";
@@ -57,6 +57,7 @@ import {
   STDOUT_LINE_MAX,
 } from "./run-record.mjs";
 import { finalizeRun, regenerateDriverFiles } from "./run-finalize.mjs";
+import { renderPrompt, renderSkills } from "./render.mjs";
 
 const CODEX_DIR = dirname(fileURLToPath(import.meta.url));
 const PLUGIN_ROOT = dirname(CODEX_DIR);
@@ -203,60 +204,7 @@ export function parseArgs(argv) {
   return args;
 }
 
-/**
- * Substitutes the run's real paths into the conductor prompt. The prompt
- * ships with `{{PLACEHOLDER}}` markers rather than hardcoded paths because
- * the same text is also the basis for the interactive prompt install, where
- * the values differ per project.
- *
- * Throws on any placeholder left unrendered: a conductor prompt that reaches
- * the model still saying `{{OUTPUT_DIR}}` produces a run that writes its
- * artifacts to a directory literally named that, which is a confusing mess
- * to diagnose after the fact and trivially cheap to catch here.
- */
-export function renderPrompt(template, values) {
-  const rendered = template.replace(/\{\{([A-Z_]+)\}\}/g, (whole, key) =>
-    Object.prototype.hasOwnProperty.call(values, key) ? String(values[key]) : whole,
-  );
-  const leftover = rendered.match(/\{\{[A-Z_]+\}\}/g);
-  if (leftover) {
-    throw new Error(
-      `run: conductor prompt has unrendered placeholder(s): ${[...new Set(leftover)].join(", ")}`,
-    );
-  }
-  return rendered;
-}
-
-/**
- * The skills the conductor reads for phase-level detail. They ship with the
- * same `{{PLACEHOLDER}}` markers the conductor prompt uses, so they are
- * rendered into the run's output directory and the conductor is pointed at
- * the rendered copies — a skill read straight off disk would hand the model
- * uninterpolated `{{PLUGIN_ROOT}}` text in the middle of a command it is
- * being told to run.
- *
- * Note for whoever builds the interactive plugin route: codex's own skill
- * discovery reads `plugin/skills/*​/SKILL.md` directly and never passes
- * through this renderer, so that route needs its own answer to path
- * interpolation before those skills are usable there.
- */
-export const RENDERED_SKILLS = [
-  ["pipeline", join("pipeline", "SKILL.md")],
-  ["brownfield-guide", join("brownfield-guide", "SKILL.md")],
-];
-
-export function renderSkills(outputDir, values, pluginRoot = PLUGIN_ROOT) {
-  const written = [];
-  for (const [name, rel] of RENDERED_SKILLS) {
-    const source = join(pluginRoot, "skills", rel);
-    if (!existsSync(source)) continue;
-    const target = join(outputDir, "skills", `${name}.md`);
-    mkdirSync(dirname(target), { recursive: true });
-    writeFileSync(target, renderPrompt(readFileSync(source, "utf-8"), values), "utf-8");
-    written.push(target);
-  }
-  return written;
-}
+export { renderPrompt, renderSkills, RENDERED_SKILLS } from "./render.mjs";
 
 /** Loads the policy YAML the pins are read from. */
 export function loadPolicyFile(policyName, pluginRoot = PLUGIN_ROOT) {

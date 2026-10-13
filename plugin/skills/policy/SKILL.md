@@ -7,10 +7,16 @@ Show or change the project's active model policy.
 
 Three shapes, one script (`plugin/scripts/setup-policy.mjs`) does all three.
 
+**Paths.** `<plugin-root>` in the commands below is this plugin's own folder. Codex gave you this
+skill's file path with the skill; it ends in `/skills/policy/SKILL.md`, and the plugin root is that
+path with the ending removed (two folders above this file). Put it in each command in place of
+`<plugin-root>` and keep the single quotes: the path can contain spaces. `"$(pwd)"` is the project
+the user is standing in.
+
 # Shape 1 — no argument: print the current policy
 
 ```bash
-node '{{PLUGIN_ROOT}}/scripts/setup-policy.mjs' --print-only --project-root '{{PROJECT_ROOT}}'
+node '<plugin-root>/scripts/setup-policy.mjs' --print-only --project-root "$(pwd)"
 ```
 
 This reads `.sdlc/project.json.default_policy` and prints the policy name (or an empty line if none
@@ -29,7 +35,7 @@ opens the browser.
 ## 2a — Guard mid-run
 
 ```bash
-node '{{PLUGIN_ROOT}}/scripts/setup-policy.mjs' --guard-active-run --project-root '{{PROJECT_ROOT}}'
+node '<plugin-root>/scripts/setup-policy.mjs' --guard-active-run --project-root "$(pwd)"
 ```
 
 Parse the JSON. If `active: true`, print:
@@ -44,7 +50,7 @@ and STOP. Do not proceed to 2b.
 ## 2b — List available policies
 
 ```bash
-node '{{PLUGIN_ROOT}}/scripts/setup-policy.mjs' --list-json --project-root '{{PROJECT_ROOT}}'
+node '<plugin-root>/scripts/setup-policy.mjs' --list-json --project-root "$(pwd)"
 ```
 
 Parse the JSON — one entry per policy in `plugin/config/policies/`. Malformed YAMLs surface as
@@ -84,7 +90,7 @@ fails downstream. The choices above cover every real path.
 - If the user picked `Author a new policy (opens browser)` → run:
 
   ```bash
-  node '{{PLUGIN_ROOT}}/scripts/setup-policy.mjs' --project-root '{{PROJECT_ROOT}}'
+  node '<plugin-root>/scripts/setup-policy.mjs' --project-root "$(pwd)"
   ```
 
   This starts the local policy console, opens the browser, and detects the save via `fs.watch`.
@@ -93,7 +99,7 @@ fails downstream. The choices above cover every real path.
 ## 2e — Credential check
 
 ```bash
-node '{{PLUGIN_ROOT}}/scripts/setup-policy.mjs' --check-creds --policy=<chosen> --project-root '{{PROJECT_ROOT}}'
+node '<plugin-root>/scripts/setup-policy.mjs' --check-creds --policy=<chosen> --project-root "$(pwd)"
 ```
 
 Parse the JSON.
@@ -101,7 +107,7 @@ Parse the JSON.
 - If `ok: true` → persist:
 
   ```bash
-  node '{{PLUGIN_ROOT}}/scripts/setup-policy.mjs' --policy=<chosen> --project-root '{{PROJECT_ROOT}}'
+  node '<plugin-root>/scripts/setup-policy.mjs' --policy=<chosen> --project-root "$(pwd)"
   ```
 
   Print `Policy set: <chosen>` and STOP.
@@ -130,7 +136,7 @@ Parse the JSON.
 # Shape 3 — `--policy=<name>`: silent set
 
 ```bash
-node '{{PLUGIN_ROOT}}/scripts/setup-policy.mjs' --policy=<name> --project-root '{{PROJECT_ROOT}}'
+node '<plugin-root>/scripts/setup-policy.mjs' --policy=<name> --project-root "$(pwd)"
 ```
 
 No browser. The script validates `<name>` against files in `plugin/config/policies/`, writes it to

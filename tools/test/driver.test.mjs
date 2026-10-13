@@ -284,7 +284,9 @@ test("renderSkills writes both skills with every placeholder resolved", () => {
       PLUGIN_ROOT: "/plug", PROJECT_ROOT: "/proj", OUTPUT_DIR: "/out",
       CODE_DIR: "/code", BRIEF_PATH: "/proj/brief.md", POLICY: "gpt-plus-flash", RUN_ID: "r1", GATE_INSTRUCTION: "g", GATE_INSTRUCTION: "gate text",
     });
-    assert.equal(written.length, 2, "both pipeline and brownfield-guide must render");
+    for (const name of ["pipeline.md", "brownfield-guide.md", "discovery.md"]) {
+      assert.ok(written.includes(join(dir, "skills", name)), `${name} must render`);
+    }
     for (const path of written) {
       const text = readFileSync(path, "utf-8");
       assert.ok(

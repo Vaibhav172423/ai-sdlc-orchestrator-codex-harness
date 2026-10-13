@@ -127,7 +127,7 @@ The two are never summed. Why is in [methodology.md](methodology.md), and what t
 
 Fifteen skills. Custom prompts are deprecated in codex and cannot ship inside a repository, so there is no slash-command surface; the reasoning is recorded in the verification file.
 
-Two of the fifteen are not invoked directly. `pipeline` is the state machine, gates and per-phase prompts the conductor reads. `brownfield-guide` is the shared seven-step manual every brownfield entry point points at — one manual, one Gate 0, no second pipeline behind the seven job aliases.
+Two of the fifteen are not invoked directly. `pipeline` is the state machine, gates and per-phase prompts the conductor reads. `brownfield-guide` is the shared seven-step manual every brownfield entry point points at — one manual, one Gate 0, no second pipeline behind the seven job aliases. Their commands hold `{{PLACEHOLDER}}` markers, so a run reads the copies `start-run.mjs` or `run.mjs` renders into `<run folder>/skills/`. Each carries an `agents/openai.yaml` with `allow_implicit_invocation: false`, which keeps it out of the model's skill list, and opens with a paragraph that sends a model reading the raw file to an entry skill.
 
 ## 10. Install routes
 
