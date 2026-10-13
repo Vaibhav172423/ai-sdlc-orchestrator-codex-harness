@@ -65,6 +65,22 @@ test("an interactive run's window comes from run.json, and a seat driver gets no
   assert.doesNotMatch(render(r), /usage dashboard/);
 });
 
+test("an interactive run's Started and Duration rows come from run.json, not from manifest.json's first dispatch or write time", () => {
+  const started = "2026-10-13T09:00:00.000Z";
+  const dir = folder({ "run.json": { route: "interactive", started_at: started, ended_at: "2026-10-13T09:20:00.000Z" } });
+  for (const telemetry of [null, [{ ts: "2026-10-13T09:05:00.000Z", ...EVENTS[0] }, { ts: "2026-10-13T09:06:00.000Z", ...EVENTS[1] }]]) {
+    if (telemetry) writeFileSync(join(dir, "telemetry.jsonl"), jsonl(telemetry));
+    const m = writeManifest({ runDir: dir, runId: "r1", policy: "gpt-plus-flash", projectRoot: dir, status: "provisional" }).manifest;
+    assert.notEqual(m.started_at, started, "the manifest's own start is not the run's");
+    const r = summarize(readRun(dir));
+    assert.equal(r.identity.started_at, started);
+    assert.equal(r.identity.duration_sec, 1200);
+    const md = render(r, { markdown: true });
+    assert.match(md, /\| Started \| 2026-10-13T09:00:00\.000Z \|\n\| Duration \| 20m 00s \|/);
+    assert.match(render(r), /Started:\s+2026-10-13T09:00:00\.000Z\n\s+Duration:\s+20m 00s/);
+  }
+});
+
 test("phase rows show cached input, and runner overhead says what it holds", () => {
   const dir = folder({ "telemetry.jsonl": EVENTS });
   const r = summarize(readRun(dir));

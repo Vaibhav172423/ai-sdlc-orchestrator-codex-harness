@@ -138,9 +138,9 @@ function edgeLine(path, which) {
 
 const timeOf = (v) => { const t = Date.parse(v); return Number.isFinite(t) ? t : null; };
 
-/** When a run started: its manifests, else its first recorded event, else file times. */
+/** When a run started: its driver manifest or run.json, else manifest.json, else its first recorded event, else file times. */
 function startedAt(dir) {
-  for (const name of ["driver-manifest.json", "manifest.json"]) {
+  for (const name of ["driver-manifest.json", "run.json", "manifest.json"]) {
     const t = timeOf(readJson(join(dir, name))?.started_at);
     if (t != null) return t;
   }
@@ -216,10 +216,10 @@ export function identity(run) {
     // Never driver-cost-modeled.jsonl: older runs hard-code its policy name.
     ["telemetry.jsonl", firstEvent((e) => str(e.routing?.policy_name))],
   ].filter(([, v]) => v).map(([source, policy]) => ({ source, policy }));
-  const wallMs = Date.parse(d.ended_at) - Date.parse(d.started_at);
+  const rj = run.runJson ?? {};
+  const wallSec = (x) => (Date.parse(x.ended_at) - Date.parse(x.started_at)) / 1000;
   const positive = (v) => (isNum(v) && v > 0 ? v : undefined);
   const exitCode = [d.exit_code, m.exit_code, m.driver?.exit_code].find(Number.isInteger);
-  const rj = run.runJson ?? {};
   const usageWindow = run.driverUsage?.window && typeof run.driverUsage.window === "object" ? run.driverUsage.window : {};
   const windowFrom = [
     ["driver-manifest.json", str(d.started_at), str(d.ended_at)],
@@ -234,8 +234,9 @@ export function identity(run) {
     policy: policySources[0]?.policy ?? null,
     policy_sources: policySources,
     policy_disagreement: new Set(policySources.map((s) => s.policy)).size > 1,
-    started_at: str(d.started_at) ?? str(m.started_at) ?? str(rj.started_at) ?? null,
-    duration_sec: positive(wallMs / 1000) ?? positive(m.duration_sec) ?? positive(m.total_wall_clock_sec) ?? null,
+    // manifest.json's start is its first dispatch, or the moment it was written when nothing was dispatched.
+    started_at: str(d.started_at) ?? str(rj.started_at) ?? str(m.started_at) ?? null,
+    duration_sec: positive(wallSec(d)) ?? positive(wallSec(rj)) ?? positive(m.duration_sec) ?? positive(m.total_wall_clock_sec) ?? null,
     outcome: str(d.outcome) ?? str(m.outcome) ?? str(m.driver?.outcome) ?? null,
     outcome_reason: str(d.outcome_reason) ?? str(m.outcome_reason) ?? str(m.driver?.outcome_reason) ?? null,
     exit_code: exitCode ?? null,

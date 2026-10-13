@@ -107,6 +107,21 @@ test("the older run is reported when its folder is named", () => {
   assert.match(out, /Run total = dispatched \+ driver\s+\$0\.0026/);
 });
 
+test("latest ranks a session run by run.json's start, not by when its manifest.json was last written", () => {
+  const root = scratch("report-latest-session-");
+  const runs = join(root, ".sdlc", "runs");
+  const mk = (id, runJson, manifest) => {
+    mkdirSync(join(runs, id), { recursive: true });
+    writeFileSync(join(runs, id, "run.json"), JSON.stringify({ route: "interactive", ...runJson }));
+    writeFileSync(join(runs, id, "manifest.json"), JSON.stringify({ run_id: id, ...manifest }));
+    writeFileSync(join(runs, id, "driver-usage.json"), JSON.stringify({ cost_usd_modeled: 0 }));
+  };
+  // A re-run of end-run rewrites a run with no dispatch's manifest.json, and its started_at is that moment.
+  mk("first", { started_at: "2026-10-13T09:00:00Z", ended_at: "2026-10-13T09:20:00Z" }, { started_at: "2026-10-13T12:00:00Z" });
+  mk("second", { started_at: "2026-10-13T10:00:00Z" }, { started_at: "2026-10-13T10:30:00Z" });
+  assert.equal(locateRun(join(root, ".sdlc")).runDir, join(runs, "second"));
+});
+
 test("latest means latest started, with folder mtimes as the fallback", () => {
   const root = scratch("report-latest-");
   const runs = join(root, ".sdlc", "runs");
