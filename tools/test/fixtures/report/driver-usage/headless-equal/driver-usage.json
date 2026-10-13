@@ -70,7 +70,9 @@
         "reasoning_output_tokens": 500
       },
       "cost_usd": 0.05,
-      "unpriced_reason": null
+      "unpriced_reason": null,
+      "price_tier": "standard",
+      "long_context_requests": 0
     },
     {
       "thread_id": "019a0000-0000-7000-8000-0000000000a1",
@@ -93,7 +95,9 @@
         "reasoning_output_tokens": 800
       },
       "cost_usd": 0.066,
-      "unpriced_reason": null
+      "unpriced_reason": null,
+      "price_tier": "standard",
+      "long_context_requests": 0
     }
   ],
   "tokens": {
@@ -113,17 +117,134 @@
     "verdict": "equal",
     "verified": true,
     "mapping": "invocation_window",
+    "threads": [
+      {
+        "thread_id": "019a0000-0000-7000-8000-0000000000a1",
+        "verdict": "equal",
+        "exec_stream_baseline": "zero",
+        "session_tokens": {
+          "input_tokens": 100000,
+          "cached_input_tokens": 80000,
+          "cache_write_input_tokens": 0,
+          "output_tokens": 5000,
+          "reasoning_output_tokens": 1300
+        },
+        "exec_stream_tokens": {
+          "input_tokens": 100000,
+          "cached_input_tokens": 80000,
+          "cache_write_input_tokens": 0,
+          "output_tokens": 5000,
+          "reasoning_output_tokens": 1300
+        },
+        "difference": {
+          "input_tokens": 0,
+          "cached_input_tokens": 0,
+          "cache_write_input_tokens": 0,
+          "output_tokens": 0,
+          "reasoning_output_tokens": 0
+        },
+        "compaction_requests": 0,
+        "compaction_tokens": {
+          "input_tokens": 0,
+          "cached_input_tokens": 0,
+          "cache_write_input_tokens": 0,
+          "output_tokens": 0,
+          "reasoning_output_tokens": 0
+        },
+        "incomplete_turns": 0,
+        "incomplete_tokens": {
+          "input_tokens": 0,
+          "cached_input_tokens": 0,
+          "cache_write_input_tokens": 0,
+          "output_tokens": 0,
+          "reasoning_output_tokens": 0
+        },
+        "unreported_invocations": 0,
+        "token_count_reset": false,
+        "gap": null
+      }
+    ],
     "invocations": [
       {
         "invocation": 1,
         "thread_id": "019a0000-0000-7000-8000-0000000000a1",
         "turn_id": "turn-0001-019a0000",
+        "exec_cumulative": {
+          "input_tokens": 40000,
+          "cached_input_tokens": 30000,
+          "cache_write_input_tokens": 0,
+          "output_tokens": 2000,
+          "reasoning_output_tokens": 500
+        },
+        "session_total": {
+          "input_tokens": 40000,
+          "cached_input_tokens": 30000,
+          "cache_write_input_tokens": 0,
+          "output_tokens": 2000,
+          "reasoning_output_tokens": 500
+        },
+        "difference": {
+          "input_tokens": 0,
+          "cached_input_tokens": 0,
+          "cache_write_input_tokens": 0,
+          "output_tokens": 0,
+          "reasoning_output_tokens": 0
+        },
+        "exec_delta": {
+          "input_tokens": 40000,
+          "cached_input_tokens": 30000,
+          "cache_write_input_tokens": 0,
+          "output_tokens": 2000,
+          "reasoning_output_tokens": 500
+        },
+        "session_turn_tokens": {
+          "input_tokens": 40000,
+          "cached_input_tokens": 30000,
+          "cache_write_input_tokens": 0,
+          "output_tokens": 2000,
+          "reasoning_output_tokens": 500
+        },
         "status": "equal"
       },
       {
         "invocation": 2,
         "thread_id": "019a0000-0000-7000-8000-0000000000a1",
         "turn_id": "turn-0002-019a0000",
+        "exec_cumulative": {
+          "input_tokens": 100000,
+          "cached_input_tokens": 80000,
+          "cache_write_input_tokens": 0,
+          "output_tokens": 5000,
+          "reasoning_output_tokens": 1300
+        },
+        "session_total": {
+          "input_tokens": 100000,
+          "cached_input_tokens": 80000,
+          "cache_write_input_tokens": 0,
+          "output_tokens": 5000,
+          "reasoning_output_tokens": 1300
+        },
+        "difference": {
+          "input_tokens": 0,
+          "cached_input_tokens": 0,
+          "cache_write_input_tokens": 0,
+          "output_tokens": 0,
+          "reasoning_output_tokens": 0
+        },
+        "exec_delta": {
+          "input_tokens": 60000,
+          "cached_input_tokens": 50000,
+          "cache_write_input_tokens": 0,
+          "output_tokens": 3000,
+          "reasoning_output_tokens": 800
+        },
+        "session_turn_tokens": {
+          "input_tokens": 60000,
+          "cached_input_tokens": 50000,
+          "cache_write_input_tokens": 0,
+          "output_tokens": 3000,
+          "reasoning_output_tokens": 800
+        },
         "status": "equal"
       }
     ],
@@ -154,17 +275,23 @@
       "reasoning_output_tokens": 0
     },
     "incomplete_invocations": 0,
-    "trailing_turns": 0,
-    "trailing_tokens": {
+    "incomplete_turns": 0,
+    "incomplete_tokens": {
       "input_tokens": 0,
       "cached_input_tokens": 0,
       "cache_write_input_tokens": 0,
       "output_tokens": 0,
       "reasoning_output_tokens": 0
     },
+    "unreported_invocations": 0,
+    "missing_invocations": 0,
     "token_count_reset": false,
     "gap": null,
-    "missing_threads": []
+    "missing_threads": [],
+    "unchecked_threads": []
   },
+  "excluded_threads": [],
+  "tier_unverified_turns": 0,
+  "price_list_verified": "2026-10-13",
   "collected_at": "2026-10-13T11:00:00.000Z"
 }

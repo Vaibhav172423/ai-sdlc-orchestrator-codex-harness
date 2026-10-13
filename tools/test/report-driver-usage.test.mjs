@@ -1,8 +1,8 @@
 /**
  * The report against driver-usage.json as the session-file collector
  * writes it (sessionUsage.ts DriverUsageReport). The run folders under
- * fixtures/report/driver-usage/ were produced by measureDriverUsage over
- * synthetic rollouts, one folder per case.
+ * fixtures/report/driver-usage/ are written by measureDriverUsage over
+ * synthetic rollouts, one folder per case (fixtures/report/driver-usage-gen.mjs).
  */
 import { after, test } from "node:test";
 import assert from "node:assert/strict";
@@ -143,7 +143,7 @@ test("a ceiling driver figure with a partial dispatched call makes the run total
   assert.match(out, /Driver loop — modeled\s+at most \$0\.1330/, "the driver line keeps its own bound");
 });
 
-/** A fixture copy with cross_check reshaped to the current sessionUsage.ts CrossCheck shape. */
+/** A fixture copy with its cross_check reshaped, for shapes the collector writes in other cases or wrote before. */
 function withCrossCheck(name, reshape, top = {}) {
   const dir = mkdtempSync(join(tmpdir(), "report-a5-"));
   dirs.push(dir);
@@ -153,11 +153,13 @@ function withCrossCheck(name, reshape, top = {}) {
   return dir;
 }
 
-test("the explained-gap wording reads incomplete_turns, the field's current name", () => {
-  const dir = withCrossCheck("headless-killed-last", ({ trailing_turns, trailing_tokens, ...cc }) => ({
-    ...cc, incomplete_turns: trailing_turns, incomplete_tokens: trailing_tokens, unreported_invocations: 0, threads: [], unchecked_threads: [],
+test("the explained-gap wording reads incomplete_turns, and the older trailing_turns name too", () => {
+  const wording = /Cross-check\s+verified: equal; the session file also holds 0 compaction calls and 1 incomplete turn the exec stream never reported/;
+  assert.match(report(at("headless-killed-last")).stdout, wording);
+  const older = withCrossCheck("headless-killed-last", ({ incomplete_turns, incomplete_tokens, threads, unchecked_threads, unreported_invocations, ...cc }) => ({
+    ...cc, trailing_turns: incomplete_turns, trailing_tokens: incomplete_tokens,
   }));
-  assert.match(report(dir).stdout, /Cross-check\s+verified: equal; the session file also holds 0 compaction calls and 1 incomplete turn the exec stream never reported/);
+  assert.match(report(older).stdout, wording);
 });
 
 test("an unchecked cross-check says which threads had nothing to compare and is UNVERIFIED", () => {

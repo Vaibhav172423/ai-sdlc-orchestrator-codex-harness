@@ -2,7 +2,7 @@
   "schema_version": 1,
   "route": "headless",
   "source": "exec-stream",
-  "cost_source": "exec stream (no session file found for the thread; unverified; upper bound: includes the resumed session's earlier turns)",
+  "cost_source": "exec stream (no readable session file for the thread; unverified; upper bound: includes the resumed session's earlier turns)",
   "verified": false,
   "provenance": "modeled",
   "thread_ids": [
@@ -70,7 +70,9 @@
         "reasoning_output_tokens": 0
       },
       "cost_usd": 0.116,
-      "unpriced_reason": null
+      "unpriced_reason": null,
+      "price_tier": "standard",
+      "long_context_requests": 0
     },
     {
       "thread_id": "019a0000-0000-7000-8000-0000000000a1",
@@ -93,7 +95,9 @@
         "reasoning_output_tokens": 0
       },
       "cost_usd": 0.017,
-      "unpriced_reason": null
+      "unpriced_reason": null,
+      "price_tier": "standard",
+      "long_context_requests": 0
     }
   ],
   "tokens": {
@@ -113,7 +117,89 @@
     "verdict": "no_session_file",
     "verified": false,
     "mapping": "invocation_window",
-    "invocations": [],
+    "threads": [
+      {
+        "thread_id": "019a0000-0000-7000-8000-0000000000a1",
+        "verdict": "no_session_file",
+        "exec_stream_baseline": "unknown",
+        "session_tokens": null,
+        "exec_stream_tokens": {
+          "input_tokens": 110000,
+          "cached_input_tokens": 85000,
+          "cache_write_input_tokens": 0,
+          "output_tokens": 5500,
+          "reasoning_output_tokens": 0
+        },
+        "difference": null,
+        "compaction_requests": 0,
+        "compaction_tokens": {
+          "input_tokens": 0,
+          "cached_input_tokens": 0,
+          "cache_write_input_tokens": 0,
+          "output_tokens": 0,
+          "reasoning_output_tokens": 0
+        },
+        "incomplete_turns": 0,
+        "incomplete_tokens": {
+          "input_tokens": 0,
+          "cached_input_tokens": 0,
+          "cache_write_input_tokens": 0,
+          "output_tokens": 0,
+          "reasoning_output_tokens": 0
+        },
+        "unreported_invocations": 0,
+        "token_count_reset": false,
+        "gap": null
+      }
+    ],
+    "invocations": [
+      {
+        "invocation": 1,
+        "thread_id": "019a0000-0000-7000-8000-0000000000a1",
+        "turn_id": null,
+        "status": "no_session_file",
+        "exec_cumulative": {
+          "input_tokens": 100000,
+          "cached_input_tokens": 80000,
+          "cache_write_input_tokens": 0,
+          "output_tokens": 5000,
+          "reasoning_output_tokens": 0
+        },
+        "session_total": null,
+        "difference": null,
+        "exec_delta": {
+          "input_tokens": 100000,
+          "cached_input_tokens": 80000,
+          "cache_write_input_tokens": 0,
+          "output_tokens": 5000,
+          "reasoning_output_tokens": 0
+        },
+        "session_turn_tokens": null
+      },
+      {
+        "invocation": 2,
+        "thread_id": "019a0000-0000-7000-8000-0000000000a1",
+        "turn_id": null,
+        "status": "no_session_file",
+        "exec_cumulative": {
+          "input_tokens": 110000,
+          "cached_input_tokens": 85000,
+          "cache_write_input_tokens": 0,
+          "output_tokens": 5500,
+          "reasoning_output_tokens": 0
+        },
+        "session_total": null,
+        "difference": null,
+        "exec_delta": {
+          "input_tokens": 10000,
+          "cached_input_tokens": 5000,
+          "cache_write_input_tokens": 0,
+          "output_tokens": 500,
+          "reasoning_output_tokens": 0
+        },
+        "session_turn_tokens": null
+      }
+    ],
     "session_tokens": {
       "input_tokens": 0,
       "cached_input_tokens": 0,
@@ -141,19 +227,25 @@
       "reasoning_output_tokens": 0
     },
     "incomplete_invocations": 0,
-    "trailing_turns": 0,
-    "trailing_tokens": {
+    "incomplete_turns": 0,
+    "incomplete_tokens": {
       "input_tokens": 0,
       "cached_input_tokens": 0,
       "cache_write_input_tokens": 0,
       "output_tokens": 0,
       "reasoning_output_tokens": 0
     },
+    "unreported_invocations": 0,
+    "missing_invocations": 0,
     "token_count_reset": false,
     "gap": null,
     "missing_threads": [
       "019a0000-0000-7000-8000-0000000000a1"
-    ]
+    ],
+    "unchecked_threads": []
   },
+  "excluded_threads": [],
+  "tier_unverified_turns": 0,
+  "price_list_verified": "2026-10-13",
   "collected_at": "2026-10-13T11:00:00.000Z"
 }

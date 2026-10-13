@@ -84,7 +84,9 @@
         "reasoning_output_tokens": 0
       },
       "cost_usd": 0.046,
-      "unpriced_reason": null
+      "unpriced_reason": null,
+      "price_tier": "standard",
+      "long_context_requests": 0
     },
     {
       "thread_id": "019a0000-0000-7000-8000-0000000000a1",
@@ -107,7 +109,9 @@
         "reasoning_output_tokens": 0
       },
       "cost_usd": 0.1,
-      "unpriced_reason": null
+      "unpriced_reason": null,
+      "price_tier": "standard",
+      "long_context_requests": 0
     }
   ],
   "tokens": {
@@ -124,5 +128,8 @@
   "cost_complete": false,
   "unpriced": [],
   "cross_check": null,
+  "excluded_threads": [],
+  "tier_unverified_turns": 0,
+  "price_list_verified": "2026-10-13",
   "collected_at": "2026-10-13T11:00:00.000Z"
 }
