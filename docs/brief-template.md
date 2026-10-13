@@ -8,11 +8,12 @@ under each is up to the author.
 
 Copy this file, fill in the sections, and save it as `brief.md` in the
 project folder. In a codex session, `$mmo-codex:greenfield` finds it there, or
-asks for its path. For a headless run, point `run.mjs` at it:
+asks for its path. For a headless run, point `run.mjs` at it from the project folder, with the
+harness cloned at `~/mmo-codex` as [headless-runs.md](headless-runs.md) step 1 does:
 
-```
-node plugin/codex/run.mjs \
-  --brief=path/to/your-brief.md \
+```bash
+node ~/mmo-codex/plugin/codex/run.mjs \
+  --brief=brief.md \
   --project-root=. \
   --mode=greenfield \
   --policy=gpt-plus-flash \

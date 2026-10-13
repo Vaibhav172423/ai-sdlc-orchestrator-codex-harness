@@ -96,6 +96,29 @@ test("a doc's run.mjs command that spends names its gate mode", () => {
   assert.deepEqual(bad, [], "without --gates, run.mjs asks at the terminal and refuses to start without one");
 });
 
+/** `node plugin/codex/run.mjs` resolves only from the clone root, and so do the relative paths it is given. */
+const fromCloneRoot = (command) => /(^|\s)node\s+plugin\/codex\/run\.mjs(\s|$)/.test(command);
+const valueOf = (args, flag) => new RegExp(`(?:^|\\s)--${flag}=(\\S+)`).exec(args)?.[1]?.replace(/^['"]|['"]$/g, "");
+
+test("a doc's run.mjs command run from the clone root does not make the clone its project", () => {
+  const cwd = /^(\.\/?|\$\(pwd\)|\$PWD)$/;
+  const bad = scriptCalls("run.mjs")
+    .filter(({ command, args }) => fromCloneRoot(command) && flagsOf(args).length > 0 && !/--dry-run/.test(args))
+    .filter(({ args }) => valueOf(args, "project-root") === undefined || cwd.test(valueOf(args, "project-root")))
+    .map(({ file, command }) => `${file}: ${command}`);
+  assert.deepEqual(bad, [], "the run would write its code and record into the harness clone");
+});
+
+test("a doc's run.mjs command run from the clone root names a brief the clone ships", () => {
+  const bad = [];
+  for (const { file, command, args } of scriptCalls("run.mjs")) {
+    const brief = valueOf(args, "brief");
+    if (!fromCloneRoot(command) || !brief || /^(path\/to\/|<|\/|~|\$)/.test(brief)) continue;
+    if (!existsSync(join(ROOT, brief))) bad.push(`${file}: ${command}`);
+  }
+  assert.deepEqual(bad, [], "run.mjs refuses a --brief that does not exist, before it does anything");
+});
+
 test("run.mjs value flags in the docs use the --name=value form", () => {
   const bad = [];
   for (const { file, command, args } of scriptCalls("run.mjs")) {

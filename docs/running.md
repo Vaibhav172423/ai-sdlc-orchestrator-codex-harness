@@ -126,10 +126,11 @@ The skill asks for what it needs, checks the setup before spending anything, sta
 **Headless — from a shell.** `plugin/codex/run.mjs` spawns its own `codex exec` conductor and
 exits when the run ends. It exists to check the cost figures: codex reports the conductor's tokens
 on its `--json` stream as well as in its session file, and the run's end compares the two token
-for token. [headless-runs.md](headless-runs.md) is the procedure. From a clone:
+for token. [headless-runs.md](headless-runs.md) is the procedure. From the project folder, with the
+harness cloned at `~/mmo-codex` as that page's step 1 does:
 
 ```bash
-node plugin/codex/run.mjs \
+node ~/mmo-codex/plugin/codex/run.mjs \
   --brief='path/to/brief.md' \
   --project-root=. \
   --mode=greenfield \
@@ -155,7 +156,7 @@ is the headless route; a session run takes its settings from the skill's questio
 ## Start with `--dry-run`
 
 ```bash
-node plugin/codex/run.mjs --brief='path/to/brief.md' --mode=greenfield --gates=auto-approve --dry-run
+node ~/mmo-codex/plugin/codex/run.mjs --brief='path/to/brief.md' --mode=greenfield --gates=auto-approve --dry-run
 ```
 
 This renders the conductor prompt and the exact `codex exec` argv, prints them, and exits without
@@ -248,7 +249,7 @@ you about it. Under `--gates=auto-approve` there is nobody to answer and stdin i
 supply the answers up front:
 
 ```bash
-node plugin/codex/run.mjs \
+node ~/mmo-codex/plugin/codex/run.mjs \
   --brief=intent-brief.md --project-root=. \
   --mode=brownfield --intent=bugfix \
   --seed='login returns 500 on empty password' \
@@ -303,12 +304,13 @@ Brownfield adds `discovery.md`, `intent_brief.md`, and `provenance.json`.
 
 ## Reading the cost
 
-Every run end writes `report.md` in the run folder. To render it again from a clone (an installed
-plugin keeps the script at `scripts/report.mjs` in its own folder, and the run's end prints the
-full command as `Cost report:`):
+Every run end writes `report.md` in the run folder. To render it again from the project folder,
+with the harness cloned at `~/mmo-codex` (an installed plugin keeps the script at
+`scripts/report.mjs` in its own folder, and the run's end prints the full command as
+`Cost report:`):
 
 ```bash
-node plugin/scripts/report.mjs .sdlc/runs/<run-id> --markdown
+node ~/mmo-codex/plugin/scripts/report.mjs .sdlc/runs/<run-id> --markdown
 ```
 
 The report lists dispatched work by phase and the driver loop (modeled), adds them into
@@ -352,7 +354,7 @@ prints the exact command as `Continue:` when it stops. A brownfield run whose wr
 `completed` or `aborted` does not resume, and its `Continue:` line says so instead:
 
 ```bash
-node plugin/codex/run.mjs --resume=pass1 --project-root=.
+node ~/mmo-codex/plugin/codex/run.mjs --resume=pass1 --project-root=.
 ```
 
 The driver finds `.sdlc/runs/pass1/`, resumes the codex thread recorded there, and appends to the

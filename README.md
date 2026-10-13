@@ -260,18 +260,19 @@ Installed as a plugin, these work everywhere with no extra step. Working **insid
 
 ## Check the cost with a headless run
 
-In a codex session, the conductor's cost is read from codex's session file at the run's end. A headless run checks that reading: `plugin/codex/run.mjs` drives the same pipeline from a shell with `codex exec --json`, and at the run's end the harness compares codex's own per-turn token counts with what the session-file reader computes, token for token. From a clone, with the bridge built (`node plugin/codex/verify-setup.mjs --fix`):
+In a codex session, the conductor's cost is read from codex's session file at the run's end. A headless run checks that reading: `plugin/codex/run.mjs` drives the same pipeline from a shell with `codex exec --json`, and at the run's end the harness compares codex's own per-turn token counts with what the session-file reader computes, token for token. From the root of a clone, with the bridge built (`node plugin/codex/verify-setup.mjs --fix`), this runs the quick-demo brief into a project folder of its own:
 
 ```bash
+mkdir -p ~/mmo-runs/ping
 node plugin/codex/run.mjs \
-  --brief=brief.md \
-  --project-root="$(pwd)" \
+  --brief=examples/quick-demo/brief.md \
+  --project-root="$HOME/mmo-runs/ping" \
   --mode=greenfield \
   --policy=gpt-plus-flash \
   --gates=auto-approve
 ```
 
-Add `--dry-run` to see the pinned invocation without spending anything. The run's record lands in `.sdlc/runs/<run-id>/`, with the cost report in `report.md` there and the token comparison under its driver figure. The report prints `Run total = dispatched + driver` and splits it into a **vendor-metered** total and a **modeled** total. Codex reports no wallet figures at all, so the driver leg's cost can only be derived from token counts at the dated price list's rates — and a driver running on a seat may have cost nothing in money. That is why the modeled figure never enters the vendor-metered total.
+Add `--dry-run` to see the pinned invocation without spending anything. The run's record lands in `~/mmo-runs/ping/.sdlc/runs/<run-id>/`, with the cost report in `report.md` there and the token comparison under its driver figure. The report prints `Run total = dispatched + driver` and splits it into a **vendor-metered** total and a **modeled** total. Codex reports no wallet figures at all, so the driver leg's cost can only be derived from token counts at the dated price list's rates — and a driver running on a seat may have cost nothing in money. That is why the modeled figure never enters the vendor-metered total.
 
 Every step, from the API-key login to the OpenAI usage dashboard check, is in [docs/headless-runs.md](docs/headless-runs.md). Every flag is in [docs/running.md](docs/running.md).
 
@@ -328,10 +329,10 @@ Result:        a working app — GET /ping returns 200, unknown routes 404
 
 The recorded figure was priced at Gemini rates of $1.50 / $0.15 / $9.00 per 1M tokens, about 2× Gemini 3.7 Flash's introductory card. The dated price list (`plugin/mcp/model-dispatch/src/prices.ts`) bills Gemini 3.7 Flash at $0.75 / $0.075 / $3.75 through 2026-12-31 and $1.50 / $0.15 / $7.50 from 2027-01-01, so the same run re-priced costs less on either card. The GPT share is unaffected.
 
-That is one run of one small brief, not a guarantee — cost scales with how much code the brief implies and how many times a phase has to be revised. Each run writes its cost report to `report.md` in its folder. From a clone, this renders the latest run's again:
+That is one run of one small brief, not a guarantee — cost scales with how much code the brief implies and how many times a phase has to be revised. Each run writes its cost report to `report.md` in its folder. From the root of a clone, this renders the report of the latest headless quick-demo run again:
 
 ```bash
-node plugin/scripts/report.mjs .sdlc --markdown
+node plugin/scripts/report.mjs "$HOME/mmo-runs/ping/.sdlc" --markdown
 ```
 
 The same brief, run step by step in a codex session: [docs/tutorial-first-run.md](docs/tutorial-first-run.md).
