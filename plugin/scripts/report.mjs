@@ -578,10 +578,15 @@ export function summarize(run) {
     rec.prov[prov] += 1;
     phases.set(phase, rec);
 
-    // Output-cap doubling attempts collapse into one record per packet.
+    // A dispatch's attempts collapse into one record per packet.
     const tid = e.task_id;
     if (tid && (e.attempt_number != null || e.ceiling_used != null)) {
-      const pkt = packets.get(tid) ?? { task_id: tid, phase, attempts: 0, final_ceiling: e.ceiling_used ?? null, m: 0 };
+      const pkt = packets.get(tid) ?? { task_id: tid, phase, attempts: 0, capped: false, resends: 0, final_ceiling: e.ceiling_used ?? null, m: 0 };
+      const later = isNum(e.attempt_number) ? e.attempt_number > 1 : pkt.attempts > 0;
+      // A later attempt with no retry_reason predates the field, when doubling was the only retry.
+      const reason = later ? str(e.retry_reason) ?? "output_cap" : null;
+      if (reason === "output_cap") pkt.capped = true;
+      if (reason === "transient") pkt.resends += 1;
       pkt.attempts += 1;
       if (e.ceiling_used != null) pkt.final_ceiling = e.ceiling_used;
       pkt.m += cost;
@@ -642,6 +647,11 @@ export function summarize(run) {
     });
   }
 
+  const packetRows = (keep) => [...packets.values()]
+    .filter(keep)
+    .sort((a, b) => b.attempts - a.attempts)
+    .map(({ m, capped: _c, ...p }) => ({ ...p, cost_usd: dollars(m) }));
+
   const { m: _m, ...driverOut } = driver;
   return {
     schema_version: 1,
@@ -681,10 +691,10 @@ export function summarize(run) {
       either_reasons: eitherReasons,
       unverified_note: unverifiedNote,
     },
-    retried: [...packets.values()]
-      .filter((p) => p.attempts > 1)
-      .sort((a, b) => b.attempts - a.attempts)
-      .map(({ m, ...p }) => ({ ...p, cost_usd: dollars(m) })),
+    retried: packetRows((p) => p.capped)
+      .map(({ resends: _r, ...p }) => p),
+    resent: packetRows((p) => p.resends > 0)
+      .map(({ final_ceiling: _c, ...p }) => p),
     delegated_packets: run.receipts.length,
     notices,
   };
@@ -977,6 +987,15 @@ function renderText(r) {
     p();
   }
 
+  if (r.resent.length > 0) {
+    p(`  Packets resent after a transient failure`);
+    p();
+    for (const k of r.resent) {
+      p(`  ${gutter(ACTOR.handoff)}${k.task_id.padEnd(22)} ${String(k.phase).padEnd(20)} ${plural(k.resends, "resend")}, ${k.attempts} attempts → ${fmtUSD(k.cost_usd)}`);
+    }
+    p();
+  }
+
   if (r.delegated_packets > 0) {
     p(`  Delegated to an agent worker`);
     p();
@@ -1129,6 +1148,15 @@ function renderMarkdown(r) {
     p(`| Packet | Phase | Attempts | Final ceiling | Cost |`);
     p(`|---|---|---:|---:|---:|`);
     for (const k of r.retried) p(`| \`${k.task_id}\` | ${k.phase} | ${k.attempts} | ${k.final_ceiling ?? "—"} | ${fmtUSD(k.cost_usd)} |`);
+    p();
+  }
+
+  if (r.resent.length > 0) {
+    p(`## Packets resent after a transient failure`);
+    p();
+    p(`| Packet | Phase | Resends | Attempts | Cost |`);
+    p(`|---|---|---:|---:|---:|`);
+    for (const k of r.resent) p(`| \`${k.task_id}\` | ${k.phase} | ${k.resends} | ${k.attempts} | ${fmtUSD(k.cost_usd)} |`);
     p();
   }
 

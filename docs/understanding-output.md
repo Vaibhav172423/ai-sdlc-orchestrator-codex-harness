@@ -102,7 +102,11 @@ The vendor-metered, modeled and unlabelled lines add up to the run total. When t
 
 ### Packets that hit the output cap
 
-Only appears when a packet's output was truncated at the model's ceiling and the doubling loop retried it. Worth reading — a packet that hit the cap may have produced less than the phase needed.
+Only appears when a packet's output was truncated at the model's ceiling and the doubling loop retried it: a later attempt with `retry_reason: output_cap`, or with no `retry_reason` in telemetry written before the field existed. Worth reading — a packet that hit the cap may have produced less than the phase needed.
+
+### Packets resent after a transient failure
+
+Only appears when an OpenAI request got no answer, or an answer of 408, 409, 429 or 5xx, and the adapter sent it again (`retry_reason: transient`). Each request is its own attempt with its own cost; [methodology.md](methodology.md#failed-and-abandoned-calls) says which of them bill.
 
 ### Delegated to an agent worker
 

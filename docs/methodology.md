@@ -187,8 +187,9 @@ figures rather than the vendor-metered total.
 An OpenAI request that got no answer, or an answer of 408, 409, 429 or 5xx, is sent again up to
 twice, after the vendor's `retry-after` when it asks for under a minute, else after about 0.5 s and
 then 1 s. Each request is its own attempt, billed by the table above for its own outcome, and a
-resent one carries `retry_reason: "transient"`. The OpenAI SDK's own retries are off: a request it
-resent would be billed with no attempt on record.
+resent one carries `retry_reason: "transient"`. The report lists those packets under
+`## Packets resent after a transient failure`, apart from the packets that hit the output cap. The
+OpenAI SDK's own retries are off: a request it resent would be billed with no attempt on record.
 
 ## The cached-token convention — read this before writing an adapter
 
