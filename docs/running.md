@@ -43,7 +43,8 @@ calls. Mechanical phases (codegen, tests, docs) drop to Gemini 3.7 Flash.
 **Credentials:** `OPENAI_API_KEY`, plus a Gemini door — `GEMINI_API_KEY` or Google Cloud
 application-default credentials.
 
-**Cost reporting:** vendor-metered end to end.
+**Cost reporting:** every dispatch vendor-metered. The conductor's own line is modeled from its token
+counts, as on every policy.
 
 **When to pick it:** anything whose cost figures get published or compared. This is the default,
 and every published number for this harness comes from it.

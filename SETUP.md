@@ -146,8 +146,8 @@ node plugin/scripts/setup-policy.mjs --policy=gpt-plus-flash
 
 | Policy | Judgment tier | Mechanical tier | Cost reporting |
 |---|---|---|---|
-| `gpt-plus-flash` | GPT via the OpenAI API | Gemini Flash | Vendor-metered throughout — the policy of record |
-| `gpt-plus-flash-38` | GPT via the OpenAI API | Gemini 3.8 Flash | Vendor-metered throughout |
+| `gpt-plus-flash` | GPT via the OpenAI API | Gemini Flash | Every dispatch vendor-metered; the conductor's line modeled — the policy of record |
+| `gpt-plus-flash-38` | GPT via the OpenAI API | Gemini 3.8 Flash | Every dispatch vendor-metered; the conductor's line modeled |
 | `gpt-seat-plus-flash` | GPT via your local `codex exec` (ChatGPT seat) | Gemini Flash | Judgment cost is **modeled**, not metered |
 | `flash-agsdk-only` | Gemini Flash via the agent worker | Gemini Flash via the agent worker | Every dispatch on the agent door; the conductor still runs on the GPT pin |
 
