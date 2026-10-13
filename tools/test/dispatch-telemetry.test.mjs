@@ -172,3 +172,12 @@ test("the brownfield Gate-0 smoke dispatch passes --telemetry", () => {
     if (/--packet=/.test(c)) assert.match(c, /--telemetry=/, c);
   }
 });
+
+test("the brownfield pre-check smoke records to the pre-check's own file and gives the real reason: the run folder exists by then", () => {
+  const skill = readFileSync(join(ROOT, "plugin", "skills", "brownfield-guide", "SKILL.md"), "utf8");
+  assert.match(skill, /--telemetry='\{\{PROJECT_ROOT\}\}\/\.sdlc\/pre-check\/telemetry\.jsonl'/);
+  assert.doesNotMatch(skill, /no run exists yet/);
+  assert.match(skill, /cached in `\.sdlc\/pre-check-status\.json` for later runs/);
+  const troubleshooting = readFileSync(join(ROOT, "docs", "troubleshooting.md"), "utf8");
+  assert.doesNotMatch(troubleshooting, /Outside a run, the brownfield/);
+});

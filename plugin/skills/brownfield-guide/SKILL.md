@@ -117,8 +117,10 @@ Agent-side steps (1 = discovery smoke, 3 = dispatch smoke) — you run yourself:
      --out=<smoke-result.json> --policy={{POLICY}} --project-root='{{PROJECT_ROOT}}' \
      --telemetry='{{PROJECT_ROOT}}/.sdlc/pre-check/telemetry.jsonl'
    ```
-   The smoke calls are paid, so they are recorded like any other dispatch; no run exists yet, so
-   they go to the pre-check's own telemetry file.
+   The smoke calls are paid, so they are recorded like any other dispatch. They check this
+   project, not this run: the result is cached in `.sdlc/pre-check-status.json` for later runs, so
+   their cost goes to the pre-check's own telemetry file and stays out of this run's total and its
+   cost cap.
    If both return their expected output within the timeout, record pass:
    ```bash
    echo '{"tiers_tested":["gpt","gemini-flash"]}' | node '{{PLUGIN_ROOT}}/scripts/pre-check.mjs' --record dispatch pass
