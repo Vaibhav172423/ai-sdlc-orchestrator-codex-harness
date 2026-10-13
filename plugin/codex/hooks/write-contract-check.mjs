@@ -44,7 +44,7 @@ function reply(decision, reason) {
 
 const isFolder = (p) => { try { return lstatSync(p).isDirectory(); } catch { return false; } };
 
-/** Records one target before the call; returns how many files that puts on record. */
+/** Records one target before the call; returns how many files that puts on record. A removed or copied-into folder records what is under it. */
 function record(b) {
   const at = { root: b.root, runId: b.run_id, path: b.abs, by: "hook" };
   if (b.kind === "write") return recordBefore(at) ? 1 : 0;
@@ -62,6 +62,7 @@ function snapshot(call, out) {
     ...out.bound.map((b) => ({ ...b, kind: "write" })),
     ...out.unsure.map((b) => ({ ...b, kind: "unsure" })),
     ...out.removed.map((b) => ({ ...b, kind: "remove" })),
+    ...(out.folders ?? []).map((b) => ({ ...b, kind: "folder" })),
   ];
   for (const b of targets) {
     const key = `${b.root}\0${b.abs}`;
@@ -90,7 +91,7 @@ async function main() {
   } else {
     log("debug", "write.allow", { run_id: row?.run_id, path: row?.path, wired_by: WIRED_BY });
     const n = snapshot(call, out);
-    if (row && (out.bound.length || out.removed.length || n > 0)) row.snapshots = n;
+    if (row && (out.bound.length || out.removed.length || out.folders?.length || n > 0)) row.snapshots = n;
   }
   recordDecision(out.record);
   reply(out.decision, out.reason);

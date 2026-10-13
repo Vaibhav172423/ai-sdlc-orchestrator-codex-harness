@@ -298,6 +298,27 @@ test("rm -r of a folder snapshots the work inside it, and revert brings the fold
   } finally { cleanup(dir); }
 });
 
+test("a copy into a folder snapshots each file it overwrites, and revert puts their work back", async () => {
+  const dir = gitRepo({ "src/a.ts": "a\n", "src/lib/b.ts": "b\n" });
+  const src = mkdtempSync(join(tmpdir(), "prov-cp-src-"));
+  try {
+    put(dir, "src/a.ts", "uncommitted a\n");
+    put(dir, "src/lib/b.ts", "uncommitted b\n");
+    put(src, "a.ts", "template a\n");
+    freeze(dir);
+    assert.equal((await runHook(dir, bash(`cp ${src}/a.ts src/`))).decision, "allow");
+    execFileSync("/bin/sh", ["-c", `cp ${src}/a.ts src/`], { cwd: dir });
+    assert.deepEqual(records(dir).map((r) => r.path), ["src/a.ts"], "the file cp lands on, not the folder it names");
+    assert.equal((await runHook(dir, bash('cp -R "$TPL"/. src/lib/'))).decision, "allow");
+    assert.deepEqual(records(dir).map((r) => r.path).sort(), ["src/a.ts", "src/lib/b.ts"], "an unlisted folder copy snapshots what is there");
+    put(dir, "src/lib/b.ts", "template b\n");
+    endRun({ projectRoot: dir, runId: "r1", outcome: "completed" });
+    applyClean(revertPlan({ root: dir, runId: "r1" }));
+    assert.equal(read(dir, "src/a.ts"), "uncommitted a\n");
+    assert.equal(read(dir, "src/lib/b.ts"), "uncommitted b\n");
+  } finally { cleanup(dir); cleanup(src); }
+});
+
 test("a write strict:false allows outside the allowlist is recorded; a run-folder write is not", async () => {
   const dir = gitRepo({ "src/a.ts": "a\n", "docs/x.md": "x\n" });
   try {

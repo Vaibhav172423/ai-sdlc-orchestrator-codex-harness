@@ -2,8 +2,8 @@
  * The write hook's decision for one Codex tool call. plugin/codex/hooks/write-contract-check.mjs reads the call from
  * stdin and replies with what decideCall returns; the rule order is in docs/architecture.md §7.
  */
-import { lstatSync, mkdirSync, readlinkSync, statSync } from "node:fs";
-import { dirname, isAbsolute, join, parse, relative, resolve, sep } from "node:path";
+import { lstatSync, mkdirSync, readdirSync, readlinkSync, statSync } from "node:fs";
+import { basename, dirname, isAbsolute, join, parse, relative, resolve, sep } from "node:path";
 import { CREATABLE_WHEN_ABSENT, firstMatch, hardcodedHit } from "./off-limits.mjs";
 import {
   CONTRACT_REL_PATH, DECISIONS_REL_PATH, FROZEN_FILE, LOCK_FILE, appendRegular, contractTampered, gitRoot, liveLock,
@@ -41,12 +41,18 @@ const argsOf = (text) => text.trim().split(/\s+/).filter(Boolean).map(unquote).f
 const DEVICE_RE = /^\/dev\/(?:null|stdout|stderr|tty|fd\/\d+)$/;
 
 /**
- * Write targets of a shell command: redirects, `tee`, `touch`, the `cp`/`mv` destination, and the file headers of an
- * `apply_patch` run through the shell (Codex applies it itself and hands the hook a Bash call). A heuristic, not a
- * shell parser: a form it misses is allowed.
+ * Write targets of a shell command: redirects, `tee`, `touch`, each file a `cp`/`mv` lands on, and the file headers of
+ * an `apply_patch` run through the shell (Codex applies it itself and hands the hook a Bash call). A heuristic, not a
+ * shell parser: a form it misses is allowed. With `cwd`, an existing folder named as a `cp`/`mv` destination or source
+ * is seen as one.
  */
-export function extractBashTargets(command) {
-  return bashWriteTargets(command).filter((t) => !DEVICE_RE.test(t));
+export function extractBashTargets(command, cwd = null) {
+  return bashWriteTargets(command, cwd).files.filter((t) => !DEVICE_RE.test(t));
+}
+
+/** Folders a `cp`/`mv` copies a whole directory into without the hook listing its files: judged as any file inside. */
+export function extractBashFolders(command, cwd = null) {
+  return bashWriteTargets(command, cwd).folders;
 }
 
 const SHELL_PATCH_RE = /(?:^|[\s;&|(])(?:apply_patch|applypatch)(?=$|[\s;&|)<'"])/;
@@ -62,9 +68,69 @@ function shellOnly(command) {
   return SHELL_PATCH_RE.test(command) ? command.replace(/\*\*\*\s*Begin Patch[\s\S]*?\*\*\*\s*End Patch/g, " ") : command;
 }
 
-function bashWriteTargets(raw) {
-  if (typeof raw !== "string") return [];
+const CP_RECURSIVE_RE = /^-[A-Za-z]*[rRa]|^--(?:recursive|archive)$/;
+/** A folder copy past this many entries is judged as its destination folder alone. */
+const MAX_LISTED = 1000;
+const folderish = (w) => w.endsWith("/") || /(?:^|\/)\.\.?$/.test(w);
+const under = (dir, name) => `${dir === "/" ? "" : dir.replace(/\/+$/, "")}/${name}`;
+
+/** Files under the folder `dir` (links not followed), as paths relative to it, or null past `limit` entries or unreadable. */
+function listFiles(dir, limit = MAX_LISTED) {
+  const out = [];
+  let seen = 0;
+  const walk = (abs, rel) => {
+    let entries;
+    try { entries = readdirSync(abs, { withFileTypes: true }); } catch { return false; }
+    for (const e of entries) {
+      if (++seen > limit) return false;
+      const r = rel ? `${rel}/${e.name}` : e.name;
+      if (!e.isDirectory()) out.push(r);
+      else if (!walk(join(abs, e.name), r)) return false;
+    }
+    return true;
+  };
+  return walk(dir, "") ? out : null;
+}
+
+/**
+ * Where one `cp`/`mv` writes. A destination that ends in `/`, is an existing folder or takes several sources receives
+ * `<dest>/<source name>`; `dir/.` copies the folder's contents, and `dir/` may do either (BSD and GNU differ), so both
+ * places are judged. A folder source's own files are listed and judged one by one; one the hook cannot list goes to
+ * `folders`.
+ */
+function copyTargets(tool, words, cwd) {
+  const args = words.filter((a) => !a.startsWith("-"));
+  if (args.length < 2) return { files: args, folders: [] };
+  const recursive = tool === "mv" || words.some((a) => CP_RECURSIVE_RE.test(a));
+  const dest = args[args.length - 1];
+  const sources = args.slice(0, -1);
+  const into = sources.length > 1 || folderish(dest) || (!!cwd && isLiteralWord(dest) && isDir(joinRaw(cwd, dest)));
+  const files = [];
+  const folders = [];
+  for (const src of sources) {
+    const contents = /(?:^|\/)\.\.?\/*$/.test(src);
+    const slash = !contents && src.endsWith("/");
+    const name = basename(src.replace(/\/+$/, ""));
+    const lands = !into || contents ? [dest] : slash ? [dest, under(dest, name)] : [under(dest, name)];
+    const literal = isLiteralWord(src);
+    const srcAbs = cwd ? joinRaw(cwd, src) : null;
+    const folder = contents || slash || (literal && !!srcAbs && isDir(srcAbs));
+    if (!folder && (literal || !recursive)) { files.push(...lands); continue; }
+    const listed = folder && literal && srcAbs && isDir(srcAbs) ? listFiles(srcAbs) : null;
+    if (listed) {
+      for (const at of lands) files.push(...listed.map((f) => under(at, f)));
+      continue;
+    }
+    folders.push(...lands);
+    if (!folder) files.push(...lands);
+  }
+  return { files, folders };
+}
+
+function bashWriteTargets(raw, cwd = null) {
+  if (typeof raw !== "string") return { files: [], folders: [] };
   const targets = shellPatchTargets(raw);
+  const folders = [];
   const command = shellOnly(raw);
   const redirectRe = /(?:^|[\s;&|(])\d*>{1,2}\s*([^\s;&|()<>]+)/g;
   let m;
@@ -76,14 +142,13 @@ function bashWriteTargets(raw) {
   while ((m = teeRe.exec(command)) !== null) targets.push(...argsOf(m[1]).filter((a) => !a.startsWith("-")));
   const touchRe = new RegExp(String.raw`\btouch\s+` + ARGS, "g");
   while ((m = touchRe.exec(command)) !== null) targets.push(...argsOf(m[1]).filter((a) => !a.startsWith("-")));
-  // A trailing `/` destination (copy into a folder) names no file, so it is not judged.
-  const cpMvRe = new RegExp(String.raw`\b(?:cp|mv)\s+` + ARGS, "g");
+  const cpMvRe = new RegExp(String.raw`\b(cp|mv)\s+` + ARGS, "g");
   while ((m = cpMvRe.exec(command)) !== null) {
-    const args = argsOf(m[1]).filter((a) => !a.startsWith("-"));
-    const dest = args[args.length - 1];
-    if (dest && !dest.endsWith("/")) targets.push(dest);
+    const copied = copyTargets(m[1], argsOf(m[2]), cwd);
+    targets.push(...copied.files);
+    folders.push(...copied.folders);
   }
-  return targets;
+  return { files: targets, folders };
 }
 
 /**
@@ -117,18 +182,22 @@ export function extractBashRemovals(raw) {
 }
 
 /** Every write target the call names. A structured `file_path` is accepted for tools that carry one. */
-export function extractTargets(call) {
+export function extractTargets(call, cwd = call?.cwd ?? null) {
   const command = call?.tool_input?.command;
   if (call?.tool_name === "apply_patch") return extractApplyPatchTargets(command);
-  if (call?.tool_name === "Bash") return extractBashTargets(command);
+  if (call?.tool_name === "Bash") return extractBashTargets(command, cwd);
   const structured = call?.tool_input?.file_path ?? call?.tool_input?.path ?? call?.input?.file_path;
   return typeof structured === "string" && structured.length > 0 ? [structured] : [];
 }
 
-export function extractNarrowTargets(call) {
+export function extractFolderTargets(call, cwd = call?.cwd ?? null) {
+  return call?.tool_name === "Bash" ? extractBashFolders(call?.tool_input?.command, cwd) : [];
+}
+
+export function extractNarrowTargets(call, cwd = call?.cwd ?? null, strict = extractTargets(call, cwd)) {
   if (call?.tool_name !== "Bash") return [];
-  const strict = new Set(extractTargets(call));
-  return extractBashTightRedirects(call?.tool_input?.command).filter((t) => !strict.has(t));
+  const full = new Set(strict);
+  return extractBashTightRedirects(call?.tool_input?.command).filter((t) => !full.has(t));
 }
 
 export function extractRemovals(call) {
@@ -271,44 +340,59 @@ const hardMessage = (target, hit, runId) =>
   `git's store and the conductor's skills are never written by a tool call, with or without a contract. ` +
   `Stop and tell the person which file and why.`;
 
-/** One binding or non-binding project's answer for one path inside it. */
-function verdict(st, rel, mayCreate, narrow) {
+/** Stands for any file of a folder copied in whole: no pattern names it, and every `*` or `**` takes it. */
+const ANY_FILE = "\u0000";
+/** Names in a folder that the always-off-limits list refuses by name alone (`.codex/config.toml`). */
+const HARD_FILE_NAMES = ["config.toml", "auth.json"];
+
+/** hardRefusal for a path, and for a `folder` also for any file in it. */
+function hardFor(path, binds, mayCreate, folder) {
+  const hit = hardRefusal(path, binds, mayCreate);
+  if (hit || !folder) return hit;
+  const base = path.replace(/\/+$/, "");
+  return [ANY_FILE, ...HARD_FILE_NAMES].map((n) => hardcodedHit(base ? `${base}/${n}` : n)).find(Boolean) ?? null;
+}
+
+/** One binding or non-binding project's answer for one path inside it; a `folder` is judged as any file in it too. */
+function verdict(st, rel, mayCreate, narrow, folder = false) {
   const c = st.contract;
   const runId = st.runId;
+  const file = folder ? (rel ? `${rel}/${ANY_FILE}` : ANY_FILE) : rel;
+  const shown = folder ? `${rel || "."}/ (a folder copied in whole)` : rel;
   if (st.binds) {
-    const g = guardedHit(rel, runId);
+    const g = guardedHit(rel, runId, { containing: folder });
     if (g) {
-      if (c.strict === false && !st.lock) return { warn: `${rel} is the run's own write contract. Allowed because contract.strict = false.` };
+      if (c.strict === false && !st.lock) return { warn: `${shown} is the run's own write contract. Allowed because contract.strict = false.` };
       return {
-        deny: `${rel} is run ${runId ?? "?"}'s write contract or a record the plugin keeps for it (its lock, frozen copy, ` +
+        deny: `${shown} is run ${runId ?? "?"}'s write contract or a record the plugin keeps for it (its lock, frozen copy, ` +
           `rendered skills, provenance or backups), which a live run does not change. ${SCOPE_IS_THE_PERSONS}`,
         rule: g,
       };
     }
   }
-  const hard = hardRefusal(rel, st.binds, mayCreate);
-  if (hard) return { deny: hardMessage(rel, hard, runId), rule: hard };
+  const hard = hardFor(rel, st.binds, mayCreate, folder);
+  if (hard) return { deny: hardMessage(shown, hard, runId), rule: hard };
   if (!st.binds || narrow) return {};
-  if (runId && rel.startsWith(`.sdlc/runs/${runId}/`)) return {};
-  const off = firstMatch(rel, c.off_limits, { ci: true });
+  if (runId && file.startsWith(`.sdlc/runs/${runId}/`)) return {};
+  const off = firstMatch(file, c.off_limits, { ci: true });
   if (off) {
-    if (c.strict === false) return { warn: `${rel} matches off-limits pattern "${off}". Allowed because contract.strict = false.` };
-    return { deny: `${rel} matches off-limits pattern "${off}" (run ${runId ?? "?"}). ${SCOPE_IS_THE_PERSONS}`, rule: off };
+    if (c.strict === false) return { warn: `${shown} matches off-limits pattern "${off}". Allowed because contract.strict = false.` };
+    return { deny: `${shown} matches off-limits pattern "${off}" (run ${runId ?? "?"}). ${SCOPE_IS_THE_PERSONS}`, rule: off };
   }
-  if (firstMatch(rel, c.allowlist)) return {};
-  if (c.strict === false) return { warn: `${rel} is not in the confirmed allowlist. Allowed because contract.strict = false.` };
-  const other = /^\.sdlc\/runs\/([^/]+)\//.exec(rel)?.[1];
+  if (firstMatch(file, c.allowlist)) return {};
+  if (c.strict === false) return { warn: `${shown} is not in the confirmed allowlist. Allowed because contract.strict = false.` };
+  const other = /^\.sdlc\/runs\/([^/]+)\//.exec(file)?.[1];
   if (other && runId && other !== runId) {
     return {
-      deny: `${rel} is in run ${other}'s folder, but run ${runId} still holds this project's write contract. If run ` +
+      deny: `${shown} is in run ${other}'s folder, but run ${runId} still holds this project's write contract. If run ` +
         `${runId} is over, ending it is the person's decision (write-contract.mjs --abandon --run-id=${runId}). ` +
         `Stop and tell the person.`,
     };
   }
-  return { deny: `${rel} is not in the confirmed allowlist for run ${runId ?? "?"}. ${SCOPE_IS_THE_PERSONS}` };
+  return { deny: `${shown} is not in the confirmed allowlist for run ${runId ?? "?"}. ${SCOPE_IS_THE_PERSONS}` };
 }
 
-function decide(st, abs, target, mayCreate, narrow) {
+function decide(st, abs, target, mayCreate, narrow, folder = false) {
   if (st.tampered) return { deny: st.tampered, rule: "tampered" };
   const { paths, leaves, real } = judgedPaths(st.root, abs);
   if (leaves) {
@@ -318,12 +402,12 @@ function decide(st, abs, target, mayCreate, narrow) {
           `refused: a brownfield run writes only inside the repo whose contract it holds.`,
       };
     }
-    const hit = hardRefusal(toPosix(real), st.binds, mayCreate);
+    const hit = hardFor(toPosix(real), st.binds, mayCreate, folder);
     if (hit) return { deny: hardMessage(target, hit), rule: hit };
   }
   const warns = [];
   for (const rel of paths) {
-    const v = verdict(st, rel, mayCreate, narrow);
+    const v = verdict(st, rel, mayCreate, narrow, folder);
     if (v.deny) return { ...v, rel };
     if (v.warn) warns.push(v.warn);
   }
@@ -343,8 +427,11 @@ function statesFor(abs, sessionRoot, session) {
   return states.filter(Boolean);
 }
 
-/** `narrow`: a target the scan is unsure of, judged by the always-off-limits list, the guarded set and tampering only. */
-function checkWrite(target, cwd, sessionRoot, session, mayCreate, narrow = false) {
+/**
+ * `narrow`: a target the scan is unsure of, judged by the always-off-limits list, the guarded set and tampering only.
+ * `folder`: a folder a whole directory is copied into, judged as the folder and as any file in it.
+ */
+function checkWrite(target, cwd, sessionRoot, session, mayCreate, narrow = false, folder = false) {
   const abs = joinRaw(cwd, target);
   if (!narrow && session && (session.binds || session.tampered) && insidePath(sessionRoot, abs) === null) {
     if (session.tampered) return { deny: session.tampered, rule: "tampered", state: session };
@@ -357,7 +444,7 @@ function checkWrite(target, cwd, sessionRoot, session, mayCreate, narrow = false
   const deciding = statesFor(abs, sessionRoot, session);
   if (deciding.length === 0) {
     for (const p of new Set([toPosix(resolve(abs)), toPosix(realPath(abs))])) {
-      const hit = hardRefusal(p, false, mayCreate);
+      const hit = hardFor(p, false, mayCreate, folder);
       if (hit) return { deny: hardMessage(target, hit), rule: hit, root: gitRoot(dirname(abs)) ?? sessionRoot };
     }
     return { bound: [] };
@@ -365,7 +452,7 @@ function checkWrite(target, cwd, sessionRoot, session, mayCreate, narrow = false
   const warns = [];
   const bound = [];
   for (const st of deciding) {
-    const v = decide(st, abs, target, mayCreate, narrow);
+    const v = decide(st, abs, target, mayCreate, narrow, folder);
     if (v.deny) return { ...v, state: st };
     warns.push(...v.warns);
     if (st.binds) bound.push({ ...statusOf(st), target, abs, rel: v.rel });
@@ -399,21 +486,26 @@ function checkRemoval(target, cwd, sessionRoot, session) {
 }
 
 /**
- * The hook's answer for one tool call: `{ decision, reason, warnings, record, bound, unsure, removed }`. `record` is
- * where the decision log row goes, or null (no binding contract, and for a refusal no `.sdlc/` folder to write into).
- * `bound` lists each allowed write a binding contract judged, `unsure` each redirect with no space before the `>` under
- * one, and `removed` each path a shell removal names under one.
+ * The hook's answer for one tool call: `{ decision, reason, warnings, record, bound, folders, unsure, removed }`.
+ * `record` is where the decision log row goes, or null (no binding contract, and for a refusal no `.sdlc/` folder to
+ * write into). `bound` lists each allowed write a binding contract judged, `folders` each folder a whole directory is
+ * copied into under one, `unsure` each redirect with no space before the `>` under one, and `removed` each path a shell
+ * removal names under one.
  */
 export function decideCall(call, { wiredBy = "plugin" } = {}) {
   const cwd = typeof call?.cwd === "string" && call.cwd ? call.cwd : process.cwd();
   const sessionRoot = gitRoot(cwd);
   const session = sessionRoot ? projectState(sessionRoot) : null;
   const toolName = typeof call?.tool_name === "string" ? call.tool_name : null;
-  const targets = extractTargets(call);
+  // One scan of a shell command: a folder copy lists the folder's files.
+  const shell = toolName === "Bash" ? bashWriteTargets(call?.tool_input?.command, cwd) : null;
+  const targets = shell ? shell.files.filter((t) => !DEVICE_RE.test(t)) : extractTargets(call, cwd);
+  const folderTargets = shell?.folders ?? [];
   const row = (decision, extra) => ({ decision, tool_name: toolName, wired_by: wiredBy, ...extra });
 
   const warnings = [];
   const bound = [];
+  const folders = [];
   const removed = [];
   let refusal = null;
   for (const target of targets) {
@@ -422,9 +514,17 @@ export function decideCall(call, { wiredBy = "plugin" } = {}) {
     warnings.push(...v.warns ?? []);
     bound.push(...v.bound);
   }
+  if (!refusal) {
+    for (const target of folderTargets) {
+      const v = checkWrite(target, cwd, sessionRoot, session, false, false, true);
+      if (v.deny) { refusal = { ...v, target }; break; }
+      warnings.push(...v.warns ?? []);
+      folders.push(...v.bound);
+    }
+  }
   const unsure = [];
   if (!refusal) {
-    for (const target of extractNarrowTargets(call)) {
+    for (const target of extractNarrowTargets(call, cwd, targets)) {
       const v = checkWrite(target, cwd, sessionRoot, session, mayCreateWhenAbsent(call, target, cwd), true);
       if (v.deny) { refusal = { ...v, target }; break; }
       unsure.push(...v.bound);
@@ -447,6 +547,7 @@ export function decideCall(call, { wiredBy = "plugin" } = {}) {
       reason: refusal.deny,
       warnings,
       bound: [],
+      folders: [],
       unsure: [],
       removed: [],
       record: keep ? {
@@ -459,19 +560,21 @@ export function decideCall(call, { wiredBy = "plugin" } = {}) {
     };
   }
 
-  const binding = session?.binds ? statusOf(session) : bound[0] ?? null;
+  const binding = session?.binds ? statusOf(session) : bound[0] ?? folders[0] ?? null;
+  const named = targets.length + folderTargets.length;
   return {
     decision: "allow",
     reason: null,
     warnings,
     bound,
+    folders,
     unsure,
     removed,
     record: binding ? {
       root: binding.root,
       row: row("allow", {
-        reason: targets.length ? `${targets.length} target(s) cleared` : "no write target in this call",
-        path: bound[0]?.rel ?? null,
+        reason: named ? `${named} target(s) cleared` : "no write target in this call",
+        path: bound[0]?.rel ?? folders[0]?.rel ?? null,
         run_id: binding.run_id,
       }),
     } : null,

@@ -118,6 +118,8 @@ A PreToolUse hook on `apply_patch` and `Bash`. The script only reads the call an
 | 7 | The contract's `allowlist` | Allow |
 | 8 | Anything else | Refuse (warn and allow under `strict: false`) |
 
+A `cp` or `mv` into a folder is judged at `<folder>/<source name>`; a folder copied in whole is listed and each file it lands is judged, and one the hook cannot list (a variable or glob source, or more than 1,000 entries) is judged as the folder and as any file inside it.
+
 A contract binds while it is active and its run's lock has not ended; a contract with no lock binds while active. Only `<git root>/.sdlc/local/write-contract.json` counts: a contract in a subfolder or in a folder that is not a git root binds nothing. While the session's project is bound, a write outside it, or through a link that leads out of it, is refused.
 
 **Two wirings, one entry.** `plugin/hooks/hooks.json` holds one group, so Codex saves one trust entry, `mmo-codex@tilicho-ai-labs:hooks/hooks.json:pre_tool_use:0:0`. Trust survives version bumps and script changes, and is lost when the entry's command, matcher, timeout or status message changes. `plugin/codex/hook-wiring.mjs` builds `run.mjs`'s session flags from the same file, with `--wired-by=run` on the command, `features.hooks=true`, and an inline `hooks.state` table that switches the installed plugin's copy off for the run. The bridge's `CodexCliAdapter` passes the same `hooks.state` table to its nested read-only `codex exec`, so the hook does not start for a judgment worker's tool calls.

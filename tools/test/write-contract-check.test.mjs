@@ -20,7 +20,9 @@ import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { endRun, freezeContract, abandonRun } from "../../plugin/scripts/write-contract.mjs";
-import { extractBashRemovals, extractBashTargets, extractNarrowTargets } from "../../plugin/scripts/lib/write-guard.mjs";
+import {
+  extractBashFolders, extractBashRemovals, extractBashTargets, extractNarrowTargets,
+} from "../../plugin/scripts/lib/write-guard.mjs";
 
 const HOOK = resolve(fileURLToPath(import.meta.url), "..", "..", "..", "plugin", "codex", "hooks", "write-contract-check.mjs");
 const WRITE_CONTRACT = resolve(fileURLToPath(import.meta.url), "..", "..", "..", "plugin", "scripts", "write-contract.mjs");
@@ -369,15 +371,96 @@ test("Bash: mv into the allowlist is allowed", async () => {
   } finally { cleanup(dir); }
 });
 
-test("Bash: cp into a directory (trailing slash) is not treated as a specific file target", async () => {
+test("Bash: cp into a directory (trailing slash) is judged as the file it lands on", async () => {
   const dir = makeRepo({
     schema_version: 1, active: true, strict: true,
     allowlist: [], off_limits: ["**/*"],
   });
   try {
     const r = await runHook(dir, bashRedirect("cp file.txt some-dir/"));
-    assert.equal(r.decision, "allow", "directory-destination form is intentionally not resolved to a file target here");
+    assert.equal(r.decision, "deny");
+    assert.match(r.reason, /^some-dir\/file\.txt matches off-limits pattern "\*\*\/\*"/);
   } finally { cleanup(dir); }
+});
+
+/** A folder outside the repo holding `files` (path → text), for a cp/mv source. */
+function sourceFolder(files) {
+  const dir = mkdtempSync(join(tmpdir(), "cp-source-"));
+  for (const [rel, text] of Object.entries(files)) {
+    mkdirSync(join(dir, rel, ".."), { recursive: true });
+    writeFileSync(join(dir, rel), text);
+  }
+  return dir;
+}
+
+test("scan: cp and mv into a folder land on <folder>/<source name>; a folder source is listed file by file", () => {
+  assert.deepEqual(extractBashTargets("cp src/a.js lib/"), ["lib/a.js"]);
+  assert.deepEqual(extractBashTargets("mv -f src/a.js src/b.js lib/"), ["lib/a.js", "lib/b.js"]);
+  assert.deepEqual(extractBashTargets("cp a b dir"), ["dir/a", "dir/b"], "several sources need a folder");
+  assert.deepEqual(extractBashTargets("cp /tmp/x/.env ./"), ["./.env"]);
+  assert.deepEqual(extractBashTargets("cp src/a.ts src/b.ts"), ["src/b.ts"], "one source to a file path is that file");
+  const src = sourceFolder({ "a.ts": "a", "sub/b.ts": "b" });
+  const repo = makeRepo(undefined);
+  try {
+    mkdirSync(join(repo, "lib"));
+    assert.deepEqual(extractBashTargets("cp src/a.js lib", repo), ["lib/a.js"], "an existing folder takes the file");
+    assert.deepEqual(extractBashTargets(`cp -R ${src}/. out/`, repo).sort(), ["out/a.ts", "out/sub/b.ts"]);
+    assert.deepEqual(extractBashTargets(`cp -r ${src}/ out/`, repo).sort(),
+      [`out/${src.split("/").pop()}/a.ts`, `out/${src.split("/").pop()}/sub/b.ts`, "out/a.ts", "out/sub/b.ts"].sort(),
+      "BSD and GNU cp put a trailing-slash folder in different places, so both are judged");
+    assert.deepEqual(extractBashTargets(`cp -r ${src} lib`, repo).sort(), [`lib/${src.split("/").pop()}/a.ts`, `lib/${src.split("/").pop()}/sub/b.ts`]);
+    assert.deepEqual(extractBashFolders(`cp -r ${src} lib`, repo), []);
+    assert.deepEqual(extractBashFolders("cp -R /no/such/folder/. out/", repo), ["out/"], "a folder the hook cannot list");
+    assert.deepEqual(extractBashFolders('cp -r "$SRC" out/', repo), ["out/$SRC"]);
+  } finally { cleanup(repo); cleanup(src); }
+});
+
+test("live contract: a cp or mv into a folder is judged on what lands there, as the todo's repro gives it", async () => {
+  const dir = makeFrozenRepo(["src/**"]);
+  const src = sourceFolder({ "a.ts": "a", ".env": "SECRET=1", "skills/pipeline.md": "x" });
+  try {
+    mkdirSync(join(dir, "lib"));
+    mkdirSync(join(dir, "src", "sub"), { recursive: true });
+    writeFileSync(join(dir, "src", "a.js"), "x");
+    await expectAll(dir, [
+      bashRedirect("cp src/a.js lib/"), bashRedirect("mv src/a.js lib/"), bashRedirect("cp src/a.js lib"),
+      bashRedirect("cp -r src/ lib/"), bashRedirect("cp src/a.js .git/"), bashRedirect("cp src/a.js ./"),
+      bashRedirect(`cp ${src}/.env ./`), bashRedirect(`cp ${src}/.env .`),
+      bashRedirect("cp /tmp/write-contract.lock.json .sdlc/runs/r1/"),
+      bashRedirect("cp /tmp/write-contract.json .sdlc/local/"),
+      bashRedirect(`cp -R ${src}/skills/. .sdlc/runs/r1/skills/`),
+      bashRedirect("cp -R /no/such/skills/. .sdlc/runs/r1/skills/"),
+      bashRedirect(`cp -R ${src}/. .sdlc/runs/r1/`),
+      bashRedirect(`cp -R ${src}/. src/`),
+      bashRedirect('cp -R "$SRC"/. lib/'),
+    ], "deny");
+    await expectAll(dir, [
+      bashRedirect("cp src/a.js src/sub/"), bashRedirect("cp lib/x.js src/"), bashRedirect("mv src/a.js src/sub"),
+      bashRedirect(`cp ${src}/a.ts src/`), bashRedirect(`cp -R ${src}/skills/. src/docs/`),
+      bashRedirect('cp -R "$SRC"/. src/'), bashRedirect(`cp ${src}/a.ts .sdlc/runs/r1/notes/`),
+    ], "allow");
+    const r = await runHook(dir, bashRedirect(`cp -R ${src}/. src/`));
+    assert.match(r.reason, /^src\/\.env matches always-off-limits pattern "\.env"/, "a listed folder names the file that is refused");
+    const f = await runHook(dir, bashRedirect('cp -R "$SRC"/. lib/'));
+    assert.match(f.reason, /^lib\/ \(a folder copied in whole\) is not in the confirmed allowlist for run r1/);
+  } finally { cleanup(dir); cleanup(src); }
+});
+
+test("no contract: a copy into a folder meets the always-off-limits list like any other write", async () => {
+  const dir = makeRepo(undefined);
+  const src = sourceFolder({ "app.js": "x", ".git/config": "[core]" });
+  try {
+    mkdirSync(join(dir, "pkg"));
+    await expectAll(dir, [
+      bashRedirect(`cp -r ${src}/.git ./`), bashRedirect(`cp ${src}/app.js .GIT/`), bashRedirect(`cp -r ${src} pkg`),
+      bashRedirect('cp -R "$X"/. .codex/'), bashRedirect('cp -R "$X"/. .agents/'),
+    ], "deny");
+    await expectAll(dir, [
+      bashRedirect(`cp ${src}/app.js pkg/`), bashRedirect(`cp -R ${src}/app.js pkg/`),
+      bashRedirect('cp -R "$X"/. pkg/'),
+    ], "allow");
+    assert.ok(!existsSync(join(dir, ".sdlc")));
+  } finally { cleanup(dir); cleanup(src); }
 });
 
 // ── SiteNotes regression: cross-repo writes and pre-contract safety net ────
