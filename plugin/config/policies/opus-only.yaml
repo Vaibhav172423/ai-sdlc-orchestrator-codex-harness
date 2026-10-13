@@ -31,8 +31,9 @@ rules:
   - default: opus
     reason: "Single-model, premium tier"
 
-# Hard per-run cost cap. When the accumulated cost_usd across telemetry
-# events for the current run exceeds this, the orchestrator aborts with
-# a clear message. Prevents runaway spend on an unexpectedly large repo.
+# Hard per-run cost cap. Once the dispatched cost in the run's
+# telemetry.jsonl reaches this, the bridge refuses every further dispatch.
+# This policy names no driver pin, so the conductor's own cost is not
+# counted. Prevents runaway spend on an unexpectedly large repo.
 # Users on custom policies may raise or omit this.
 hard_cost_cap_usd: 50

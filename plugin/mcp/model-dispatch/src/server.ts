@@ -28,7 +28,7 @@ import {
 } from "./routing.js";
 import { assessModels, parseAuthMode, type AuthMode } from "./preflight.js";
 import { appendEvent, normalizeDirectTierEvent } from "./telemetry.js";
-import { assertUnderCostCap, CostCapExceededError } from "./costCap.js";
+import { assertUnderCostCap, CostCapExceededError, driverCapWarning, type RecordedSpend } from "./costCap.js";
 import { createAdapter } from "./adapters/index.js";
 import {
   defaultAdcPath,
@@ -399,13 +399,21 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
           select_overridden: decision.selection?.overridden,
         });
 
+        const warnDriver = (spend: RecordedSpend | null | undefined) => {
+          const w = spend ? driverCapWarning(spend) : null;
+          if (w) log("warn", w.event, { packet_id: packet.id, reason: w.reason });
+        };
         try {
-          assertUnderCostCap(policy, a.telemetry_path);
+          warnDriver(assertUnderCostCap(policy, a.telemetry_path, { env: process.env }));
         } catch (err) {
           if (err instanceof CostCapExceededError) {
+            warnDriver(err.spend);
             log("warn", "cost_cap.refused", {
               packet_id: packet.id,
               recorded_usd: err.recordedUsd,
+              dispatched_usd: err.dispatchedUsd,
+              driver_usd: err.driverUsd,
+              driver_source: err.driverSource,
               cap_usd: err.capUsd,
               policy_name: err.policyName,
             });

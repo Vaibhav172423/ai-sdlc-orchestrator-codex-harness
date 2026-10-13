@@ -31,6 +31,7 @@ import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { readMmoSelectFile } from "./mmoSelect.mjs";
+import { appendSessionMarker } from "./session-marker.mjs";
 
 const BRIDGE_CLIENT = resolve(
   dirname(fileURLToPath(import.meta.url)),
@@ -238,6 +239,11 @@ export async function runDispatch(args, { connect, env = process.env } = {}) {
       workDir: args["work-dir"],
     });
   }
+
+  // Before connecting, so the bridge's cost cap already sees this call's thread.
+  const markerFrom = typeof args.telemetry === "string" ? args.telemetry : isPreflight && typeof outPath === "string" ? outPath : null;
+  const markerDir = markerFrom ? dirname(resolve(markerFrom)) : null;
+  appendSessionMarker(markerDir, { tool: toolName, policy: policyPath ?? args.policy ?? null }, { env });
 
   const bridge = await connect({ env: bridgeEnv(projectRoot, env) });
   try {

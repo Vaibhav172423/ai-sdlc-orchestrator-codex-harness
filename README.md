@@ -117,7 +117,7 @@ Source: [plugin/config/policies/gpt-plus-flash.yaml](plugin/config/policies/gpt-
 Two guardrails ship on:
 
 - **Escalation** — a mechanical-tier packet that fails validation twice auto-routes to GPT on the third attempt. Prevents infinite retries when Flash cannot solve a particular puzzle.
-- **Hard cost cap** — `$50` per run (`hard_cost_cap_usd` in the policy). Once the cost recorded in the run's `telemetry.jsonl` reaches the cap, the bridge refuses every further dispatch and `run.mjs` stops resuming. The call that crosses the cap still completes. The cap counts dispatched work only: the conductor's own driver cost is priced after the run and is not included. Raise the cap, or delete the key for no cap, in your own policy.
+- **Hard cost cap** — `$50` per run (`hard_cost_cap_usd` in the policy). The cap counts the dispatched cost in the run's `telemetry.jsonl` plus the conductor's own modeled cost from the same run folder. Once that total reaches the cap, the bridge refuses every further dispatch and `run.mjs` stops resuming. The call that crosses the cap still completes, and the conductor's current turn still runs, so a run can overshoot by part of one turn. A conductor on a model other than the policy's pin is not priced and adds $0. Raise the cap, or delete the key for no cap, in your own policy.
 
 Four policies ship as selectable:
 

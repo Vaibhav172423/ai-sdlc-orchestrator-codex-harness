@@ -313,13 +313,15 @@ function writeQuietly(stream, text) {
 }
 
 /**
- * Null while recorded spend is under the policy's hard_cost_cap_usd. Once it
- * is not, the bridge refuses every dispatch, so a resumed session could only
- * spend conductor tokens being refused.
+ * Null while dispatched plus the conductor's modeled spend is under the
+ * policy's hard_cost_cap_usd. Once it is not, the bridge refuses every
+ * dispatch, so a resumed session could only spend conductor tokens being
+ * refused. `opts.codexHome` is where codex writes the session file the cap
+ * falls back to before the first driver row exists.
  */
-export function costCapStop(policy, telemetryPath) {
+export function costCapStop(policy, telemetryPath, opts = {}) {
   try {
-    assertUnderCostCap(policy, telemetryPath);
+    assertUnderCostCap(policy, telemetryPath, opts);
     return null;
   } catch (err) {
     if (err?.code === COST_CAP_EXCEEDED) return err.message;
@@ -954,7 +956,7 @@ async function runDriver(args, deps) {
         reason = `the driver received ${stopping}`;
         break;
       }
-      const capBefore = costCapStop(policy, telemetryPath);
+      const capBefore = costCapStop(policy, telemetryPath, { env, codexHome });
       if (capBefore) {
         outcome = "cost_cap";
         reason = capBefore;
@@ -1092,7 +1094,7 @@ async function runDriver(args, deps) {
       const waiting = stop?.outcome === "gate_pending" || stop?.outcome === "question_pending";
       if (!stop || waiting) {
         // Before a waiting gate too: a run over its cap ends here instead of asking for an answer it cannot act on.
-        const capAfter = costCapStop(policy, telemetryPath);
+        const capAfter = costCapStop(policy, telemetryPath, { env, codexHome });
         if (capAfter) {
           outcome = "cost_cap";
           reason = !waiting
