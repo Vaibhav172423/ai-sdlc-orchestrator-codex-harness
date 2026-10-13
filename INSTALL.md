@@ -43,8 +43,9 @@ codex plugin marketplace upgrade
 ```
 
 That re-fetches every configured Git marketplace. It is harmless when the cache is already
-current, and it does nothing at all for a marketplace added from a local path — those resolve to
-the working tree and are always live.
+current, and it does nothing at all for a marketplace added from a local path. That install is a
+copy too: `codex plugin add` copies the plugin folder into the cache, and edits in the folder reach
+it only when `codex plugin add` runs again.
 
 ## 2. Install the plugin
 

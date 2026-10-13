@@ -234,7 +234,7 @@ node '<plugin-root>/codex/start-run.mjs' --mode=greenfield --brief='<brief from 
 It creates the run folder `.sdlc/runs/<run-id>/`, renders this run's playbooks into its `skills/`
 folder with the real paths filled in, records the run in `run.json`, and prints the run id, the
 folder, the `playbook` to follow, and the `end_run` command. If it exits non-zero, show the user
-its message and stop.
+its message and stop. Show the user any `warning:` line it prints before you go on.
 
 Read the `playbook` file it printed (`<run folder>/skills/pipeline.md`) and follow it from phase -1
 (preflight) through phase 9, with this handover from the start script's output:

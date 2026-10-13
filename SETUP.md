@@ -62,8 +62,10 @@ right after Gate 0 with "The write guard did not run in this session". A plugin 
 changes the hook's entry drops that trust, and the same step restores it.
 
 You still need the credentials in step 4 and a policy in step 5, and the bundled server has to be
-built once: run `node plugin/codex/verify-setup.mjs --fix` from the clone the marketplace points
-at (the install references that directory rather than copying the built server).
+built once. Either install copies the plugin into `~/.codex/plugins/cache/`, and a session runs
+that copy: for a local path, run `node plugin/codex/verify-setup.mjs --fix` in the clone before
+`codex plugin add` so the copy carries the build, and run `codex plugin add` again after every
+pull. For the GitHub route, run the copy's own `codex/verify-setup.mjs --fix`.
 
 **Work inside a clone** (contributors, or anyone changing the harness itself). Continue below.
 

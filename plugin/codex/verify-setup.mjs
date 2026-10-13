@@ -63,6 +63,7 @@ import { dirname, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { readMmoSelectFile, writeMmoSelectFile } from "./mmoSelect.mjs";
+import { staleBridgeBuild, staleFilesShown } from "./bridge-build.mjs";
 // Imported directly rather than spawned as a subprocess and JSON-merged the
 // way the source does it — there, env-checks lived in a package context this
 // script could not import from; here they are siblings.
@@ -629,6 +630,7 @@ export function evaluate({
   codexLogin = { loggedIn: false, detail: null },
   hasNodeModules,
   hasDist,
+  staleBuild = null,
   hasAdcFile = false,
   env = {},
   vertex = null,
@@ -721,6 +723,17 @@ export function evaluate({
         "The bundled MCP server is not built — dist/server.js does not exist. " +
         "Model dispatch would fail partway through a run.",
       fix: "Re-run this script with --fix (runs `npm run build` in the server directory).",
+    });
+  }
+
+  if (hasDist && staleBuild) {
+    problems.push({
+      id: "mcp-build-stale",
+      severity: "warning",
+      message:
+        `The bundled MCP server's dist/ is older than its source (${staleFilesShown(staleBuild)}). ` +
+        "A pull or an edit changed src/ without a rebuild, so runs and dispatches use the old bridge.",
+      fix: "Re-run this script with --fix (runs `npm ci` and `npm run build` in the server directory).",
     });
   }
 
@@ -980,6 +993,7 @@ function observe(pluginRoot, env = process.env, projectRoot = process.cwd()) {
     hasGcloud: onPath("gcloud"),
     hasNodeModules: existsSync(nodeModules),
     hasDist: existsSync(distEntry),
+    staleBuild: staleBridgeBuild(pluginRoot),
     hasAdcFile: existsSync(adcFile),
     vertex: vertexCredentialState({
       env: realEnv,
@@ -1206,7 +1220,7 @@ if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
   let observed = observe(pluginRoot, env, projectRoot);
   let state = evaluate(observed);
   const needsRepair = state.problems.some(
-    (p) => p.id === "mcp-dependencies" || p.id === "mcp-build"
+    (p) => p.id === "mcp-dependencies" || p.id === "mcp-build" || p.id === "mcp-build-stale"
   );
 
   if (needsRepair && repairing) {

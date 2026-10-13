@@ -38,6 +38,7 @@ import {
 } from "./interactive-run.mjs";
 import { assertResumePolicy, policyRecord, resolveRunPolicy, RunRefusal } from "./run-policy.mjs";
 import { checkSessionModel } from "./session-model.mjs";
+import { staleBridgeBuild, staleBuildWarning } from "./bridge-build.mjs";
 import { appendSessionMarker } from "./session-marker.mjs";
 import { ContractRefusal, reopenRun } from "../scripts/write-contract.mjs";
 import { isRunId, runDirFor } from "../scripts/lib/run-id.mjs";
@@ -321,6 +322,7 @@ export async function startRun(args, deps = {}) {
     resume: earlier ? true : undefined,
   });
 
+  const staleWarning = staleBuildWarning((deps.staleBuild ?? staleBridgeBuild)(pluginRoot), pluginRoot);
   const playbook = renderedSkillPath(runDir, "pipeline");
   const guide = renderedSkillPath(runDir, "brownfield-guide");
   return {
@@ -344,6 +346,7 @@ export async function startRun(args, deps = {}) {
     brownfield_guide: mode === "brownfield" ? guide : null,
     read_first: mode === "brownfield" ? guide : playbook,
     write_contract: contract?.live ? (contract.reopened ? "reopened" : "live") : null,
+    warnings: staleWarning ? [staleWarning] : [],
     end_run:
       `node ${shellQuote(join(pluginRoot, "codex", "end-run.mjs"))} --run-dir=${shellQuote(runDir)} ` +
       "--outcome=<outcome> --reason='<one line>'",
@@ -353,6 +356,7 @@ export async function startRun(args, deps = {}) {
 export function formatStart(result) {
   const lines = [
     `${result.resumed ? "Resumed" : "Started"} run ${result.run_id} (${result.route}, ${result.mode}, policy ${result.policy}).`,
+    ...(result.warnings ?? []).map((w) => `warning: ${w}`),
     "",
   ];
   const keys = [

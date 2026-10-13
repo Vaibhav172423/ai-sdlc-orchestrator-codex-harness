@@ -50,6 +50,7 @@ import {
   SEAT_POLICY,
 } from "../plugin/codex/verify-setup.mjs";
 import { writeMmoSelectFile } from "../plugin/codex/mmoSelect.mjs";
+import { staleBridgeBuild, staleFilesShown } from "../plugin/codex/bridge-build.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const ROOT = join(__dirname, "..");
@@ -205,7 +206,9 @@ if (wantAgent) {
 // [5] Build the bridge
 step("Bundled MCP server");
 const { serverDir, distEntry, nodeModules } = mcpPaths(PLUGIN_ROOT);
-if (existsSync(distEntry) && existsSync(nodeModules)) {
+const staleBuild = staleBridgeBuild(PLUGIN_ROOT);
+if (staleBuild) warn(`The bridge's build is older than its source (${staleFilesShown(staleBuild)}).`);
+if (existsSync(distEntry) && existsSync(nodeModules) && !staleBuild) {
   ok("Already installed and built.");
 } else if (await askYesNo("Install dependencies and build the bridge now?", true)) {
   for (const [label, args] of [["installing dependencies", ["ci"]], ["building", ["run", "build"]]]) {

@@ -139,7 +139,7 @@ Two of the fifteen are not invoked directly. `pipeline` is the state machine, ga
 | Route | What it means | Update path |
 |---|---|---|
 | Plugin, from a Git marketplace | Codex holds a snapshot | `codex plugin marketplace upgrade` |
-| Plugin, from a local path | The install resolves to the working tree; edits are live | `git pull` — there is nothing else to update |
+| Plugin, from a local path | Codex holds a copy of the folder's `plugin/`, its `dist/` and `node_modules/` included, made at `codex plugin add` | `git pull`, `node plugin/codex/verify-setup.mjs --fix`, then `codex plugin add` again |
 | Clone | Working on the harness itself | `git pull`, then `node plugin/codex/verify-setup.mjs --fix` |
 
 `dist/` and `node_modules/` are not tracked, so every route needs one build before the bridge can dispatch.

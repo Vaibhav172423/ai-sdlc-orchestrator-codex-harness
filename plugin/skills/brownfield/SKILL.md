@@ -23,7 +23,8 @@ node '<plugin-root>/codex/start-run.mjs' --mode=brownfield
 
 It creates this run's folder under `.sdlc/runs/`, renders the operating manual and the pipeline
 playbook into it with the run's real paths, records the run in `run.json`, and prints where they
-are. If it exits non-zero, show the user its message and stop.
+are. If it exits non-zero, show the user its message and stop. Show the user any `warning:` line
+it prints before you go on.
 
 The `gates:` line it prints is your gate instruction for this run. Follow it at every gate, Gate 0
 included, and record each decision as a new line in `gates.jsonl` in the run folder, in the shape

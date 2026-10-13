@@ -65,6 +65,7 @@ import { renderPrompt, renderSkills } from "./render.mjs";
 import { listDriverPriceFn } from "../mcp/model-dispatch/dist/driverPricing.js";
 import { reportCommand } from "../scripts/report.mjs";
 import { gateLine } from "../scripts/lib/gate-record.mjs";
+import { staleBridgeBuild, staleBuildWarning } from "./bridge-build.mjs";
 
 const CODEX_DIR = dirname(fileURLToPath(import.meta.url));
 const PLUGIN_ROOT = dirname(CODEX_DIR);
@@ -883,6 +884,9 @@ async function runDriver(args, deps) {
   } catch (err) {
     throw new UsageError(err?.message ?? String(err));
   }
+
+  const staleWarning = staleBuildWarning((deps.staleBuild ?? staleBridgeBuild)(PLUGIN_ROOT), PLUGIN_ROOT);
+  if (staleWarning) warn(`run: ${staleWarning}`);
 
   if (args["dry-run"]) {
     say(

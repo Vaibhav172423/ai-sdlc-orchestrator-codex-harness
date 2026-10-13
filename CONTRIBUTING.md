@@ -44,8 +44,52 @@ All of the above open PRs targeting **`develop`**, never `main` directly.
    | `tools/test/offline.test.mjs` | Fails when a root test runs `codex`, `gcloud` or a script that does, outside the stand-ins. |
    | `tools/test/node-floor.test.mjs` | Holds every `package.json` to one `engines.node` floor, CI to that Node major, and every locked package to that floor. |
 4. Run `node tools/setup.mjs` on a clean clone to verify it still passes. Unlike `npm test`, it uses your real `codex`: its last step registers the bridge in `~/.codex/config.toml`.
-5. If you touched the plugin code, run a full pass locally and confirm the report still renders sensibly.
+5. If you touched the plugin code, run a full pass locally and confirm the report still renders sensibly. For a run in a codex session, install your branch first: [Test a branch in a codex session](#test-a-branch-in-a-codex-session).
 6. Open a pull request. Describe what changed and why in one or two paragraphs.
+
+## Test a branch in a codex session
+
+A codex session never runs your checkout. `codex plugin add` copies `plugin/` (with whatever `dist/` and `node_modules/` it holds) into `$CODEX_HOME/plugins/cache/tilicho-ai-labs/mmo-codex/<version>/`, and the session runs that copy until you add the plugin again. A copy installed before your branch runs the older code: the 0.1.0 install from the public marketplace predates the cost cap, the write hook and the session-model check.
+
+From the root of your checkout, on the branch under test, build the bridge and look at the
+registered marketplaces:
+
+```bash
+node plugin/codex/verify-setup.mjs --fix --project-root "$(pwd)"
+codex plugin marketplace list
+```
+
+When `tilicho-ai-labs` is listed with a root other than this checkout (the GitHub URL, or another
+clone), remove it first: `marketplace add` refuses a second source under the same name.
+
+```bash
+codex plugin marketplace remove tilicho-ai-labs
+```
+
+Then install from the checkout:
+
+```bash
+codex plugin marketplace add "$(pwd)"
+codex plugin add mmo-codex@tilicho-ai-labs
+```
+
+| Step | Why |
+|---|---|
+| `verify-setup.mjs --fix` | Builds the bridge in the checkout, so the copy `codex plugin add` makes carries a current `dist/` and its `node_modules/`. |
+| `marketplace add "$(pwd)"` | Registers this checkout as the marketplace, from `.agents/plugins/marketplace.json`. |
+| `plugin add` | Replaces the cached copy with this branch's `plugin/`. |
+
+Check the copy, then start codex on the driver pin:
+
+```bash
+codex plugin list
+node "$(ls -d "${CODEX_HOME:-$HOME/.codex}"/plugins/cache/tilicho-ai-labs/mmo-codex/*/ | tail -1)codex/verify-setup.mjs" --project-root "$(pwd)"
+codex -m gpt-5.6-terra -c model_reasoning_effort="high"
+```
+
+`codex plugin list` shows `mmo-codex@tilicho-ai-labs` with the branch's version and this checkout's `plugin/` as its source. The copy's check reports no `mcp-build-stale` warning. At startup, codex asks about the plugin's write hook: "Trust all and continue" trusts it, and brownfield runs need that.
+
+After every pull or edit, run `verify-setup.mjs --fix` and `codex plugin add mmo-codex@tilicho-ai-labs` again: nothing else refreshes the copy. To go back to the released plugin, remove the marketplace and add the GitHub one again, as [INSTALL.md](INSTALL.md) shows.
 
 ## Commit messages
 
