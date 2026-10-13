@@ -4,10 +4,10 @@
  * runs, rebuilt for codex's payload shapes and reply protocol.
  *
  * Testing shape: subprocess-based, piping the codex hook payload shape on
- * stdin and asserting the JSON reply's permissionDecision — codex ignores a
- * bare exit code (verified live, docs/verification/p1-codex-runtime.md), so
- * unlike the source repo's Claude-side version of this test, decisions are
- * read from stdout JSON, not from the process exit code.
+ * stdin and reading the reply on stdout: a JSON deny, or nothing for an
+ * allow. Codex ignores a bare exit code and reports a bare
+ * `permissionDecision: "allow"` as a failed hook run
+ * (docs/verification/p1-codex-runtime.md).
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
@@ -25,7 +25,7 @@ import { extractBashRemovals, extractBashTargets, extractNarrowTargets } from ".
 const HOOK = resolve(fileURLToPath(import.meta.url), "..", "..", "..", "plugin", "codex", "hooks", "write-contract-check.mjs");
 const WRITE_CONTRACT = resolve(fileURLToPath(import.meta.url), "..", "..", "..", "plugin", "scripts", "write-contract.mjs");
 
-/** Run the hook with the given tool call payload. Returns { decision, reason, stderr }. */
+/** Run the hook with the given tool call payload. Returns { decision, reason, stderr }; an empty reply is an allow. */
 function runHook(cwd, payload, args = []) {
   return new Promise((resolvePromise, reject) => {
     const p = spawn("node", [HOOK, ...args], { cwd, stdio: ["pipe", "pipe", "pipe"] });
@@ -33,16 +33,16 @@ function runHook(cwd, payload, args = []) {
     let stderr = "";
     p.stdout.on("data", (c) => (stdout += c.toString()));
     p.stderr.on("data", (c) => (stderr += c.toString()));
-    p.on("close", () => {
+    p.on("close", (code) => {
+      if (code !== 0) return reject(new Error(`hook exited ${code}\nstderr: ${stderr}`));
+      if (stdout === "") return resolvePromise({ decision: "allow", reason: undefined, stderr });
       try {
         const parsed = JSON.parse(stdout);
-        resolvePromise({
-          decision: parsed.hookSpecificOutput?.permissionDecision,
-          reason: parsed.hookSpecificOutput?.permissionDecisionReason,
-          stderr,
-        });
+        const decision = parsed.hookSpecificOutput?.permissionDecision;
+        if (decision !== "deny") throw new Error(`a non-empty reply must be a deny, got ${JSON.stringify(decision)}`);
+        resolvePromise({ decision, reason: parsed.hookSpecificOutput?.permissionDecisionReason, stderr });
       } catch (e) {
-        reject(new Error(`hook did not reply with valid JSON: ${stdout}\nstderr: ${stderr}\n${e}`));
+        reject(new Error(`hook did not reply with a JSON deny: ${stdout}\nstderr: ${stderr}\n${e}`));
       }
     });
     p.stdin.end(JSON.stringify({ cwd, ...payload }));
@@ -205,6 +205,31 @@ test("fails open on an unrelated tool name with no structured path field", async
   try {
     const r = await runHook(dir, { tool_name: "view_image", tool_input: { url: "https://example.com/x.png" } });
     assert.equal(r.decision, "allow", "a tool this hook isn't wired for must not accidentally deny");
+  } finally { cleanup(dir); }
+});
+
+test("an allow is an empty reply on every path, a refusal the one JSON reply", () => {
+  const dir = makeFrozenRepo(["src/**"]);
+  try {
+    const ask = (input) => spawnSync(process.execPath, [HOOK], { cwd: dir, input, encoding: "utf8" });
+    const allowed = [
+      JSON.stringify({ cwd: dir, tool_name: "Bash", tool_input: { command: "ls" } }),
+      JSON.stringify({ cwd: dir, ...applyPatchAdd("src/a.ts") }),
+      "not json",
+      "",
+    ];
+    for (const input of allowed) {
+      const r = ask(input);
+      assert.equal(r.status, 0, r.stderr);
+      assert.equal(r.stdout, "", `nothing on stdout for an allow: ${input.slice(0, 60)}`);
+    }
+    const r = ask(JSON.stringify({ cwd: dir, ...applyPatchAdd("lib/a.ts") }));
+    assert.equal(r.status, 0);
+    const reply = JSON.parse(r.stdout).hookSpecificOutput;
+    assert.equal(reply.hookEventName, "PreToolUse");
+    assert.equal(reply.permissionDecision, "deny");
+    assert.match(reply.permissionDecisionReason, /not in the confirmed allowlist for run r1/);
+    assert.equal(decisions(dir).filter((row) => row.decision === "allow").length, 2, "an allow is still recorded");
   } finally { cleanup(dir); }
 });
 

@@ -221,11 +221,11 @@ test("the hook runs from an installed copy whose path has a space, through sh an
           const r = spawnSync(shell, ["-c", line], { input: JSON.stringify({ cwd: project, ...payload }), encoding: "utf8", cwd: project });
           assert.equal(r.status, 0, `${shell} ${wiring}: ${r.stderr}`);
           assert.doesNotMatch(r.stderr, /Cannot find module|No such file|not found/, `${shell} ${wiring}`);
-          return JSON.parse(r.stdout).hookSpecificOutput.permissionDecision;
+          return r.stdout === "" ? "allow" : JSON.parse(r.stdout).hookSpecificOutput.permissionDecision;
         };
         const patch = { tool_name: "apply_patch", tool_input: { command: "*** Begin Patch\n*** Add File: .env.local\n+X=1\n*** End Patch" } };
         assert.equal(ask(patch), "deny", `${shell} ${wiring}: the refusal arrives as JSON`);
-        assert.equal(ask({ tool_name: "Bash", tool_input: { command: "ls" } }), "allow", `${shell} ${wiring}`);
+        assert.equal(ask({ tool_name: "Bash", tool_input: { command: "ls" } }), "allow", `${shell} ${wiring}: an allow is an empty reply`);
       }
     }
     assert.ok(!existsSync(join(project, ".sdlc")), "the hook leaves no .sdlc folder in a project that has none");

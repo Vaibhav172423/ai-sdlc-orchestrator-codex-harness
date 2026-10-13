@@ -52,8 +52,8 @@ function runHook(cwd, payload) {
     p.stdout.on("data", (c) => (out += c));
     p.stderr.on("data", (c) => (err += c));
     p.on("close", () => {
-      try { done({ decision: JSON.parse(out).hookSpecificOutput.permissionDecision, stderr: err }); }
-      catch (e) { fail(new Error(`no JSON reply: ${out}\n${err}\n${e}`)); }
+      try { done({ decision: out === "" ? "allow" : JSON.parse(out).hookSpecificOutput.permissionDecision, stderr: err }); }
+      catch (e) { fail(new Error(`neither an empty allow nor a JSON deny: ${out}\n${err}\n${e}`)); }
     });
     p.stdin.end(JSON.stringify({ cwd, ...payload }));
   });

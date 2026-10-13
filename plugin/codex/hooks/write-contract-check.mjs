@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 /**
  * Codex PreToolUse hook for the brownfield write contract, on `apply_patch` and `Bash`. The decision is in
- * plugin/scripts/lib/write-guard.mjs. Codex blocks a call only on the JSON reply on stdout, not on an exit code, and a
+ * plugin/scripts/lib/write-guard.mjs. Codex blocks a call only on a JSON deny on stdout, not on an exit code, and a
  * denied call leaves no trace in `codex exec --json`, so the hook records its own decisions. Any failure here allows
  * the call; the one deliberate refusal on doubt is a contract that changed after its run froze it.
  *
@@ -28,8 +28,15 @@ function readStdinJson() {
   });
 }
 
-/** Exits once the reply is flushed: stdin may never close, and a pipe write is asynchronous on macOS. */
+/**
+ * Exits once the reply is flushed: stdin may never close, and a pipe write is asynchronous on macOS. An allow is an
+ * empty reply: Codex reports a bare `permissionDecision: "allow"` as a failed hook run on every call.
+ */
 function reply(decision, reason) {
+  if (decision !== "deny") {
+    process.stdout.write("", () => process.exit(0));
+    return;
+  }
   const out = { hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: decision } };
   if (reason) out.hookSpecificOutput.permissionDecisionReason = reason;
   process.stdout.write(JSON.stringify(out), () => process.exit(0));

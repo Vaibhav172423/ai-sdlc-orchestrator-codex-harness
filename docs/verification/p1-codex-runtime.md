@@ -346,6 +346,26 @@ its end switched the contract off (`end_outcome: refused`). `--resume` reopened 
 landed under it, and the run end at `max_turns` switched it off again. `provenance.json` held both
 written files, recorded by the hook.
 
+### What a PreToolUse reply may say (codex 0.160.1, 2026-10-14)
+
+Checked through `codex app-server`, the protocol the TUI uses, with the plugin installed and its
+hook trusted, against the same localhost mock: one turn ran a shell `ls`, an `apply_patch` Add File
+of `new3.txt` and one of `.env.local`. `codex exec --json` carries no hook items, so only the
+app-server shows how Codex rates each hook run.
+
+| Reply on stdout | `hook/completed` status |
+|---|---|
+| Nothing (exit 0), the write hook's allow | `completed`, no entries |
+| `{}`, or `hookSpecificOutput` with no decision | `completed`, no entries |
+| `permissionDecision: "deny"` with a reason | `blocked`; the call does not run |
+| `permissionDecision: "allow"` alone | `failed`, error entry `PreToolUse hook returned unsupported permissionDecision:allow`; the call runs |
+| `permissionDecision: "ask"` | `failed`, error entry `PreToolUse hook returned unsupported permissionDecision:ask`; the call runs |
+
+The binary also carries `PreToolUse hook returned updatedInput without permissionDecision:allow`,
+so `allow` is accepted only together with `updatedInput`. The write hook replies with nothing to
+allow a call and keeps the JSON form for `deny`; the TUI shows a "Hook failed" cell for every
+`failed` run.
+
 ## Pins chosen (Document B §8, Document A P1′ exit criterion)
 
 Selected 2026-08-31 after check 7 (reasoning effort) and the sandbox/approval probes below, all
