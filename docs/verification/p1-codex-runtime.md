@@ -572,6 +572,18 @@ capped by `--max-turns` (default 12). Three details that matter:
 - **A resumed turn keeps the pin, the sandbox and the write-contract hook.** One that dropped the
   hook would write unguarded; one that dropped the pin would answer on a different model.
 
+**Superseded (2026-10-14).** The first two bullets describe the 2026-09-01 driver. A run now
+completes only when all three hold: the latest Gate 4 line accepts it, `write-manifest.mjs` wrote
+`SUMMARY.md` since the run began, and Phase 9's command ran again after Gate 4 with
+`--status=accepted` or `--status=auto-approved` (`completionEvidence` in
+`plugin/codex/run-record.mjs`). The conductor writes neither `manifest.json` nor `SUMMARY.md`
+itself; `manifest.json` records the summary's sha256, so a hand-written or edited `SUMMARY.md`
+does not count. On codex 0.160.1 each `turn.completed` reports the thread's running total, kept
+across `exec resume`, so the last invocation's stdout already holds the thread's whole token
+count. The driver prices each turn as the difference from the thread's previous total; adding up
+every turn's figure would bill earlier turns twice. See [methodology.md](../methodology.md). The
+events of earlier turns are still kept, in `driver-events.jsonl`.
+
 The manifest gained `codex_invocations` (how many times the driver called codex, distinct from
 `driver_turns`) and `completed` (whether the pipeline actually reached its final phase), because
 a run that exhausts its turns still exits 0 with useful artifacts and must not be mistaken for a
