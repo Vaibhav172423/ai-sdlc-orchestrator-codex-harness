@@ -24,6 +24,7 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { pinnedSdkVersion } from "../codex/verify-setup.mjs";
+import { isMain } from "./lib/is-main.mjs";
 
 // ─── pure helpers ─────────────────────────────────────────────────────
 
@@ -399,7 +400,7 @@ async function main() {
 }
 
 // Direct-execution gate so the test suite can import the pure helpers.
-if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
+if (isMain(import.meta.url, process.argv[1])) {
   main()
     .then((code) => process.exit(code))
     .catch((err) => {

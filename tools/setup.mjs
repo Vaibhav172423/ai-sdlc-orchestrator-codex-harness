@@ -273,12 +273,16 @@ if (blocked) {
   console.log(`\nTo re-check without the questions:`);
   console.log(`  node plugin/codex/verify-setup.mjs`);
 } else {
-  console.log(`${c.bold}Setup complete.${c.reset} Run the pipeline against a brief:\n`);
+  console.log(`${c.bold}Setup complete.${c.reset} In a codex session in your project, start a run with a skill:\n`);
+  console.log(`  $mmo-codex:greenfield   a new app from a brief`);
+  console.log(`  $mmo-codex:brownfield   work on an existing repository`);
+  console.log(`\nOr run a greenfield brief headlessly, which also checks the conductor's cost against codex's own count:\n`);
   console.log(`  node plugin/codex/run.mjs \\`);
   console.log(`    --brief=./brief.md \\`);
   console.log(`    --project-root="$(pwd)" \\`);
-  console.log(`    --output-dir="$(pwd)/.sdlc"`);
-  console.log(`\n${c.dim}Add --dry-run to see the pinned invocation without spending anything.${c.reset}`);
+  console.log(`    --mode=greenfield`);
+  console.log(`\n${c.dim}It asks you at each gate; add --gates=auto-approve for an unattended run.${c.reset}`);
+  console.log(`${c.dim}Add --dry-run to see the pinned invocation without spending anything.${c.reset}`);
   console.log(`${c.dim}Re-check this setup any time: node plugin/codex/verify-setup.mjs${c.reset}`);
 }
 

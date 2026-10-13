@@ -86,7 +86,8 @@ node '<plugin-root>/codex/start-run.mjs' --mode=<greenfield|brownfield> [--polic
 yourself when the user did not: `greenfield` for a new app in a folder that is not a git
 repository, `brownfield` otherwise. `--brief` is greenfield only; a brownfield intent brief goes to
 the guide's step 4b. `--output-dir`, `--seed` and `--max-turns` belong to `run.mjs` only. If the
-start script exits non-zero, show the user its message and stop.
+start script exits non-zero, show the user its message and stop. Show the user any `warning:` line
+it prints before you go on.
 
 It prints the run folder and the rendered playbooks. Follow the `playbook` it printed
 (`<run folder>/skills/pipeline.md`); read only those rendered copies, never the plugin's own

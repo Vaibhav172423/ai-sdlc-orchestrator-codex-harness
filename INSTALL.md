@@ -131,7 +131,8 @@ server and is not one. Two ways to avoid it:
 
 - start Codex with `codex -s danger-full-access`, or
 - run the pipeline headlessly, where the driver spawns the bridge outside Codex:
-  `node <plugin-path>/codex/run.mjs --brief=<file> --project-root="$(pwd)" --output-dir="$(pwd)/.sdlc"`
+  `node <plugin-path>/codex/run.mjs --brief=<file> --project-root="$(pwd)" --mode=greenfield`
+  (add `--gates=auto-approve` when nobody is at the terminal to answer the gates)
 
 **Then this, for brownfield runs.** The plugin ships a write hook that holds a brownfield run to
 the scope confirmed at its Gate 0, and Codex runs a plugin hook only once it is trusted. The next

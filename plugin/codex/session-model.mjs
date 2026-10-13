@@ -16,7 +16,7 @@
 import { readFileSync, readdirSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
+import { isMain } from "../scripts/lib/is-main.mjs";
 
 export function defaultCodexHome(env = process.env) {
   return env.CODEX_HOME || join(homedir(), ".codex");
@@ -279,6 +279,6 @@ async function main(argv) {
   return result.status === "match" ? 0 : 1;
 }
 
-if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
+if (isMain(import.meta.url, process.argv[1])) {
   process.exit(await main(process.argv.slice(2)));
 }

@@ -68,6 +68,7 @@ import { staleBridgeBuild, staleFilesShown } from "./bridge-build.mjs";
 // way the source does it — there, env-checks lived in a package context this
 // script could not import from; here they are siblings.
 import { runChecks as runEnvChecks, renderText as renderEnvChecks } from "./env-checks.mjs";
+import { isMain } from "../scripts/lib/is-main.mjs";
 
 // ─── pure helpers ─────────────────────────────────────────────────────
 
@@ -1177,7 +1178,7 @@ function report({ ok, problems }, log) {
 }
 
 // Direct-execution gate so the test suite can import the pure helpers.
-if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
+if (isMain(import.meta.url, process.argv[1])) {
   // This file lives at <pluginRoot>/codex/verify-setup.mjs — two dirnames up.
   const pluginRoot = dirname(dirname(fileURLToPath(import.meta.url)));
   const log = (m) => console.log(m);

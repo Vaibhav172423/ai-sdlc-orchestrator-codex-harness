@@ -164,6 +164,10 @@ test("the wizard points at verify-setup for a re-check without questions", () =>
 test("the closing banner shows a runnable driver invocation, not a Claude one", () => {
   const r = inSandbox((sb) => runWizard(sb, { OPENAI_API_KEY: "sk-test-not-real" }));
   assert.ok(!/\bclaude\b/i.test(r.stdout), "no Claude Code invocation may survive into codex setup");
+  assert.match(r.stdout, /Setup complete/, r.stdout);
+  assert.match(r.stdout, /\$mmo-codex:greenfield/, "the session route comes first");
+  assert.match(r.stdout, /--mode=greenfield/);
+  assert.doesNotMatch(r.stdout, /--output-dir/, "run.mjs refuses an --output-dir of the shared .sdlc folder");
 });
 
 test("the setup tests never reach a real codex", () => {

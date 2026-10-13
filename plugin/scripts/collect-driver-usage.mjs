@@ -14,7 +14,6 @@
 
 import { existsSync, renameSync, statSync, writeFileSync } from "node:fs";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
 
 import {
   DRIVER_EVENTS_FILE,
@@ -29,6 +28,7 @@ import {
 import { loadPolicy, loadPolicyFromPath } from "../mcp/model-dispatch/dist/policy.js";
 import { readRunJson } from "../codex/interactive-run.mjs";
 import { appendSessionMarker } from "../codex/session-marker.mjs";
+import { isMain } from "./lib/is-main.mjs";
 
 export const DEFAULT_POLICY = "gpt-plus-flash";
 const VALUE_FLAGS = new Set(["codex-home", "thread", "policy", "policy-path", "project-root", "route"]);
@@ -199,7 +199,7 @@ export function crossCheckLines(report) {
   return lines;
 }
 
-if (process.argv[1] && fileURLToPath(import.meta.url) === resolve(process.argv[1])) {
+if (isMain(import.meta.url, process.argv[1])) {
   let args;
   try {
     args = parseCollectorArgs(process.argv.slice(2));
