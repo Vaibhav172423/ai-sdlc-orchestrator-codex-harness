@@ -8,7 +8,7 @@ export const COST_CAP_EXCEEDED = "COST_CAP_EXCEEDED";
 
 export interface RecordedSpend {
   dispatched_usd: number;
-  /** The part of dispatched_usd whose events carry provenance `modeled`. */
+  /** The modeled part of dispatched_usd: provenance `modeled`, or a seat adapter's floor (`adapter_provenance: modeled`). */
   dispatched_modeled_usd: number;
   /** The conductor's own tokens, always modeled. */
   driver_usd: number;
@@ -85,7 +85,8 @@ function dispatchedSpend(telemetryPath: string): { total: number; modeled: numbe
   for (const ev of readEvents(telemetryPath)) {
     if (typeof ev.cost_usd !== "number" || !Number.isFinite(ev.cost_usd)) continue;
     total += ev.cost_usd;
-    if (ev.provenance === "modeled") modeled += ev.cost_usd;
+    // The cost report's rule (plugin/scripts/lib/cost-provenance.mjs).
+    if (ev.provenance === "modeled" || ev.adapter_provenance === "modeled") modeled += ev.cost_usd;
   }
   return { total, modeled };
 }

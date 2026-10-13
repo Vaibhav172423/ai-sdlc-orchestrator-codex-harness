@@ -14,6 +14,7 @@ import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { ACTOR, ACTOR_LEGEND, gutter } from "./lib/actors.mjs";
+import { costProvenance } from "./lib/cost-provenance.mjs";
 import { driverUsageIsFresh } from "./lib/driver-usage-fresh.mjs";
 
 export const REPORT_SCRIPT = fileURLToPath(import.meta.url);
@@ -542,10 +543,8 @@ function provenanceTag(counts) {
   return { vendor: "V", estimated: "E", modeled: "M", none: "–", unknown: "?" }[kinds[0]] ?? "?";
 }
 
-/** A seat adapter's estimate is priced from token counts, never billed, so it counts as modeled. */
 export function provenanceOf(e) {
-  if (e.adapter_provenance === "modeled") return "modeled";
-  return PROVENANCES.includes(e.provenance) ? e.provenance : "unknown";
+  return costProvenance(e) ?? "unknown";
 }
 
 /** Everything the report shows, as plain data. `--json` prints exactly this. */

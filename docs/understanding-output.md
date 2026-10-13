@@ -156,7 +156,7 @@ One event per line. The fields that matter when reading by hand:
 |---|---|
 | `phase` | Pipeline phase — `requirements_analysis`, `codegen`, and so on. Conductor turns are not here: they are in `driver-cost-modeled.jsonl` with `phase: "driver_loop"`, and a `driver_loop` row in this file is counted as runner overhead. |
 | `model` / `model_id` | Which model ran, and through which door. On Gemini events this is what distinguishes the model door from the agent door. |
-| `provenance` | `vendor`, `estimated`, `modeled`, or `none`. Decides which report total the event lands in. `none` marks a phase that made no model call at all. |
+| `provenance` | `vendor`, `estimated`, `modeled`, or `none`. Decides which report total the event lands in, unless `adapter_provenance` says `modeled`. `none` marks a phase that made no model call at all. |
 | `input_tokens` / `input_tokens_cached` / `output_tokens` | Token counts. Input is **exclusive** of cached input — see below. |
 | `output_tokens_reasoning` | Reasoning tokens, where the vendor reports them separately. |
 | `cost_usd` | A dispatched event: derived from the dated price list (`plugin/mcp/model-dispatch/src/prices.ts`) on the dispatch's UTC day, or from the policy's `pricing:` block under `pricing_override: true`. A `driver_loop` row: derived from the same list on the UTC day the turn ended, or from the driver block's `pricing:` under `pricing_override: true`. |
@@ -183,7 +183,7 @@ Phase 9 runs `write-manifest.mjs`, Gate 4's acceptance runs it again with `--sta
 | `status` | `provisional` until Gate 4, then `accepted` or `auto-approved`. A run that ends any other way gets its outcome: `incomplete` (`--max-turns`), `aborted`, `halted`, `refused`, `stopped`, `cost_cap`, `failed`, `pin_rejected`, `interrupted`. |
 | `route` | `headless` for a `run.mjs` run, `interactive` otherwise. |
 | `total_cost_usd`, `totals.dispatched_cost_usd` | Dispatched work, summed from `telemetry.jsonl`. |
-| `totals.by_provenance` | The same total split into `vendor`, `estimated`, `modeled`, `none` and `unlabelled`. |
+| `totals.by_provenance` | The same total split into `vendor`, `estimated`, `modeled`, `none` and `unlabelled`, the way the cost report splits it: an event with `adapter_provenance: modeled` is in `modeled`, whatever its own label. |
 | `totals.driver_cost_usd_modeled` | The conductor's modeled cost; `null` when nothing measured it. It comes from `driver-usage.json` when the session-file collector wrote one and the run recorded nothing after it (it books the session file wherever the exec stream disagrees with it), else from `driver-manifest.json`. The cost report and the cost cap read them in the same order. |
 | `totals.driver_cost_source`, `totals.driver_usage` | Which of the two files the figure came from and, for `driver-usage.json`, its `cost_source`, `verified`, `cost_complete` and `unpriced`. |
 | `phase_breakdown`, `model_breakdown`, `module_breakdown`, `task_type_breakdown` | The bridge's `buildManifest` rollups. |

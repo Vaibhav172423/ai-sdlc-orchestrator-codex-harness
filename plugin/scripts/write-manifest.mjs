@@ -17,6 +17,7 @@ import { basename, dirname, join, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { buildManifest } from "../mcp/model-dispatch/dist/telemetry.js";
+import { costProvenance } from "./lib/cost-provenance.mjs";
 import { driverUsageIsFresh } from "./lib/driver-usage-fresh.mjs";
 import { productCounts } from "./lib/product-count.mjs";
 import { isRunId } from "./lib/run-id.mjs";
@@ -162,10 +163,9 @@ function usableEvents(rows, notes) {
   return events;
 }
 
-const PROVENANCES = ["vendor", "estimated", "modeled", "none"];
-
 /**
- * Dispatched cost by provenance in micro-dollars, the unit buildManifest
+ * Dispatched cost by provenance (a seat adapter's floor is modeled, as in
+ * the cost report) in micro-dollars, the unit buildManifest
  * rounds `total_cost_usd` to. Each bucket is its raw sum rounded down, and
  * the micro-dollars left over go to the buckets with the largest remainders,
  * so the buckets add up to `totalUsd` (default: the rounded sum) exactly.
@@ -174,7 +174,7 @@ export function byProvenance(events, totalUsd) {
   const raw = { vendor: 0, estimated: 0, modeled: 0, none: 0, unlabelled: 0 };
   let sum = 0;
   for (const e of events) {
-    raw[PROVENANCES.includes(e.provenance) ? e.provenance : "unlabelled"] += e.cost_usd;
+    raw[costProvenance(e) ?? "unlabelled"] += e.cost_usd;
     sum += e.cost_usd;
   }
   const keys = Object.keys(raw);
