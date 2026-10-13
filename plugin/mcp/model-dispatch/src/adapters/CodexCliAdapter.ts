@@ -8,7 +8,7 @@
  * `total_cost_usd` and that adapter copies it through verbatim. Codex
  * returns **no cost figure at all** — only token counts on `turn.completed`
  * (verified live; see docs/verification/p1-codex-runtime.md section 9). So
- * cost here is MODELED from those tokens at the policy's pinned rates, and
+ * cost here is MODELED from those tokens at the dated price list's rates, and
  * this adapter reports `costProvenance: "modeled"` so the telemetry and the
  * run report label it correctly rather than passing it off as metered spend.
  *
@@ -34,6 +34,7 @@ import { computeCostUsd, estimateTokens } from "../pricing.js";
 import type { ModelAdapter } from "./ModelAdapter.js";
 import { splitStableFromDynamic } from "./BuiltinAnthropicAdapter.js";
 import { log } from "../log.js";
+import { DispatchPricer, priceFields, refusedResult, type Clock } from "./dispatchPricer.js";
 
 type SpawnFn = typeof spawn;
 
@@ -44,6 +45,7 @@ interface CodexCliOptions {
   timeoutSec?: number;
   /** Overrides the binary — for a non-global install, or a test stub. */
   codexBin?: string;
+  clock?: Clock;
 }
 
 /** Usage as `turn.completed` reports it. No cost field exists on this event. */
@@ -90,10 +92,12 @@ export class CodexCliAdapter implements ModelAdapter {
   private readonly spawnFn: SpawnFn;
   private readonly timeoutMs: number;
   private readonly codexBin: string;
+  private readonly pricer: DispatchPricer;
 
   constructor(config: ModelConfig, options: CodexCliOptions = {}) {
     this.id = config.id;
     this.modelConfig = config;
+    this.pricer = new DispatchPricer(config, options.clock);
     this.spawnFn = options.spawnFn ?? spawn;
     this.timeoutMs = (options.timeoutSec ?? config.worker_timeout_sec ?? DEFAULT_TIMEOUT_SEC) * 1000;
     this.codexBin = options.codexBin ?? process.env.CODEX_BIN ?? "codex";
@@ -141,6 +145,12 @@ export class CodexCliAdapter implements ModelAdapter {
     // this path is the fallback and not the default.
     const prompt = stableBlock ? `${stableBlock}\n\n${userPrompt}` : userPrompt;
 
+    const dispatchDate = this.pricer.now();
+    const listed = this.pricer.price(dispatchDate);
+    if (listed.unpriced) {
+      return refusedResult(this.modelConfig, dispatchDate, listed.reason, packet.budget.maxOutputTokens);
+    }
+
     const workDir = mkdtempSync(join(tmpdir(), "codex-dispatch-"));
     const schemaPath = join(workDir, "schema.json");
     const lastMessagePath = join(workDir, "last-message.txt");
@@ -160,22 +170,22 @@ export class CodexCliAdapter implements ModelAdapter {
       const run = await this.spawnAndCollect(args);
 
       if (run.timedOut) {
-        return this.failure(packet, prompt, started, `codex-cli timeout after ${this.timeoutMs / 1000}s`);
+        return this.failure(packet, prompt, started, dispatchDate, `codex-cli timeout after ${this.timeoutMs / 1000}s`);
       }
 
       const { usage, error } = parseCodexStream(run.stdout);
       if (error) {
-        return this.failure(packet, prompt, started, error);
+        return this.failure(packet, prompt, started, dispatchDate, error);
       }
 
       let raw = "";
       try {
         raw = readFileSync(lastMessagePath, "utf-8").trim();
       } catch {
-        return this.failure(packet, prompt, started, "codex-cli wrote no final message");
+        return this.failure(packet, prompt, started, dispatchDate, "codex-cli wrote no final message");
       }
       if (!raw) {
-        return this.failure(packet, prompt, started, "codex-cli produced an empty final message");
+        return this.failure(packet, prompt, started, dispatchDate, "codex-cli produced an empty final message");
       }
 
       // Codex reports `input_tokens` INCLUSIVE of `cached_input_tokens`;
@@ -203,16 +213,23 @@ export class CodexCliAdapter implements ModelAdapter {
         parsed = { raw };
       }
 
+      // A turn's usage sums every request in it, so it can prove the whole
+      // turn stayed under a tier but never that one request crossed it.
+      const price = this.pricer.require(
+        dispatchDate,
+        typeof usage?.input_tokens === "number"
+          ? { aggregateInputTokens: usage.input_tokens }
+          : { aggregateInputTokens: tokens.input + tokens.input_cached, estimated: true },
+      );
       const attempt: AttemptRecord = {
         attempt_number: 1,
         ceiling_used: packet.budget.maxOutputTokens,
         hit_output_cap: false,
         tokens,
-        // Modeled, not billed. The policy's own pricing block is the source
-        // of the rates, same as everywhere else in this harness.
-        cost_usd: computeCostUsd(tokens, this.modelConfig.pricing),
+        cost_usd: computeCostUsd(tokens, price.pricing),
         latency_ms: Date.now() - started,
         success: true,
+        ...priceFields(price),
       };
 
       return {
@@ -262,17 +279,19 @@ export class CodexCliAdapter implements ModelAdapter {
     });
   }
 
-  private failure(packet: TaskPacket, prompt: string, started: number, error: string): ExecutionResult {
+  private failure(packet: TaskPacket, prompt: string, started: number, dispatchDate: Date, error: string): ExecutionResult {
     const tokens = { input: estimateTokens(prompt), input_cached: 0, output: 0 };
+    const price = this.pricer.require(dispatchDate, { aggregateInputTokens: tokens.input, estimated: true });
     const attempt: AttemptRecord = {
       attempt_number: 1,
       ceiling_used: packet.budget.maxOutputTokens,
       hit_output_cap: false,
       tokens,
-      cost_usd: computeCostUsd(tokens, this.modelConfig.pricing),
+      cost_usd: computeCostUsd(tokens, price.pricing),
       latency_ms: Date.now() - started,
       success: false,
       error,
+      ...priceFields(price),
     };
     return {
       result: null,

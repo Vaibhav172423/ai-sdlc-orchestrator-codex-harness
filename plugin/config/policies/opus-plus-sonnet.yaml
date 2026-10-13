@@ -8,23 +8,20 @@ models:
   - id: opus
     adapter: builtin-anthropic
     model_name: claude-opus-5
-    # TODO(pricing): confirm Opus 5 list rates from platform.claude.com/docs
-    # before shipping. Values carried over from opus-only.yaml as placeholder.
+    # Anthropic's list card, as the price list (src/prices.ts) records it.
     pricing: { input: 5.00, input_cached: 0.50, output: 25.00 }
-    pricing_source: https://platform.claude.com/docs/en/docs/about-claude/pricing
-    pricing_last_verified: 2026-08-19
+    pricing_source: https://platform.claude.com/docs/en/about-claude/pricing
+    pricing_last_verified: 2026-09-14
     auth: { env: ANTHROPIC_API_KEY }
     max_output_tokens_absolute: 32000
 
   - id: sonnet
     adapter: builtin-anthropic
     model_name: claude-sonnet-5
-    # TODO(pricing): confirm Sonnet 5 list rates from platform.claude.com/docs
-    # before shipping. Values below are plausible Sonnet-tier placeholders —
-    # historically Sonnet has been ~$3 / $15 per 1M input / output tokens.
-    pricing: { input: 3.00, input_cached: 0.30, output: 15.00 }
-    pricing_source: https://platform.claude.com/docs/en/docs/about-claude/pricing
-    pricing_last_verified: 2026-08-19
+    # Anthropic's list card, as the price list (src/prices.ts) records it.
+    pricing: { input: 2.00, input_cached: 0.20, output: 10.00 }
+    pricing_source: https://platform.claude.com/docs/en/about-claude/pricing
+    pricing_last_verified: 2026-09-14
     auth: { env: ANTHROPIC_API_KEY }
     max_output_tokens_absolute: 16000
 

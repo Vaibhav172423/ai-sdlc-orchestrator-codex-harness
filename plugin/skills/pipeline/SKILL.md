@@ -635,4 +635,4 @@ already counted in the driver-loop events; the `--reason` string is what tells a
 A run that writes `review.json` or `security_review.md` without either dispatching a packet or
 logging one of these is under-reporting itself.
 
-**Pricing constants come from the loaded policy YAML's `pricing:` block for the current model — never from your trained knowledge, never hardcoded.** If the policy's pricing block is missing, abort the run.
+**Rates come from the dispatch server's dated price list (`plugin/mcp/model-dispatch/src/prices.ts`) — never from your trained knowledge, never hardcoded.** A policy YAML's `pricing:` block records the list's card and is billed only under `pricing_override: true`. `preflight_dispatch` halts on a model the list cannot price; stop the run when it does.

@@ -26,17 +26,20 @@ import {
   validateSelectOverrides,
   unreachableModelIds,
 } from "./routing.js";
-import { assessModels, parseAuthMode, type AuthMode } from "./preflight.js";
+import { assessModels, assessPricing, parseAuthMode, type AuthMode } from "./preflight.js";
+import { withEffectivePrices, type RateCard } from "./prices.js";
 import { appendEvent, normalizeDirectTierEvent } from "./telemetry.js";
 import { assertUnderCostCap, CostCapExceededError, driverCapWarning, type RecordedSpend } from "./costCap.js";
 import { createAdapter } from "./adapters/index.js";
 import {
+  applyVertexSurcharge,
   defaultAdcPath,
+  dispatchEndpoint,
   selectGeminiBackend,
   resolveGcpProject,
   resolveGcpLocation,
 } from "./adapters/geminiTransports.js";
-import type { TaskPacket, TelemetryEvent, Policy, SelectOverrides } from "./types.js";
+import type { TaskPacket, TelemetryEvent, Policy, SelectOverrides, ModelConfig } from "./types.js";
 import { log, setLevel, configureSinks, type Level } from "./log.js";
 
 /**
@@ -167,11 +170,12 @@ function preflightDispatch(policy: Policy, authMode: AuthMode) {
   // Losing options of `select:` slots are excluded: their prerequisites
   // (Python venv, worker script) are not this run's problem.
   const notSelected = unreachableModelIds(policy, selectOverrides());
-  const assessment = assessModels(
-    policy.models.filter((m) => !notSelected.has(m.id)),
-    authMode,
-    (modelId) => adapterFor(policy, modelId),
-  );
+  const reachable = policy.models.filter((m) => !notSelected.has(m.id));
+  const assessment = assessModels(reachable, authMode, (modelId) => adapterFor(policy, modelId));
+  const pricing = assessPricing(reachable, new Date());
+  for (const u of pricing.unpriced) {
+    log("warn", "preflight.unpriced", { model_id: u.id, model_name: u.model_name, message: u.reason });
+  }
 
   // Resolved Gemini configuration — the project and region the run will bill.
   const adcPath = defaultAdcPath();
@@ -210,9 +214,11 @@ function preflightDispatch(policy: Policy, authMode: AuthMode) {
   for (const id of notSelected) {
     log("info", "preflight.model", { model_id: id, ok: true, classification: "not_selected" });
   }
+  const ok = assessment.ok && pricing.ok;
+  const haltReason = [assessment.halt_reason, pricing.halt_reason].filter(Boolean).join(" ") || null;
   log("info", "preflight.result", {
-    ok: assessment.ok,
-    halt_reason: assessment.halt_reason,
+    ok,
+    halt_reason: haltReason,
     warnings_n: assessment.warnings.length,
     backend: (gemini as any).backend,
     project: (gemini as any).project,
@@ -220,7 +226,7 @@ function preflightDispatch(policy: Policy, authMode: AuthMode) {
   });
 
   return {
-    ok: assessment.ok,
+    ok,
     auth_mode: authMode,
     policy: {
       name: policy.name,
@@ -229,14 +235,28 @@ function preflightDispatch(policy: Policy, authMode: AuthMode) {
       path: activeResolution?.path,
     },
     models: assessment.models,
+    priced_on: pricing.priced_on,
+    unpriced: pricing.unpriced,
+    price_warnings: pricing.price_warnings,
     // Named so "you did not select it" stays distinguishable from
     // "pre-flight forgot about it".
     not_selected: [...notSelected],
     gemini,
-    halt_reason: assessment.halt_reason,
+    halt_reason: haltReason,
     // Failures on models this run will not dispatch to — informational,
     // never blocking.
     warnings: assessment.warnings,
+  };
+}
+
+/** The Vertex regional surcharge, per leaf, for the endpoint this environment dispatches to. */
+function endpointRates(): (model: ModelConfig, rates: RateCard) => RateCard {
+  const adcFileExists = existsSync(defaultAdcPath());
+  const endpoints = new Map<string, ReturnType<typeof dispatchEndpoint>>();
+  return (model, rates) => {
+    if (!endpoints.has(model.id)) endpoints.set(model.id, dispatchEndpoint(model, process.env, adcFileExists));
+    const endpoint = endpoints.get(model.id);
+    return endpoint ? applyVertexSurcharge(rates, { ...endpoint, modelName: model.model_name }) : rates;
   };
 }
 
@@ -283,7 +303,9 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     {
       name: "simulate_policy",
       description:
-        "What-if: given a list of telemetry events from a real run, recompute total cost under a different policy. No LLM calls.",
+        "What-if: given a list of telemetry events from a real run, recompute total cost under a different policy. No LLM calls. " +
+        "Each event is priced from the dated price list on the UTC day of its `ts` (today when absent), at the endpoint this " +
+        "environment dispatches to; events nothing prices are listed in `unpriced` and left out of the total.",
       inputSchema: {
         type: "object",
         properties: {
@@ -533,6 +555,10 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
           ceiling_used: att.ceiling_used,
           retry_reason: att.attempt_number > 1 ? "output_cap" : undefined,
           error: att.error,
+          price_basis: att.price_basis,
+          price_tier: att.price_tier,
+          price_verified: att.price_verified,
+          prompt_tokens: att.prompt_tokens,
         }));
         if (a.telemetry_path) {
           for (const ev of events) appendEvent(a.telemetry_path, ev);
@@ -554,8 +580,9 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
       case "simulate_policy": {
         const a = args as any;
         const policy = ensurePolicy(a.policy_name, a.project_root, a.policy_path);
-        // Replay against the same slot choices the real run uses.
-        const out = simulatePolicyCost(a.events, policy, selectOverrides());
+        // Replay against the same slot choices the real run uses, at the
+        // endpoints this environment would dispatch to.
+        const out = simulatePolicyCost(a.events, policy, selectOverrides(), { billedRates: endpointRates() });
         return { content: [{ type: "text", text: JSON.stringify(out, null, 2) }] };
       }
       case "log_telemetry": {
@@ -577,7 +604,7 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
       case "load_policy": {
         const a = args as any;
         const policy = ensurePolicy(a.policy_name, a.project_root, a.policy_path);
-        return { content: [{ type: "text", text: JSON.stringify(policy, null, 2) }] };
+        return { content: [{ type: "text", text: JSON.stringify(withEffectivePrices(policy, new Date()), null, 2) }] };
       }
       default:
         return { content: [{ type: "text", text: `Unknown tool: ${name}` }], isError: true };

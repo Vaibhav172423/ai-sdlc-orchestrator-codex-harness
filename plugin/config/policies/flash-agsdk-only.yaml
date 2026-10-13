@@ -27,10 +27,10 @@ models:
     adapter: antigravity-worker
     model_name: gemini-3.7-flash
     display_name: gemini-3.7-flash (Antigravity agent)
-    # Introductory rate through 2026-12-31; Google lists 1.50 / 0.15 / 7.50
-    # from 2027-01-01. TODO(pricing): re-pin on 2027-01-01. Vertex adds +10% on
-    # REGIONAL endpoints; geminiTransports.ts::applyVertexSurcharge applies it
-    # at dispatch — do not hand-edit x1.10 in.
+    # Introductory rate through 2026-12-31. The price list (src/prices.ts) bills
+    # 1.50 / 0.15 / 7.50 from 2027-01-01; update this documentation block then.
+    # Vertex adds +10% on REGIONAL endpoints; geminiTransports.ts::applyVertexSurcharge
+    # applies it at dispatch — do not hand-edit x1.10 in.
     pricing: { input: 0.75, input_cached: 0.075, output: 3.75 }
     pricing_source: https://ai.google.dev/gemini-api/docs/pricing (AI Studio + Vertex global); https://cloud.google.com/vertex-ai/generative-ai/pricing (regional +10%)
     pricing_last_verified: 2026-10-12

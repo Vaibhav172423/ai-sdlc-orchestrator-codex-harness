@@ -24,6 +24,8 @@
                      [--module=<name>] [--reason=<text>] [--policy=<name>]
    node dispatch.mjs --preflight --auth-mode=vendor [--policy=<name>] \
  *                     [--project-root=<path>] --out=<result.json>
+ *   node dispatch.mjs --load-policy [--policy=<name>] [--project-root=<path>] \
+ *                     --out=<policy.json>
  */
 
 import { readFileSync, writeFileSync, mkdirSync } from "node:fs";
@@ -98,6 +100,14 @@ export function buildPreflightArgs({ authMode, policy, policyPath, projectRoot }
   return args;
 }
 
+/** Builds the `load_policy` argument object. */
+export function buildLoadPolicyArgs({ policy, projectRoot }) {
+  const args = {};
+  if (policy) args.policy_name = policy;
+  if (projectRoot) args.project_root = projectRoot;
+  return args;
+}
+
 /**
  * One compact line for the conductor to read off stdout. Deliberately
  * excludes the result body — that is what `--out` is for.
@@ -111,6 +121,10 @@ export function summarize(toolName, result, args = {}) {
   if (toolName === "preflight_dispatch") {
     const models = (result?.models ?? []).map((m) => `${m.id}:${m.ok ? "ok" : "FAILED"}`).join(" ");
     return `preflight ok=${result?.ok === true} ${models}`.trim();
+  }
+  if (toolName === "load_policy") {
+    const models = (result?.models ?? []).map((m) => `${m.id}:${m.effective_price?.basis ?? "UNPRICED"}`).join(" ");
+    return `policy name=${result?.name ?? "?"} priced_on=${result?.effective_prices_on ?? "?"} ${models}`.trim();
   }
   const cost = result?.result?.cost_usd ?? result?.events?.[0]?.cost_usd;
   const model = result?.decision?.modelId ?? "unknown";
@@ -194,10 +208,14 @@ export async function runDispatch(args, { connect, env = process.env } = {}) {
 
   const isPreflight = Boolean(args.preflight);
   const isLogPhase = Boolean(args["log-phase"]);
+  const isLoadPolicy = Boolean(args["load-policy"]);
   let toolName;
   let toolArgs;
 
-  if (isLogPhase) {
+  if (isLoadPolicy) {
+    toolName = "load_policy";
+    toolArgs = buildLoadPolicyArgs({ policy: args.policy, projectRoot });
+  } else if (isLogPhase) {
     toolName = "log_telemetry";
     toolArgs = buildLogEventArgs({
       phase: args["log-phase"],

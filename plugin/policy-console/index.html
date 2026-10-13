@@ -113,6 +113,7 @@
     .valid-banner { padding: 12px 16px; border-radius: var(--radius-sm); font-size: 13px; }
     .valid-banner.ok { background: var(--success-bg); color: var(--success-fg); }
     .valid-banner.err { background: var(--danger-bg); color: var(--danger-fg); }
+    .valid-banner.warn { background: var(--warn-bg); color: var(--warn-fg); margin-top: 8px; }
     .valid-banner ul { margin: 4px 0 0; padding-left: 20px; }
     .output { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); box-shadow: var(--shadow-1); overflow: hidden; }
     .output-head { display: flex; justify-content: space-between; align-items: center; padding: 12px 16px; border-bottom: 1px solid var(--border); background: var(--surface-2); }
@@ -214,6 +215,7 @@
     </section>
 
     <div id="validation-banner"></div>
+    <div id="price-warnings"></div>
 
     <div class="output">
       <div class="output-head">
@@ -623,6 +625,14 @@ async function refreshPreview() {
   });
   const data = await r.json();
   document.getElementById("output-yaml").textContent = data.ok ? data.yaml : "(preview blocked: " + (data.errors ?? []).join("; ") + ")";
+  renderPriceWarnings(data.warnings);
+}
+
+function renderPriceWarnings(warnings) {
+  const el = document.getElementById("price-warnings");
+  el.innerHTML = warnings?.length
+    ? `<div class="valid-banner warn"><strong>Billed at the price list, not the rates entered here</strong><ul>${warnings.map((w) => `<li>${escapeHtml(w)}</li>`).join("")}</ul></div>`
+    : "";
 }
 
 async function doSave() {
@@ -640,6 +650,7 @@ async function doSave() {
   });
   const data = await r.json();
   const banner = document.getElementById("validation-banner");
+  renderPriceWarnings(data.warnings);
   if (data.ok) {
     banner.innerHTML = `<div class="valid-banner ok"><strong>Saved.</strong> ${escapeHtml(data.path)} written. <button class="btn ghost" onclick="showGallery()">View in Policies →</button></div>`;
   } else {

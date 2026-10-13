@@ -10,11 +10,10 @@ models:
   - id: opus
     adapter: builtin-anthropic
     model_name: claude-opus-5
-    # TODO(pricing): confirm Opus 5 list rates from platform.claude.com/docs
-    # before shipping. Values carried over from opus-only.yaml as placeholder.
+    # Anthropic's list card, as the price list (src/prices.ts) records it.
     pricing: { input: 5.00, input_cached: 0.50, output: 25.00 }
-    pricing_source: https://platform.claude.com/docs/en/docs/about-claude/pricing
-    pricing_last_verified: 2026-08-19
+    pricing_source: https://platform.claude.com/docs/en/about-claude/pricing
+    pricing_last_verified: 2026-09-14
     auth: { env: ANTHROPIC_API_KEY }
     max_output_tokens_absolute: 32000
 
@@ -26,8 +25,8 @@ models:
     # Flat global/AI-Studio rates. Vertex adds +10% on every token class for
     # REGIONAL endpoints (Gemini 3+, effective 2026-07-01). Do not hand-edit a
     # x1.10 in — geminiTransports.ts::applyVertexSurcharge does it at dispatch.
-    # Introductory rate through 2026-12-31; Google lists 1.50 / 0.15 / 7.50
-    # from 2027-01-01. TODO(pricing): re-pin on 2027-01-01.
+    # Introductory rate through 2026-12-31. The price list (src/prices.ts) bills
+    # 1.50 / 0.15 / 7.50 from 2027-01-01; update this documentation block then.
     pricing: { input: 0.75, input_cached: 0.075, output: 3.75 }
     pricing_source: https://ai.google.dev/gemini-api/docs/pricing (AI Studio + Vertex global); https://cloud.google.com/vertex-ai/generative-ai/pricing (regional +10%)
     pricing_last_verified: 2026-10-12

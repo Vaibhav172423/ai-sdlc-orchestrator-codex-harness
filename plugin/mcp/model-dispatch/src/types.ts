@@ -112,7 +112,18 @@ export interface TelemetryEvent {
   retry_reason?: "output_cap" | "validation" | "escalation";
   artifact_path?: string;
   error?: string;
+  /** `list` (the dated price list) or `custom` (the policy block under pricing_override). */
+  price_basis?: PriceBasis;
+  /** `unverified`: a tiered model whose card no vendor-reported per-request count proves (summed or estimated usage). */
+  price_tier?: PriceTierLabel;
+  /** The verified date of the list entry that priced this event; null for a custom price. */
+  price_verified?: string | null;
+  /** One request's whole prompt, cached tokens included. Set only where one event is one request. */
+  prompt_tokens?: number;
 }
+
+export type PriceBasis = "list" | "custom";
+export type PriceTierLabel = "standard" | "long_context" | "unverified";
 
 /** One attempt from the output-cap doubling loop. */
 export interface AttemptRecord {
@@ -130,6 +141,10 @@ export interface AttemptRecord {
   latency_ms: number;
   success: boolean;
   error?: string;
+  price_basis?: PriceBasis;
+  price_tier?: PriceTierLabel;
+  price_verified?: string | null;
+  prompt_tokens?: number;
 }
 
 export interface ModelPricing {
@@ -154,8 +169,12 @@ export interface ModelConfig {
   adapter: string;
   model_name: string;
   display_name?: string;
-  pricing: ModelPricing;
+  /** Documentation unless `pricing_override` is true; the dated list in prices.ts is the price. */
+  pricing?: ModelPricing;
+  /** Bill `pricing` instead of the dated list, reported as a custom price. Needs a block. */
+  pricing_override?: boolean;
   pricing_source?: string;
+  pricing_last_verified?: string;
   auth?: { env: string };
   endpoint?: string;
   reasoning?: ReasoningConfig;

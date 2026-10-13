@@ -311,7 +311,7 @@ Recorded cost: $0.5287, vendor-metered
 Result:        a working app — GET /ping returns 200, unknown routes 404
 ```
 
-The recorded figure was priced at Gemini rates of $1.50 / $0.15 / $9.00 per 1M tokens, which overstate Gemini 3.7 Flash by about 2×. The policies now carry $0.75 / $0.075 / $3.75, so the same run re-priced would cost less. The GPT share is unaffected.
+The recorded figure was priced at Gemini rates of $1.50 / $0.15 / $9.00 per 1M tokens, about 2× Gemini 3.7 Flash's introductory card. The dated price list (`plugin/mcp/model-dispatch/src/prices.ts`) bills Gemini 3.7 Flash at $0.75 / $0.075 / $3.75 through 2026-12-31 and $1.50 / $0.15 / $7.50 from 2027-01-01, so the same run re-priced costs less on either card. The GPT share is unaffected.
 
 That is one run of one small brief, not a guarantee — cost scales with how much code the brief implies and how many times a phase has to be revised. Render the cost report yourself:
 

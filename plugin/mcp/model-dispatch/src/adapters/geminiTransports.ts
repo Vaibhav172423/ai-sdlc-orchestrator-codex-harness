@@ -173,6 +173,28 @@ export function applyVertexSurcharge<T extends { input: number; input_cached: nu
 }
 
 /**
+ * The endpoint a dispatch of this policy leaf would bill at in this
+ * environment, by the same rules the two Gemini adapters use; null for a
+ * non-Gemini adapter, or when no Gemini credential is present.
+ */
+export function dispatchEndpoint(
+  model: { adapter: string; region?: string; auth?: { env: string } },
+  env: Record<string, string | undefined>,
+  adcFileExists: boolean,
+): { backend: GeminiBackend; location: string } | null {
+  if (model.adapter === "antigravity-worker") {
+    return { backend: "vertex-adc", location: model.region ?? resolveGcpLocation(env) };
+  }
+  if (model.adapter !== "mcp:model-dispatch" && model.adapter !== "mcp:gemini-flash-server") return null;
+  try {
+    const { backend } = selectGeminiBackend({ env, keyEnvName: model.auth?.env ?? "GEMINI_API_KEY", adcFileExists });
+    return { backend, location: backend === "vertex-adc" ? resolveGcpLocation(env) : "" };
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Google bills reasoning at the output rate. `thoughtsTokenCount` is a
  * SIBLING of `candidatesTokenCount`, not a subset (contrast
  * `cachedContentTokenCount`, which IS a subset of `promptTokenCount` — the

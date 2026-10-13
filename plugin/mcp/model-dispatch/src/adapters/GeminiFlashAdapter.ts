@@ -22,6 +22,8 @@ import {
   type GeminiTransport,
   type GenerateOutcome,
 } from "./geminiTransports.js";
+import { DispatchPricer, priceFields, refusedResult, type Clock } from "./dispatchPricer.js";
+import type { Priced } from "../prices.js";
 
 // Fallback when the policy YAML omits max_output_tokens_absolute. 8192 is
 // the current Gemini 3.5 Flash ceiling.
@@ -32,31 +34,59 @@ const MAX_DOUBLINGS = 3;
 // One hour comfortably covers a full pass.
 const CACHE_TTL_SECONDS = 3600;
 
+export interface GeminiFlashOptions {
+  clock?: Clock;
+  /** A test stub; otherwise the door is picked from credentials. */
+  transport?: GeminiTransport;
+}
+
 export class GeminiFlashAdapter implements ModelAdapter {
   readonly id: string;
   readonly modelConfig: ModelConfig;
   private transport: GeminiTransport;
   /** Which door was picked — surfaced in errors and setup logs. */
   readonly backendChoice: BackendChoice;
-  /** Policy pricing adjusted for a pinned Vertex region. Cost reports read from here. */
-  readonly billedPricing: ModelPricing;
+  private readonly pricer: DispatchPricer;
   private cachingAvailable = true;
   private cacheNamesByKey = new Map<string, string>(); // cacheContext -> cachedContentName
   private cacheHeader = ""; // the stable text we cache (set once via primeCache)
 
-  constructor(config: ModelConfig) {
+  constructor(config: ModelConfig, options: GeminiFlashOptions = {}) {
     this.id = config.id;
     this.modelConfig = config;
-    // Throws at construction (before any premium spend) if neither door works.
-    const { transport, choice } = buildGeminiTransport(config.auth?.env ?? "GEMINI_API_KEY");
-    this.transport = transport;
-    this.backendChoice = choice;
-    // Resolve the +10% regional surcharge once, here — never at call sites.
-    this.billedPricing = applyVertexSurcharge(config.pricing, {
-      backend: choice.backend,
-      location: transport.location,
-      modelName: config.model_name,
+    if (options.transport) {
+      this.transport = options.transport;
+      this.backendChoice = { backend: options.transport.backend, reason: "injected transport" };
+    } else {
+      // Throws at construction (before any premium spend) if neither door works.
+      const { transport, choice } = buildGeminiTransport(config.auth?.env ?? "GEMINI_API_KEY");
+      this.transport = transport;
+      this.backendChoice = choice;
+    }
+    this.pricer = new DispatchPricer(config, options.clock);
+  }
+
+  /**
+   * The card a dispatch on `date` bills, with the +10% regional surcharge for
+   * the resolved endpoint. Priced per dispatch, never at construction: the
+   * bridge keeps adapters for its whole life, and a list entry can end while
+   * it runs.
+   */
+  pricingOn(date: Date = this.pricer.now()): { unpriced: true; reason: string } | { unpriced: false; price: Priced; billed: ModelPricing } {
+    const price = this.pricer.price(date);
+    if (price.unpriced) return { unpriced: true, reason: price.reason };
+    const billed = applyVertexSurcharge(price.pricing, {
+      backend: this.transport.backend,
+      location: this.transport.location,
+      modelName: this.modelConfig.model_name,
     });
+    return { unpriced: false, price, billed };
+  }
+
+  /** The billed card for a dispatch now; undefined when nothing prices the model today. */
+  get billedPricing(): ModelPricing | undefined {
+    const r = this.pricingOn();
+    return r.unpriced ? undefined : r.billed;
   }
 
   /**
@@ -104,6 +134,12 @@ export class GeminiFlashAdapter implements ModelAdapter {
     let usedEstimate = false;
     let ceiling = Math.min(packet.budget.maxOutputTokens, absoluteCeiling);
 
+    const dispatchDate = this.pricer.now();
+    const priced = this.pricingOn(dispatchDate);
+    if (priced.unpriced) return refusedResult(this.modelConfig, dispatchDate, priced.reason, ceiling);
+    const { billed } = priced;
+    const priceTags = priceFields(priced.price);
+
     for (let attemptNumber = 1; attemptNumber <= MAX_DOUBLINGS + 1; attemptNumber++) {
       const attemptStart = Date.now();
       const generationConfig: any = {
@@ -128,10 +164,11 @@ export class GeminiFlashAdapter implements ModelAdapter {
           ceiling_used: ceiling,
           hit_output_cap: false,
           tokens: failTokens,
-          cost_usd: computeCostUsd(failTokens, this.billedPricing),
+          cost_usd: computeCostUsd(failTokens, billed),
           latency_ms: Date.now() - attemptStart,
           success: false,
           error: err?.message ?? String(err),
+          ...priceTags,
         });
         return this.finalizeResult(attempts, null, cacheHit, "vendor_error", true);
       }
@@ -170,9 +207,10 @@ export class GeminiFlashAdapter implements ModelAdapter {
         stop_reason: finishReason,
         hit_output_cap: hitOutputCap,
         tokens: attemptTokens,
-        cost_usd: computeCostUsd(attemptTokens, this.billedPricing),
+        cost_usd: computeCostUsd(attemptTokens, billed),
         latency_ms: Date.now() - attemptStart,
         success: !hitOutputCap,
+        ...priceTags,
       });
 
       if (!hitOutputCap) {

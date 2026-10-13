@@ -29,7 +29,7 @@ The `Prov` column is the provenance of that phase's events:
 |---|---|
 | `V` | vendor-metered — the vendor reported these tokens |
 | `E` | estimated — counted locally, not vendor-confirmed |
-| `M` | modeled — derived from token counts at the policy's pinned rates |
+| `M` | modeled — derived from token counts, not reported money: a dispatched event at the dated price list's rates, a `driver_loop` row at the card in the policy's `driver:` block, which a test holds to the list |
 | `–` | no model call — the phase was skipped for this intent, or the conductor completed it in-session. The zeros are facts, not estimates; any tokens it did consume were the conductor's and are counted in the driver loop. |
 | `~` | mixed within the phase |
 | `?` | unlabelled — provenance genuinely unknown, which is not the same as `–` |
@@ -93,7 +93,9 @@ One event per line. The fields that matter when reading by hand:
 | `provenance` | `vendor`, `estimated`, `modeled`, or `none`. Decides which report total the event lands in. `none` marks a phase that made no model call at all. |
 | `input_tokens` / `input_tokens_cached` / `output_tokens` | Token counts. Input is **exclusive** of cached input — see below. |
 | `output_tokens_reasoning` | Reasoning tokens, where the vendor reports them separately. |
-| `cost_usd` | Derived at the pricing in the policy that ran. |
+| `cost_usd` | A dispatched event: derived from the dated price list (`plugin/mcp/model-dispatch/src/prices.ts`) on the dispatch's UTC day, or from the policy's `pricing:` block under `pricing_override: true`. A `driver_loop` row: derived from the `pricing:` card in the policy's `driver:` block, which a test holds equal to the list's card for today, with no date or tier. |
+| `price_basis` / `price_tier` / `price_verified` | Dispatched events only. `list` or `custom`; `standard`, `long_context`, or `unverified` (a tiered model whose card no vendor-reported per-request count proves: usage summed over several requests, or an estimated prompt); the date the list entry was last checked. |
+| `prompt_tokens` | One request's whole prompt, cached tokens included, on an adapter that reports usage per request (`openai`). Above 272,000 on `gpt-5.6-terra`, every token of that request bills the long-context card. Absent where usage sums several requests (`codex-cli`). |
 | `routing` | The policy name and version, which rule index matched, and why. Makes a routing decision auditable after the fact. |
 | `retry_count` | Which attempt this was. A packet at `retry_count: 2` is the one escalation fires on. |
 

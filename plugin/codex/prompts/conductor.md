@@ -209,6 +209,6 @@ reproducible, which defeats the purpose of the measurement.
 
 ## Cost
 
-Never invent model rates. Every cost figure in this run comes from the dispatch results and the
-policy's own pricing block. If you need to report cost, read it from the telemetry — do not
+Never invent model rates. Every cost figure in this run comes from the dispatch results, which the
+dispatch server prices from its dated price list. If you need to report cost, read it from the telemetry — do not
 estimate it from memory.

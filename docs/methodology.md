@@ -71,8 +71,38 @@ have cost at API rates, which is a different question.
 
 ## Where the numbers come from
 
-`plugin/mcp/model-dispatch/src/pricing.ts` holds `computeCostUsd`. Rates come from each policy's
-own `pricing:` block, so a policy file is the single place a rate is stated.
+`plugin/mcp/model-dispatch/src/prices.ts` is the dated price list, the one place a rate is stated.
+Every adapter prices a dispatch from the list entry that covers the dispatch's UTC day, and
+`plugin/mcp/model-dispatch/src/pricing.ts` turns tokens and that card into dollars with
+`computeCostUsd`. The `claude-cli` adapter reports its own cost and uses the list only to refuse a
+model it cannot price. The driver loop in `driver-cost-modeled.jsonl` is priced at the `pricing:` card in
+the policy's `driver:` block, which a test holds equal to the list's card for today. USD per 1M
+tokens, `from` and `to` inclusive:
+
+| Model | From | To | Input | Cached input | Output |
+|---|---|---|---|---|---|
+| `gpt-5.6-terra` | 2026-08-09 | open | 2.00 | 0.20 | 12.00 |
+| `gpt-5.6-terra`, a request over 272,000 input tokens | 2026-08-09 | open | 4.00 | 0.40 | 18.00 |
+| `gemini-3.7-flash` | 2026-08-13 | 2026-12-31 | 0.75 | 0.075 | 3.75 |
+| `gemini-3.8-flash` | 2026-09-02 | 2026-12-31 | 0.75 | 0.075 | 3.75 |
+| `gemini-3.7-flash`, `gemini-3.8-flash` | 2027-01-01 | open | 1.50 | 0.15 | 7.50 |
+| `gemini-3.5-flash` | 2026-05-19 | open | 1.50 | 0.15 | 9.00 |
+| `claude-opus-5`, `claude-opus-4-7` | 2026-01-01 | open | 5.00 | 0.50 | 25.00 |
+| `claude-sonnet-5` | 2026-01-01 | open | 2.00 | 0.20 | 10.00 |
+
+| Rule | What happens |
+|---|---|
+| A request's whole prompt, cached tokens included, is over 272,000 tokens | Every token of that request bills the long-context card. 272,000 exactly bills standard. |
+| Usage covers several requests (a `codex-cli` turn) and sums to more than 272,000 | The standard card is billed and the event carries `price_tier: "unverified"`: a sum cannot show whether one request crossed the line. |
+| The vendor reports no input count, so the prompt is estimated at 3.8 characters per token | The estimate picks the card, and the event carries `price_tier: "unverified"`: an estimate proves neither tier. |
+| A policy model sets `pricing_override: true` | Its `pricing:` block is billed instead of the list, and the event carries `price_basis: "custom"`. |
+| A policy `pricing:` block differs from the list by more than 0.5% | The list is billed and `pricing.policy_mismatch` is logged. Without an override a block is documentation. |
+| A policy names a model the list does not | The policy is refused at load, unless that model sets `pricing_override: true`. |
+| No entry covers the day | `preflight_dispatch` halts, and a dispatch is refused with `unpriced: ...` before any vendor call, at $0. |
+
+The Vertex regional surcharge (x1.10 on Gemini 3+ at a non-global endpoint) applies on top of the
+list card at dispatch, and `simulate_policy` applies it for the endpoint the current environment
+dispatches to. `simulate_policy` prices each event on the day in its `ts`.
 
 ```ts
 const inputFreshCost  = (tokens.input        / 1_000_000) * pricing.input;

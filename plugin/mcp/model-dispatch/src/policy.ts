@@ -16,6 +16,7 @@ import { fileURLToPath } from "node:url";
 import { parse as parseYaml } from "yaml";
 import type { Policy, ModelConfig } from "./types.js";
 import { KNOWN_ADAPTER_IDS, ANTHROPIC_ADAPTER_IDS } from "./adapters/ids.js";
+import { isListedModel } from "./prices.js";
 
 export { KNOWN_ADAPTER_IDS, ANTHROPIC_ADAPTER_IDS };
 
@@ -265,15 +266,18 @@ function validateSelect(raw: any, modelIds: Set<string>): Set<string> {
 }
 
 function validatePricing(pricing: any, where: string) {
+  if (!pricing || typeof pricing !== "object") {
+    throw new Error(`${where}: pricing must be { input, input_cached, output }`);
+  }
   for (const k of ["input", "input_cached", "output"]) {
-    if (typeof pricing?.[k] !== "number") {
-      throw new Error(`${where}: pricing.${k} must be number`);
+    if (typeof pricing[k] !== "number" || !Number.isFinite(pricing[k]) || pricing[k] < 0) {
+      throw new Error(`${where}: pricing.${k} must be a number >= 0`);
     }
   }
 }
 
 function validateModel(m: any) {
-  for (const key of ["id", "adapter", "model_name", "pricing"]) {
+  for (const key of ["id", "adapter", "model_name"]) {
     if (!(key in m)) throw new Error(`Policy model: missing '${key}'`);
   }
   if (!KNOWN_ADAPTER_IDS.has(m.adapter)) {
@@ -281,7 +285,21 @@ function validateModel(m: any) {
       `Policy model '${m.id}': unknown adapter '${m.adapter}'. Known adapters: ${[...KNOWN_ADAPTER_IDS].join(", ")}.`
     );
   }
-  validatePricing(m.pricing, `Policy model '${m.id}'`);
+  if (m.pricing !== undefined) validatePricing(m.pricing, `Policy model '${m.id}'`);
+  if (m.pricing_override !== undefined && typeof m.pricing_override !== "boolean") {
+    throw new Error(`Policy model '${m.id}': pricing_override must be true or false`);
+  }
+  if (m.pricing_override === true && m.pricing === undefined) {
+    throw new Error(`Policy model '${m.id}': pricing_override: true needs a pricing block to bill`);
+  }
+  // Date-free on purpose: a replay prices historical events on their own day.
+  if (m.pricing_override !== true && !isListedModel(m.model_name)) {
+    throw new Error(
+      `Policy model '${m.id}': '${m.model_name}' is not on the price list ` +
+        `(plugin/mcp/model-dispatch/src/prices.ts). Add its verified price entry there, or give this ` +
+        `model a pricing block with pricing_override: true.`
+    );
+  }
 }
 
 function validateDriver(d: any) {

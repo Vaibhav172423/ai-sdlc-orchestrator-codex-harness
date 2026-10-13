@@ -174,24 +174,39 @@ export function formatUsd(amount) {
   return `$${n.toFixed(6)}`;
 }
 
+const perMillion = (c) => [c.input, c.input_cached, c.output].map((n) => `$${Number(n.toFixed(6))}`).join("/");
+
 /**
- * Say whether the billed rates match the pinned rates. They differ by the
- * regional +10% surcharge (Gemini 3+ non-global). Stated in words so a reader
- * doesn't read the difference as a bug.
+ * Say whether the billed card is the price card or that card plus Google's
+ * regional +10% surcharge (Gemini 3+ non-global), so a reader does not read
+ * the difference as a bug. `card` is the unsurcharged card priced today.
  */
-export function pricingNote(pinned, billed, region) {
-  const same =
-    pinned?.input === billed?.input &&
-    pinned?.input_cached === billed?.input_cached &&
-    pinned?.output === billed?.output;
-  if (same) {
-    return `billed at the policy's pinned rates (region '${region}' carries no surcharge)`;
-  }
+export function pricingNote(card, billed, region, basis = "list") {
+  if (!card || !billed) return "not priced today by the price list (src/prices.ts), so the delegation will be refused";
+  const source = basis === "custom" ? "the policy's pricing_override rates" : "the price list's rates";
+  const same = card.input === billed.input && card.input_cached === billed.input_cached && card.output === billed.output;
+  if (same) return `billed at ${source}, ${perMillion(card)} per million (region '${region}' carries no surcharge)`;
   return (
-    `billed at the pinned rates plus Google's regional surcharge, because this leaf runs in ` +
-    `'${region}' rather than the global endpoint: in $${pinned.input}/$${pinned.input_cached}/$${pinned.output} ` +
-    `→ $${billed.input}/$${billed.input_cached}/$${billed.output} per million (input/cached/output)`
+    `billed at ${source} plus Google's regional surcharge, because this leaf runs in ` +
+    `'${region}' rather than the global endpoint: in ${perMillion(card)} → ${perMillion(billed)} ` +
+    `per million (input/cached/output)`
   );
+}
+
+/** The `rates`, source and verified lines the probe prints for what a delegation today bills. */
+export function priceLines(priced, leaf, region) {
+  if (priced.unpriced) return [`  rates       ${pricingNote(null, null, region)}: ${priced.reason}`];
+  const { price, billed } = priced;
+  const lines = [`  rates       ${pricingNote(price.pricing, billed, region, price.basis)}`];
+  if (price.entry) {
+    lines.push(`  listed from ${price.entry.source}`);
+    lines.push(`  verified    ${price.entry.verified}`);
+  } else {
+    if (leaf.pricing_source) lines.push(`  pinned from ${leaf.pricing_source}`);
+    if (leaf.pricing_last_verified) lines.push(`  verified    ${leaf.pricing_last_verified}`);
+  }
+  for (const w of price.warnings ?? []) lines.push(`  note        ${w}`);
+  return lines;
 }
 
 /** `--flag=value` out of an argv, so the parsing is testable without a process. */
@@ -261,9 +276,7 @@ async function main() {
   log(`  project     ${adapter.project}`);
   log(`  region      ${adapter.location}`);
   log(`  interpreter ${adapter.python}`);
-  log(`  rates       ${pricingNote(leaf.pricing, adapter.billedPricing, adapter.location)}`);
-  if (leaf.pricing_source) log(`  pinned from ${leaf.pricing_source}`);
-  if (leaf.pricing_last_verified) log(`  verified    ${leaf.pricing_last_verified}`);
+  for (const line of priceLines(adapter.pricingOn(), leaf, adapter.location)) log(line);
 
   const dirs = makeProbeDirs();
   log(`\n  workspace   ${dirs.workspace}  (empty, temporary)`);

@@ -41,6 +41,8 @@ import {
   takeInventory,
 } from "../delegation/evidence.js";
 import { log } from "../log.js";
+import type { Priced } from "../prices.js";
+import { DispatchPricer, priceFields, refusedResult, type Clock } from "./dispatchPricer.js";
 
 // Module-location relative, not cwd — the server runs in the user's project.
 // dist/adapters/ → package root two levels up.
@@ -60,17 +62,17 @@ export class AntigravityWorkerAdapter implements ModelAdapter {
   readonly location: string;
   /** Absolute path to the interpreter. */
   readonly python: string;
-  /** Pricing adjusted for a pinned regional endpoint. Cost reports read from here. */
-  readonly billedPricing: ModelPricing;
+  private readonly pricer: DispatchPricer;
 
   /**
    * Strict on purpose. preflight_dispatch constructs every adapter before the
    * run starts, so a missing project / interpreter / worker script surfaces
    * once at the start, not as a crash after premium phases are billed.
    */
-  constructor(config: ModelConfig) {
+  constructor(config: ModelConfig, options: { clock?: Clock } = {}) {
     this.id = config.id;
     this.modelConfig = config;
+    this.pricer = new DispatchPricer(config, options.clock);
 
     const project = resolveGcpProject(process.env as Record<string, string | undefined>);
     if (!project) {
@@ -100,12 +102,24 @@ export class AntigravityWorkerAdapter implements ModelAdapter {
       workerDir: WORKER_DIR,
       exists: existsSync,
     });
+  }
 
-    this.billedPricing = applyVertexSurcharge(config.pricing, {
+  /** The card a delegation on `date` bills, regional surcharge applied. Priced per dispatch, never at construction. */
+  pricingOn(date: Date = this.pricer.now()): { unpriced: true; reason: string } | { unpriced: false; price: Priced; billed: ModelPricing } {
+    const price = this.pricer.price(date);
+    if (price.unpriced) return { unpriced: true, reason: price.reason };
+    const billed = applyVertexSurcharge(price.pricing, {
       backend: "vertex-adc",
       location: this.location,
-      modelName: config.model_name,
+      modelName: this.modelConfig.model_name,
     });
+    return { unpriced: false, price, billed };
+  }
+
+  /** The billed card for a delegation now; undefined when nothing prices the model today. */
+  get billedPricing(): ModelPricing | undefined {
+    const r = this.pricingOn();
+    return r.unpriced ? undefined : r.billed;
   }
 
   /** `cacheContext` accepted and ignored — no cache handle for agent sessions. */
@@ -116,6 +130,13 @@ export class AntigravityWorkerAdapter implements ModelAdapter {
   ): Promise<ExecutionResult> {
     const started = Date.now();
     const startedAt = new Date(started).toISOString();
+
+    const dispatchDate = this.pricer.now();
+    const priced = this.pricingOn(dispatchDate);
+    if (priced.unpriced) {
+      return refusedResult(this.modelConfig, dispatchDate, priced.reason, packet.budget.maxOutputTokens);
+    }
+    const priceTags = priceFields(priced.price);
 
     // Workspace the agent may act in. Refused rather than defaulted to a
     // temp dir whose edits nobody would look at.
@@ -192,7 +213,7 @@ export class AntigravityWorkerAdapter implements ModelAdapter {
     // Read whatever the exit status: a failed delegation still spent tokens.
     const sidecar = readJsonIfPresent(usageFile);
     const tokens = mapSidecarTokens(sidecar);
-    const cost = computeCostUsd(tokens, this.billedPricing);
+    const cost = computeCostUsd(tokens, priced.billed);
     const latency = Date.now() - started;
 
     if (sidecar) {
@@ -261,6 +282,7 @@ export class AntigravityWorkerAdapter implements ModelAdapter {
         latency_ms: latency,
         success: false,
         error: run.error,
+        ...priceTags,
       };
       return {
         result: null,
@@ -294,6 +316,7 @@ export class AntigravityWorkerAdapter implements ModelAdapter {
       cost_usd: cost,
       latency_ms: latency,
       success: true,
+      ...priceTags,
     };
     return {
       result: parsed,

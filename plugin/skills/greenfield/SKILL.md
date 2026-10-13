@@ -149,20 +149,35 @@ setup was not run for this project — stop and tell the user to run `$mmo-codex
 proceed to spend anything without a policy the user has explicitly picked or explicitly kept as the
 shipped default.
 
-Load `<plugin-root>/config/policies/<resolved-name>.yaml`.
+Load the policy through the dispatch server, which reports what each model bills today. The run
+folder does not exist yet, so the result goes in `.sdlc/local/`:
+
+```bash
+node '<plugin-root>/codex/dispatch.mjs' --load-policy --policy=<resolved-name> \
+  --project-root="$(pwd)" --out="$(pwd)/.sdlc/local/policy-preview.json"
+```
+
+A non-zero exit means the policy did not load: print stderr verbatim and stop. Otherwise read the
+`--out` file: `rules` and `models` give the routing, and each `models[].effective_price` gives the
+rates the dispatch server bills that model at on `effective_prices_on`, from its dated price list.
 
 Report, in a short list:
 - which model handles the judgment phases — requirements, design, task planning, senior review,
   security review
 - which model handles the mechanical phases — codegen, tests, docs, debug
-- the per-million input and output rates the policy declares for each, so the user can see where
-  the cost difference comes from
+- the per-million input and output rates each one bills today, from `effective_price.rates`, so the
+  user can see where the cost difference comes from. Quote these, never a model's `pricing:` block:
+  the block is documentation unless `pricing_override` is set, and from 2027-01-01 a Gemini block
+  can lag the list. When `effective_price.tiers` is non-empty, add one sentence: a request whose
+  prompt, cached tokens included, is above `above_input_tokens` bills that tier's card for every
+  token. When `effective_price.unpriced_reason` is set, say that the run will refuse that model and
+  print the reason.
 
 **Say which door the judgment tier goes through, and only if it is the seat one.** Two shipped
 policies reach it two different ways. `gpt-plus-flash` calls the vendor API and the numbers on the
 report are the vendor's own. `gpt-seat-plus-flash` routes judgment work through the local
 `codex exec` binary on a ChatGPT subscription seat, which reports token counts but no money — so
-its judgment cost is **modeled** from those counts at the policy's declared rates, and the report
+its judgment cost is **modeled** from those counts at the price list's rates, and the report
 labels it that way and keeps it out of the metered total. Say this in one sentence when the
 resolved policy is the seat one. It is the difference between a bill and a calculation, and the
 user should know which they are reading before the run starts, not after.

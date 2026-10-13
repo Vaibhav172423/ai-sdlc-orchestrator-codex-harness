@@ -307,7 +307,9 @@ test("the registry builds the worker adapter and prices it where it will run", (
       id: "flash-agsdk-worker",
       adapter: "antigravity-worker",
       model_name: "gemini-3.5-flash",
+      // A custom card, so the surcharge is asserted on rates this test controls.
       pricing: { input: 0.3, input_cached: 0.075, output: 2.5 },
+      pricing_override: true,
     };
 
     const global = createAdapter(base);

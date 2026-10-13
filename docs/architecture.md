@@ -69,7 +69,7 @@ The `openai` and `codex-cli` adapters reach the same model. They are separate be
 
 ## 5. Routing — `plugin/config/policies/*.yaml`
 
-Routing is data, not code. Each policy declares `models:` (id, adapter, model name, pricing, auth) and `rules:` (a `when:` clause matched against phase and retry count, and the model to `use:`). First match wins; a bare `when:` is the fallback.
+Routing is data, not code. Each policy declares `models:` (id, adapter, model name, auth, and a `pricing:` block that records the dated price list's card in `src/prices.ts` and is billed only under `pricing_override: true`) and `rules:` (a `when:` clause matched against phase and retry count, and the model to `use:`). First match wins; a bare `when:` is the fallback.
 
 Two guardrails ship on: a mechanical packet that fails validation twice escalates to the judgment tier on the third attempt, and `hard_cost_cap_usd` stops the run once the dispatched cost in `telemetry.jsonl` plus the conductor's modeled cost reaches it. The bridge refuses every dispatch after that point (`src/costCap.ts`), and `run.mjs` stops resuming the session and records `cost_cap_stop` in `driver-manifest.json`. `src/sessionUsage.ts` reads the conductor's cost from the same run folder, from one source: the complete rows of `driver-cost-modeled.jsonl`, else `driver-usage.json`, else the conductor's codex session file. A headless run names the conductor's thread in `driver-events.jsonl`; an interactive run names it in `driver-session.jsonl`, where `dispatch.mjs` appends a marker on every call. The refusal message gives both parts and says which is modeled.
 

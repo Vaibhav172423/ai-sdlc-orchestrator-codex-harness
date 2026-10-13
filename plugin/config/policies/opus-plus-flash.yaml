@@ -10,8 +10,8 @@ models:
     adapter: builtin-anthropic
     model_name: claude-opus-4-7
     pricing: { input: 5.00, input_cached: 0.50, output: 25.00 }
-    pricing_source: https://platform.claude.com/docs/en/docs/about-claude/pricing
-    pricing_last_verified: 2026-08-04
+    pricing_source: https://platform.claude.com/docs/en/about-claude/pricing
+    pricing_last_verified: 2026-09-14
     auth: { env: ANTHROPIC_API_KEY }
     max_output_tokens_absolute: 32000
 
@@ -25,7 +25,7 @@ models:
     # x1.10 in — geminiTransports.ts::applyVertexSurcharge does it at dispatch.
     pricing: { input: 1.50, input_cached: 0.15, output: 9.00 }
     pricing_source: https://ai.google.dev/gemini-api/docs/pricing (AI Studio + Vertex global); https://cloud.google.com/vertex-ai/generative-ai/pricing (regional +10%)
-    pricing_last_verified: 2026-08-04
+    pricing_last_verified: 2026-09-14
     # AI Studio door. Unset → adapter falls through to Vertex ADC, same rates.
     auth: { env: GEMINI_API_KEY }
     max_output_tokens_absolute: 8192
@@ -40,7 +40,7 @@ models:
     display_name: gemini-3.5-flash (Antigravity agent)
     pricing: { input: 1.50, input_cached: 0.15, output: 9.00 }
     pricing_source: https://ai.google.dev/gemini-api/docs/pricing (AI Studio + Vertex global); https://cloud.google.com/vertex-ai/generative-ai/pricing (regional +10%)
-    pricing_last_verified: 2026-08-04
+    pricing_last_verified: 2026-09-14
     # `region:` deliberately unpinned so this leaf follows GOOGLE_CLOUD_LOCATION
     # and hits the flat global endpoint by default, same as flash-completion.
     # Vertex-only: the Antigravity SDK is ADC-only and has no API-key door, so

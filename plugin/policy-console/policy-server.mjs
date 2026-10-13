@@ -6,13 +6,18 @@
 import { createServer } from "node:http";
 import { existsSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { parse as parseYaml, stringify as stringifyYaml } from "yaml";
 
 const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
 const POLICIES_DIR = resolve(SCRIPT_DIR, "..", "config", "policies");
 const INDEX_HTML = resolve(SCRIPT_DIR, "index.html");
 const INTENTS_PATH = resolve(SCRIPT_DIR, "..", "config", "intents.json");
+const PRICES_JS = resolve(SCRIPT_DIR, "..", "mcp", "model-dispatch", "dist", "prices.js");
+
+// The dispatch server refuses a policy naming a model its price list lacks.
+// Without a built bridge the check is skipped; the bridge still refuses at load.
+const priceList = await import(pathToFileURL(PRICES_JS).href).catch(() => null);
 
 // ── schema (mirrors plugin/policy-console/lib/policySchema.ts post-cherry-pick) ─
 
@@ -353,7 +358,22 @@ function renderPolicyYaml(policy, baseId) {
 
 // ── save handler (mirrors app/actions.ts) ─────────────────────────────
 
+/**
+ * `warnings` names every listed model whose block differs from the price
+ * list: the dispatch server ignores that block and bills the list's card,
+ * and this console has no way to set pricing_override.
+ */
 function validateSaveInput(input) {
+  const warnings = [];
+  return { ...checkSaveInput(input, warnings), warnings };
+}
+
+function blockWarnings(m) {
+  if (!priceList || m.pricing_override === true || !m.pricing || !priceList.isListedModel(m.model_name)) return [];
+  return priceList.effectivePricing({ id: m.id, model_name: m.model_name, pricing: m.pricing }, new Date()).warnings;
+}
+
+function checkSaveInput(input, warnings) {
   const errors = [];
   const name = (input.name ?? "").trim();
 
@@ -379,11 +399,20 @@ function validateSaveInput(input) {
       errors.push(`Model "${m.id}" names adapter "${m.adapter}", which has no real implementation. Known: ${KNOWN_ADAPTERS.join(", ")}.`);
     }
     if (!m.model_name?.trim()) errors.push(`Model "${m.id}" is missing a model_name.`);
+    if (m.pricing_override !== undefined && typeof m.pricing_override !== "boolean") {
+      errors.push(`Model "${m.id}": pricing_override must be true or false.`);
+    } else if (m.model_name?.trim() && m.pricing_override !== true && priceList && !priceList.isListedModel(m.model_name)) {
+      errors.push(
+        `Model "${m.id}": "${m.model_name}" is not on the price list (plugin/mcp/model-dispatch/src/prices.ts), ` +
+          `so the dispatch server would refuse this policy. Pick a listed model, or add its verified price entry there first.`,
+      );
+    }
     for (const k of ["input", "input_cached", "output"]) {
       if (typeof m.pricing?.[k] !== "number" || m.pricing[k] < 0) {
         errors.push(`Model "${m.id}": pricing.${k} must be a number ≥ 0.`);
       }
     }
+    if (m.model_name?.trim()) warnings.push(...blockWarnings(m));
   }
   if (errors.length) return { errors };
 
@@ -420,8 +449,8 @@ function validateSaveInput(input) {
 }
 
 function savePolicy(input) {
-  const { errors, name } = validateSaveInput(input);
-  if (errors.length) return { ok: false, errors };
+  const { errors, name, warnings } = validateSaveInput(input);
+  if (errors.length) return { ok: false, errors, warnings };
 
   const base = parseYaml(readPolicyRaw(input.baseId));
   const policy = buildCustomPolicy(
@@ -448,7 +477,7 @@ function savePolicy(input) {
     if (err?.code === "EEXIST") return { ok: false, errors: [`Name "${name}" already exists — pick a different name.`] };
     return { ok: false, errors: [`Could not write policy file: ${err?.message ?? String(err)}`] };
   }
-  return { ok: true, errors: [], path, yaml: yamlText };
+  return { ok: true, errors: [], warnings, path, yaml: yamlText };
 }
 
 // ── http server ───────────────────────────────────────────────────────
@@ -545,9 +574,9 @@ const server = createServer(async (req, res) => {
         sendJson(res, 400, { ok: false, errors: ["Invalid JSON body."] });
         return;
       }
-      const { errors, name } = validateSaveInput({ ...payload, name: payload.name || "preview" });
+      const { errors, name, warnings } = validateSaveInput({ ...payload, name: payload.name || "preview" });
       if (errors.length) {
-        sendJson(res, 200, { ok: false, errors });
+        sendJson(res, 200, { ok: false, errors, warnings });
         return;
       }
       const base = parseYaml(readPolicyRaw(payload.baseId));
@@ -566,7 +595,7 @@ const server = createServer(async (req, res) => {
         },
         { ...payload, name },
       );
-      sendJson(res, 200, { ok: true, yaml: renderPolicyYaml(policy, payload.baseId) });
+      sendJson(res, 200, { ok: true, warnings, yaml: renderPolicyYaml(policy, payload.baseId) });
       return;
     }
     sendJson(res, 404, { error: "not found" });

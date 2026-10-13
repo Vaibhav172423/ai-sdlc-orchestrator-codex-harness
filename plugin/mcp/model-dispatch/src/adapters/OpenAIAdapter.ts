@@ -19,6 +19,7 @@ import { computeCostUsd, estimateTokens } from "../pricing.js";
 import type { ModelAdapter } from "./ModelAdapter.js";
 import { splitStableFromDynamic } from "./BuiltinAnthropicAdapter.js";
 import { log } from "../log.js";
+import { DispatchPricer, priceFields, refusedResult, type Clock } from "./dispatchPricer.js";
 
 // No published absolute output-token ceiling is pinned for gpt-5.6-terra as
 // of this port; the official codex policy sets max_output_tokens_absolute
@@ -30,6 +31,7 @@ const MAX_DOUBLINGS = 3;
 
 interface OpenAIAdapterOptions {
   client?: OpenAI;
+  clock?: Clock;
 }
 
 export class OpenAIAdapter implements ModelAdapter {
@@ -37,10 +39,12 @@ export class OpenAIAdapter implements ModelAdapter {
   readonly modelConfig: ModelConfig;
   private client: OpenAI;
   private cachedSystem = "";
+  private readonly pricer: DispatchPricer;
 
   constructor(config: ModelConfig, options: OpenAIAdapterOptions = {}) {
     this.id = config.id;
     this.modelConfig = config;
+    this.pricer = new DispatchPricer(config, options.clock);
     if (options.client) {
       this.client = options.client;
     } else {
@@ -70,6 +74,10 @@ export class OpenAIAdapter implements ModelAdapter {
     // adapter's vendor-metered default.
     let usedEstimate = false;
     let ceiling = Math.min(packet.budget.maxOutputTokens, absoluteCeiling);
+
+    const dispatchDate = this.pricer.now();
+    const listed = this.pricer.price(dispatchDate);
+    if (listed.unpriced) return refusedResult(this.modelConfig, dispatchDate, listed.reason, ceiling);
 
     for (let attemptNumber = 1; attemptNumber <= MAX_DOUBLINGS + 1; attemptNumber++) {
       const attemptStart = Date.now();
@@ -112,15 +120,17 @@ export class OpenAIAdapter implements ModelAdapter {
           http_status: err?.status ?? err?.response?.status,
         });
         const failTokens = { input: estimateTokens(userPrompt), input_cached: 0, output: 0 };
+        const failPrice = this.pricer.require(dispatchDate, { requestInputTokens: failTokens.input, estimated: true });
         const attempt: AttemptRecord = {
           attempt_number: attemptNumber,
           ceiling_used: ceiling,
           hit_output_cap: false,
           tokens: failTokens,
-          cost_usd: computeCostUsd(failTokens, this.modelConfig.pricing),
+          cost_usd: computeCostUsd(failTokens, failPrice.pricing),
           latency_ms: Date.now() - attemptStart,
           success: false,
           error: vendorError,
+          ...priceFields(failPrice),
         };
         attempts.push(attempt);
         return this.finalizeResult(attempts, null, false, "vendor_error", true);
@@ -145,6 +155,14 @@ export class OpenAIAdapter implements ModelAdapter {
         output_reasoning: reasoningTokens,
       };
       const hitOutputCap = resp.incomplete_details?.reason === "max_output_tokens";
+      // The >272K tier is decided per request on its whole prompt, cached tokens included.
+      const promptTokens = typeof usage?.input_tokens === "number" ? usage.input_tokens : undefined;
+      const price = this.pricer.require(
+        dispatchDate,
+        promptTokens !== undefined
+          ? { requestInputTokens: promptTokens }
+          : { requestInputTokens: attemptTokens.input + attemptTokens.input_cached, estimated: true },
+      );
 
       const attempt: AttemptRecord = {
         attempt_number: attemptNumber,
@@ -152,9 +170,11 @@ export class OpenAIAdapter implements ModelAdapter {
         stop_reason: resp.incomplete_details?.reason ?? resp.status,
         hit_output_cap: hitOutputCap,
         tokens: attemptTokens,
-        cost_usd: computeCostUsd(attemptTokens, this.modelConfig.pricing),
+        cost_usd: computeCostUsd(attemptTokens, price.pricing),
         latency_ms: Date.now() - attemptStart,
         success: !hitOutputCap,
+        ...priceFields(price),
+        ...(promptTokens !== undefined ? { prompt_tokens: promptTokens } : {}),
       };
       attempts.push(attempt);
 
