@@ -111,7 +111,7 @@ test("a session on another model starts no run and says how to switch", async ()
     assert.match(r.err, /^start-run: no run started: this session must run gpt-5\.6-terra at effort high\./m);
     assert.match(r.err, /this session runs gpt-6\.1-sol/);
     assert.match(r.err, /\/model, choose gpt-5\.6-terra and effort high/);
-    assert.match(r.err, /codex -m gpt-5\.6-terra -c model_reasoning_effort="high"/);
+    assert.match(r.err, /codex -s danger-full-access -m gpt-5\.6-terra -c model_reasoning_effort="high"/);
     assert.equal(existsSync(runsDir(p.root)), false, "a refused start leaves no run folder");
   } finally { p.done(); }
 });
@@ -122,7 +122,7 @@ test("a session whose model cannot be read starts no run", async () => {
     const noThread = await start(p.root, ["--mode=greenfield"], { CODEX_HOME: PIN_HOME });
     assert.equal(noThread.code, 1);
     assert.match(noThread.err, /unverified \(CODEX_THREAD_ID is not set/);
-    assert.match(noThread.err, /codex -m gpt-5\.6-terra/);
+    assert.match(noThread.err, /codex -s danger-full-access -m gpt-5\.6-terra -c model_reasoning_effort="high"/);
 
     const noRollout = await start(p.root, ["--mode=greenfield"], { CODEX_HOME: home([]), CODEX_THREAD_ID: THREAD });
     assert.equal(noRollout.code, 1);

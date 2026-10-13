@@ -75,7 +75,7 @@ test("a session on another model is a mismatch, with the /model fix", () => {
     assert.match(warnings[0], /runs gpt-6\.1-sol/);
     assert.match(warnings[0], /pins the driver to gpt-5\.6-terra at effort high/);
     assert.match(warnings[0], /\/model, choose gpt-5\.6-terra and effort high/);
-    assert.match(warnings[0], /codex -m gpt-5\.6-terra -c model_reasoning_effort="high"/);
+    assert.match(warnings[0], /codex -s danger-full-access -m gpt-5\.6-terra -c model_reasoning_effort="high"/);
   });
 });
 
@@ -243,7 +243,7 @@ test("the CLI checks the project's policy against the session and exits 1 unless
     const unverified = cli(h, []);
     assert.equal(unverified.status, 1);
     assert.match(unverified.stderr, /unverified \(CODEX_THREAD_ID is not set/);
-    assert.match(unverified.stderr, /codex -m gpt-5\.6-terra -c model_reasoning_effort="high"/, "an unreadable session still says how to fix it");
+    assert.match(unverified.stderr, /codex -s danger-full-access -m gpt-5\.6-terra -c model_reasoning_effort="high"/, "an unreadable session still says how to fix it");
 
     const fixture = cli(h, ["--policy=opus-only"], { CODEX_THREAD_ID: THREAD });
     assert.equal(fixture.status, 1);

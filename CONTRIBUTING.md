@@ -80,12 +80,12 @@ codex plugin add mmo-codex@tilicho-ai-labs
 | `marketplace add "$(pwd)"` | Registers this checkout as the marketplace, from `.agents/plugins/marketplace.json`. |
 | `plugin add` | Replaces the cached copy with this branch's `plugin/`. |
 
-Check the copy, then start codex on the driver pin:
+Check the copy, then start codex on the driver pin, with the sandbox the bridge's pipes need:
 
 ```bash
 codex plugin list
 node "$(ls -d "${CODEX_HOME:-$HOME/.codex}"/plugins/cache/tilicho-ai-labs/mmo-codex/*/ | tail -1)codex/verify-setup.mjs" --project-root "$(pwd)"
-codex -m gpt-5.6-terra -c model_reasoning_effort="high"
+codex -s danger-full-access -m gpt-5.6-terra -c model_reasoning_effort="high"
 ```
 
 `codex plugin list` shows `mmo-codex@tilicho-ai-labs` with the branch's version and this checkout's `plugin/` as its source. The copy's check reports no `mcp-build-stale` warning. At startup, codex asks about the plugin's write hook: "Trust all and continue" trusts it, and brownfield runs need that.

@@ -32,7 +32,7 @@ effort `high` whatever the policy routes dispatches to, so comparisons between p
 driver constant. A policy of your own without one falls back to its `gpt` model entry, with a
 warning. In a codex session, `start-run.mjs` reads the session's model and effort before it
 creates the run folder, and starts no run unless they match the pin: switch with `/model`, or
-start codex with `codex -m gpt-5.6-terra -c model_reasoning_effort="high"`.
+start codex with `codex -s danger-full-access -m gpt-5.6-terra -c model_reasoning_effort="high"`.
 
 ### `gpt-plus-flash` — the policy of record
 

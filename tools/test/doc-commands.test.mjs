@@ -165,3 +165,12 @@ test("the headless cost check is linked from the pages a new user reads", () => 
     assert.match(readFileSync(join(ROOT, file), "utf8"), /headless-runs\.md/, `${relative(ROOT, join(ROOT, file))} should link docs/headless-runs.md`);
   }
 });
+
+test("every codex launch on the driver pin that a doc prints has the sandbox dispatch needs", () => {
+  const bad = [];
+  for (const file of DOCS) {
+    const launches = readFileSync(join(ROOT, file), "utf8").matchAll(/\bcodex\s+(?!exec\b)[^`\n|]*?-m\s+gpt-5\.6-terra[^`\n|]*/g);
+    for (const [launch] of launches) if (!/(^|\s)-s\s+danger-full-access(\s|$)/.test(launch)) bad.push(`${file}: ${launch.trim()}`);
+  }
+  assert.deepEqual(bad, [], "under the default or workspace-write sandbox the first dispatch fails with MCP error -32000");
+});

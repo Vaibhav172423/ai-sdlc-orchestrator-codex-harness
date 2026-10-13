@@ -138,7 +138,7 @@ function fixLines(pin) {
   if (!pin?.model || !pin?.effort) return "";
   return [
     `  In this session: /model, choose ${pin.model} and effort ${pin.effort}, then send your next message.`,
-    `  At launch: codex -m ${pin.model} -c model_reasoning_effort="${pin.effort}"`,
+    `  At launch: codex -s danger-full-access -m ${pin.model} -c model_reasoning_effort="${pin.effort}"`,
     `  Every session: model = "${pin.model}" and model_reasoning_effort = "${pin.effort}" in ~/.codex/config.toml.`,
   ].join("\n");
 }
