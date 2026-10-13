@@ -9,14 +9,17 @@
  * --status, by default the one an accepting Gate 4 line in the same step
  * calls for, null for none), handSummary (a SUMMARY.md written by hand),
  * preflight, stop, question, guardDeny, telemetry, blockManifest (a
- * directory where manifest.json goes), sleepMs (after turn.started, or after
- * turn.completed with sleepAfterTurn), ignoreTerm, exit.
+ * directory where manifest.json goes), freeze (Gate 0's write-contract.mjs
+ * --freeze, given {allowlist}), close (close-out's --close, after this
+ * step's gates), sleepMs (after turn.started, or after turn.completed with
+ * sleepAfterTurn), ignoreTerm, exit.
  */
 import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { writeManifest } from "../../../plugin/scripts/write-manifest.mjs";
+import { closeContract, freezeContract } from "../../../plugin/scripts/write-contract.mjs";
 
 const argv = process.argv.slice(2);
 const env = process.env;
@@ -58,8 +61,15 @@ function gate4Status(gates = []) {
   return /^auto-approved$/i.test(g4.decision ?? g4.status) ? "auto-approved" : "accepted";
 }
 
+function runIdOfThisRun() {
+  const start = readFileSync(join(runDir, "driver-events.jsonl"), "utf-8").split("\n").filter((l) => l.trim()).map((l) => JSON.parse(l)).find((r) => r.kind === "invocation_start");
+  return start?.run_id ?? basename(runDir);
+}
+
 function writeFiles() {
+  if (step.freeze) freezeContract({ projectRoot: scenario.projectRoot, runId: runIdOfThisRun(), allowlist: step.freeze.allowlist ?? ["src/**"] });
   for (const g of step.gates ?? []) append(join(runDir, "gates.jsonl"), g);
+  if (step.close) closeContract({ projectRoot: scenario.projectRoot, runId: runIdOfThisRun() });
   for (const t of step.telemetry ?? []) append(join(runDir, "telemetry.jsonl"), t);
   if (step.preflight) writeFileSync(join(runDir, "preflight.json"), JSON.stringify(step.preflight));
   if (step.stop) writeFileSync(join(runDir, "stop.json"), JSON.stringify(step.stop));

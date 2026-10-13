@@ -39,6 +39,14 @@ import { dispatchTimeoutMs } from "./deadline.js";
 
 type SpawnFn = typeof spawn;
 
+/**
+ * Switches the installed plugin's write hook off for the nested exec: a read-only worker writes nothing, so the hook
+ * would only start node for every tool call. The same value as plugin/codex/hook-wiring.mjs pluginHooksOffConfig();
+ * tools/test/hook-wiring.test.mjs holds the two together.
+ */
+export const PLUGIN_HOOKS_OFF_CONFIG =
+  'hooks.state={"mmo-codex@tilicho-ai-labs:hooks/hooks.json:pre_tool_use:0:0"={enabled=false}}';
+
 interface CodexCliOptions {
   spawnFn?: SpawnFn;
   timeoutSec?: number;
@@ -188,6 +196,8 @@ export class CodexCliAdapter implements ModelAdapter {
       "read-only",
       "-c",
       'approval_policy="never"',
+      "-c",
+      PLUGIN_HOOKS_OFF_CONFIG,
       "--skip-git-repo-check",
       "--output-schema",
       schemaPath,

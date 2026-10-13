@@ -254,12 +254,12 @@ extra confirmation lines with the harness's default behavior. Example:
 On `approved`:
 1. Freeze the write contract with the lists confirmed above, each as a JSON array of path globs:
    ```bash
-   node '{{PLUGIN_ROOT}}/scripts/write-contract.mjs' --freeze --run-id=<run-id> \
+   node '{{PLUGIN_ROOT}}/scripts/write-contract.mjs' --freeze --run-id={{RUN_ID}} \
      --allowlist='<allowlist JSON>' --off-limits='<extra off-limits JSON>' \
      --intent=<intent> --project-root='{{PROJECT_ROOT}}'
    ```
-   `<run-id>` is this run's folder name under `.sdlc/runs/` (letters, digits, `.`, `_`, `-`).
-   `<intent>` is the intent confirmed above (`bugfix`, `docs`, ...).
+   `{{RUN_ID}}` is this run's folder name under `.sdlc/runs/`; the run's end and its resume find
+   the contract by it. `<intent>` is the intent confirmed above (`bugfix`, `docs`, ...).
    `--off-limits` carries only what this run adds: the AI configs from discovery and the paths
    the user named. The script merges the project defaults from `.sdlc/project.json` itself.
    Add `--strict-write=off` only when the user asked for out-of-scope writes to be warned about
@@ -270,7 +270,7 @@ On `approved`:
 2. Update `.sdlc/runs/<run-id>/intent_brief.md` with the final scope.
 3. Prove the write hook runs in this session, with a command of its own:
    ```bash
-   node '{{PLUGIN_ROOT}}/scripts/write-contract.mjs' --assert-guard-live --run-id=<run-id> --project-root='{{PROJECT_ROOT}}'
+   node '{{PLUGIN_ROOT}}/scripts/write-contract.mjs' --assert-guard-live --run-id={{RUN_ID}} --project-root='{{PROJECT_ROOT}}'
    ```
    Never put this check in the same shell call as the freeze: the hook judges a call once,
    before it runs, so that call leaves no hook record after the freeze and the check fails.
@@ -331,7 +331,7 @@ Then, in the same turn:
 
 1. End the run and switch its write contract off:
    ```bash
-   node '{{PLUGIN_ROOT}}/scripts/write-contract.mjs' --close --run-id=<run-id> --project-root='{{PROJECT_ROOT}}'
+   node '{{PLUGIN_ROOT}}/scripts/write-contract.mjs' --close --run-id={{RUN_ID}} --project-root='{{PROJECT_ROOT}}'
    ```
    It also closes the run's provenance record and prints how many files it holds and the
    `$mmo-codex:revert <run-id>` command that undoes the run. It refuses while `gates.jsonl`
@@ -358,9 +358,14 @@ gate's number and artifact (here, an abort at Gate 2):
 ```
 
 then run
-`node '{{PLUGIN_ROOT}}/scripts/write-contract.mjs' --abandon --run-id=<run-id> --reason='aborted at gate <N>' --project-root='{{PROJECT_ROOT}}'`,
+`node '{{PLUGIN_ROOT}}/scripts/write-contract.mjs' --abandon --run-id={{RUN_ID}} --reason='aborted at gate <N>' --project-root='{{PROJECT_ROOT}}'`,
 record the end (`--outcome=aborted`), and stop. Keep the reason plain words. `--abandon` closes
 the provenance record as well.
+
+**Any other stop after Gate 0** (a halt, a refusal, a cost cap, a failure) needs no contract
+command: recording the end with that outcome ends the run's contract and closes its provenance
+record, and `start-run.mjs --resume={{RUN_ID}}` puts the contract back. On the `run.mjs` route the
+driver does both.
 
 Do not propose a follow-up run.
 

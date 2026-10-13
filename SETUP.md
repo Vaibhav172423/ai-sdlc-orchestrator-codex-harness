@@ -54,6 +54,13 @@ Confirm with `codex plugin list --json`; then `$mmo-codex:greenfield` and the re
 from any directory. Installed this way you can **skip step 6** — codex loads a plugin's skills
 directly, so nothing needs linking.
 
+**Trust the write hook once, for brownfield runs.** The plugin ships a write hook that holds a
+brownfield run to the scope confirmed at its Gate 0, and Codex runs a plugin hook only once it is
+trusted. The next time Codex starts it asks about the new hook: "Trust all and continue" trusts
+it, and so does `/hooks` inside a session. Until then every brownfield run in a session stops
+right after Gate 0 with "The write guard did not run in this session". A plugin update that
+changes the hook's entry drops that trust, and the same step restores it.
+
 You still need the credentials in step 4 and a policy in step 5, and the bundled server has to be
 built once: run `node plugin/codex/verify-setup.mjs --fix` from the clone the marketplace points
 at (the install references that directory rather than copying the built server).

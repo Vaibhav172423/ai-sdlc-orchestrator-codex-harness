@@ -93,7 +93,8 @@ A PreToolUse hook on `apply_patch` and `Bash`. The script only reads the call an
 | Right after | `--assert-guard-live` | Passes when the decision log holds a row for the run stamped after the freeze. Otherwise ends the run and exits 2, saying the guard did not run. |
 | Gate 4 answered | `--close --run-id=<id>` | Needs an accepted Gate 4 or an abort in `runs/<id>/gates.jsonl`. Writes the lock's end record, closes `provenance.json`, then switches the contract off. |
 | The person ends a run | `--abandon --run-id=<id> [--reason=<text>]` | The same end, as `aborted`. Frees a project held by a killed session or a changed contract. |
-| Headless run end, `--resume` | `endRun()`, `reopenRun()` | Exported for `run.mjs`. A stopped run reopens with its frozen bytes and its provenance record. |
+| Any other run end | `endRun()` | `run-finalize.mjs` calls it with the run's outcome, from `run.mjs` and from `end-run.mjs`. A run that never froze, or whose close-out ended it, is left as it is. |
+| `--resume` | `reopenRun()` | `run.mjs --resume` and `start-run.mjs --resume` call it before anything runs. A stopped run reopens with its frozen bytes and its provenance record; one that ended `completed` or `aborted` is refused (exit 2). A fresh brownfield `run.mjs` run is refused before spending while another run holds the project. |
 
 **Rule order** for each path a write names, judged as written and again with every link resolved:
 
@@ -110,7 +111,7 @@ A PreToolUse hook on `apply_patch` and `Bash`. The script only reads the call an
 
 A contract binds while it is active and its run's lock has not ended; a contract with no lock binds while active. Only `<git root>/.sdlc/local/write-contract.json` counts: a contract in a subfolder or in a folder that is not a git root binds nothing. While the session's project is bound, a write outside it, or through a link that leads out of it, is refused.
 
-**Two wirings, one entry.** `plugin/hooks/hooks.json` holds one group, so Codex saves one trust entry, `mmo-codex@tilicho-ai-labs:hooks/hooks.json:pre_tool_use:0:0`. Trust survives version bumps and script changes, and is lost when the entry's command, matcher, timeout or status message changes. `plugin/codex/hook-wiring.mjs` builds `run.mjs`'s session flags from the same file, with `--wired-by=run` on the command, `features.hooks=true`, and an inline `hooks.state` table that switches the installed plugin's copy off for the run.
+**Two wirings, one entry.** `plugin/hooks/hooks.json` holds one group, so Codex saves one trust entry, `mmo-codex@tilicho-ai-labs:hooks/hooks.json:pre_tool_use:0:0`. Trust survives version bumps and script changes, and is lost when the entry's command, matcher, timeout or status message changes. `plugin/codex/hook-wiring.mjs` builds `run.mjs`'s session flags from the same file, with `--wired-by=run` on the command, `features.hooks=true`, and an inline `hooks.state` table that switches the installed plugin's copy off for the run. The bridge's `CodexCliAdapter` passes the same `hooks.state` table to its nested read-only `codex exec`, so the hook does not start for a judgment worker's tool calls.
 
 **The decision log.** `.sdlc/local/guard-decisions.jsonl` exists because a denied call leaves no trace in the Codex event stream. Every call is recorded while a contract binds; a refusal with no binding contract only where `.sdlc/` already exists. Each row carries `ts`, `decision`, `reason`, `path`, `run_id`, `tool_name` and `wired_by`, and an allow row for a call that writes files carries `snapshots`.
 

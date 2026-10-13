@@ -73,3 +73,9 @@ test("hookArgs is the argv fragment for exec and exec resume", () => {
   assert.equal(args.length % 2, 0);
   for (let i = 0; i < args.length; i += 2) assert.equal(args[i], "-c");
 });
+
+test("the bridge's nested codex exec switches off the same hook entry run.mjs does", async () => {
+  const dist = join(REPO_ROOT, "plugin", "mcp", "model-dispatch", "dist", "adapters", "CodexCliAdapter.js");
+  const { PLUGIN_HOOKS_OFF_CONFIG } = await import(dist);
+  assert.equal(PLUGIN_HOOKS_OFF_CONFIG, pluginHooksOffConfig(), "a changed hooks.json entry needs the bridge's copy changed too");
+});

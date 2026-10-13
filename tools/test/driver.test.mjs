@@ -13,7 +13,7 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync, writeFileSync, readFileSync, existsSync } from "node:fs";
+import { copyFileSync, mkdirSync, mkdtempSync, rmSync, writeFileSync, readFileSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -48,6 +48,7 @@ import {
   runDispatch,
 } from "../../plugin/codex/dispatch.mjs";
 import { resolveRunPolicy } from "../../plugin/codex/run-policy.mjs";
+import { pluginHooks, pluginHooksOffConfig, sessionHookConfig } from "../../plugin/codex/hook-wiring.mjs";
 
 function tmp() {
   return mkdtempSync(join(tmpdir(), "driver-test-"));
@@ -57,11 +58,13 @@ function cleanup(dir) {
 }
 
 const PIN = { model: "gpt-5.6-terra", effort: "high" };
+const PLUGIN_DIR = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "plugin");
+const HOOKS_OFF = pluginHooksOffConfig();
 
 // ── run.mjs: the pinned invocation ───────────────────────────────────────
 
 test("buildCodexArgs carries every pin from the verification doc", () => {
-  const argv = buildCodexArgs({ pin: PIN, promptText: "do the thing", hookPath: "/h.mjs" });
+  const argv = buildCodexArgs({ pin: PIN, promptText: "do the thing" });
   assert.ok(argv.includes("--json"), "telemetry capture depends on --json");
   assert.equal(argv[argv.indexOf("-m") + 1], "gpt-5.6-terra");
   assert.ok(argv.includes('model_reasoning_effort="high"'));
@@ -70,7 +73,7 @@ test("buildCodexArgs carries every pin from the verification doc", () => {
 });
 
 test("buildCodexArgs sets the sandbox network flag — without it the bridge subprocess is silently killed", () => {
-  const argv = buildCodexArgs({ pin: PIN, promptText: "x", hookPath: "/h.mjs" });
+  const argv = buildCodexArgs({ pin: PIN, promptText: "x" });
   assert.ok(
     argv.includes("sandbox_workspace_write.network_access=true"),
     "the sandbox finding in the verification doc makes this load-bearing, not optional",
@@ -78,23 +81,38 @@ test("buildCodexArgs sets the sandbox network flag — without it the bridge sub
 });
 
 test("buildCodexArgs puts the prompt last, behind a bare -- separator", () => {
-  const argv = buildCodexArgs({ pin: PIN, promptText: "---\nname: x\n---\nbody", hookPath: "/h.mjs" });
+  const argv = buildCodexArgs({ pin: PIN, promptText: "---\nname: x\n---\nbody" });
   assert.equal(argv[argv.length - 2], "--", "the separator must immediately precede the prompt");
   assert.equal(argv[argv.length - 1], "---\nname: x\n---\nbody");
 });
 
-test("buildCodexArgs registers the write-contract hook on BOTH apply_patch and Bash", () => {
-  const argv = buildCodexArgs({ pin: PIN, promptText: "x", hookPath: "/h.mjs" });
+test("buildCodexArgs wires the plugin's own hook entry for apply_patch and Bash, marked as run.mjs's", () => {
+  const argv = buildCodexArgs({ pin: PIN, promptText: "x" });
   const hookArg = argv.find((a) => typeof a === "string" && a.startsWith("hooks.PreToolUse="));
   assert.ok(hookArg, "a PreToolUse hook config must be present");
-  assert.match(hookArg, /matcher="apply_patch"/, "apply_patch is the model's default edit tool");
-  assert.match(hookArg, /matcher="Bash"/, "Bash covers shell-redirect writes");
+  assert.match(hookArg, /matcher="apply_patch\|Bash"/, "apply_patch is the model's default edit tool; Bash covers shell writes");
+  assert.match(hookArg, /write-contract-check\.mjs\\" --wired-by=run"/);
+  assert.ok(argv.includes("features.hooks=true"), "a person's [features] hooks=false would silence the guard");
+  assert.ok(argv.includes(HOOKS_OFF), "the installed plugin's copy is off, so each call is judged once");
+  assert.ok(argv.includes("--dangerously-bypass-hook-trust"), "session hooks are untrusted, and skipped silently without it");
+  assert.ok(!argv.some((a) => String(a).includes('hooks.state."')), "a dotted quoted key does nothing");
+  for (const flag of ["features.hooks=true", HOOKS_OFF]) assert.equal(argv[argv.indexOf(flag) - 1], "-c", flag);
+  assert.ok(argv.indexOf(HOOKS_OFF) < argv.indexOf("--"));
 });
 
-test("buildCodexArgs quotes a hook path containing spaces — an unquoted one fails OPEN", () => {
-  const argv = buildCodexArgs({ pin: PIN, promptText: "x", hookPath: "/a b/hook.mjs" });
+test("buildCodexArgs quotes a plugin root containing spaces — an unquoted one fails OPEN", () => {
+  const argv = buildCodexArgs({ pin: PIN, promptText: "x", pluginRoot: PLUGIN_DIR });
   const hookArg = argv.find((a) => typeof a === "string" && a.startsWith("hooks.PreToolUse="));
-  assert.match(hookArg, /command="node '\/a b\/hook\.mjs'"/);
+  assert.equal(hookArg, sessionHookConfig(pluginHooks(PLUGIN_DIR), PLUGIN_DIR));
+  const dir = tmp();
+  try {
+    const root = join(dir, "TL ai labs", "plugin");
+    mkdirSync(join(root, "hooks"), { recursive: true });
+    copyFileSync(join(PLUGIN_DIR, "hooks", "hooks.json"), join(root, "hooks", "hooks.json"));
+    const spaced = buildCodexArgs({ pin: PIN, promptText: "x", pluginRoot: root });
+    const command = `node \\"${root}/codex/hooks/write-contract-check.mjs\\" --wired-by=run`;
+    assert.ok(spaced.some((a) => a.includes(`command="${command}"`)), spaced.join("\n"));
+  } finally { cleanup(dir); }
 });
 
 test("buildCodexArgs grants CODEX_HOME as writable, so a nested codex exec can start", () => {
@@ -104,15 +122,15 @@ test("buildCodexArgs grants CODEX_HOME as writable, so a nested codex exec can s
   // system", and every judgment dispatch fails.
   // Expressed as a config key rather than --add-dir: `codex exec resume`
   // rejects the flag, and both invocations must grant the same root.
-  const argv = buildCodexArgs({ pin: PIN, promptText: "x", hookPath: "/h", codexHome: "/home/u/.codex" });
+  const argv = buildCodexArgs({ pin: PIN, promptText: "x", codexHome: "/home/u/.codex" });
   assert.ok(
     argv.some((a) => typeof a === "string" && a.includes("writable_roots") && a.includes("/home/u/.codex")),
   );
 });
 
 test("buildCodexArgs passes -C only when a cwd is given", () => {
-  assert.ok(!buildCodexArgs({ pin: PIN, promptText: "x", hookPath: "/h" }).includes("-C"));
-  const withCwd = buildCodexArgs({ pin: PIN, promptText: "x", hookPath: "/h", cwd: "/proj" });
+  assert.ok(!buildCodexArgs({ pin: PIN, promptText: "x" }).includes("-C"));
+  const withCwd = buildCodexArgs({ pin: PIN, promptText: "x", cwd: "/proj" });
   assert.equal(withCwd[withCwd.indexOf("-C") + 1], "/proj");
 });
 
@@ -658,6 +676,7 @@ test("a resumed turn keeps the pin, the sandbox and the write-contract hook", ()
   assert.ok(args.includes(`model_reasoning_effort="${PIN.effort}"`));
   assert.ok(args.includes(`sandbox_mode="${SANDBOX_MODE}"`), "sandbox must survive a resume");
   assert.ok(args.some((a) => a.includes("write-contract-check.mjs")), "hook must survive a resume");
+  assert.ok(args.includes("features.hooks=true") && args.includes(HOOKS_OFF), "and so must its switches");
   assert.ok(args.some((a) => a.includes("network_access=true")), "bridge needs the network grant");
 });
 
@@ -727,10 +746,10 @@ test("a gate answer is passed through as the person's words, with the gate mode"
 
 test("buildCodexArgs passes --skip-git-repo-check only when asked, right after --json", () => {
   for (const resumeThreadId of [null, "abc-123"]) {
-    const argv = buildCodexArgs({ pin: PIN, promptText: "x", hookPath: "/h", skipGitRepoCheck: true, resumeThreadId });
+    const argv = buildCodexArgs({ pin: PIN, promptText: "x", skipGitRepoCheck: true, resumeThreadId });
     assert.equal(argv[argv.indexOf("--json") + 1], "--skip-git-repo-check");
     assert.ok(argv.indexOf("--skip-git-repo-check") < argv.indexOf("--"));
-    assert.ok(!buildCodexArgs({ pin: PIN, promptText: "x", hookPath: "/h", resumeThreadId }).includes("--skip-git-repo-check"));
+    assert.ok(!buildCodexArgs({ pin: PIN, promptText: "x", resumeThreadId }).includes("--skip-git-repo-check"));
   }
 });
 

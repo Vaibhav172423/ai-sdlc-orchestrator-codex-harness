@@ -215,6 +215,9 @@ What differs from greenfield:
 - **Gate 0 confirms scope** before anything is written. The file allowlist and the off-limits set
   are agreed there, and `.sdlc/local/write-contract.json` is written from that approval.
 - **Every write is checked against the contract** by a hook, before it happens.
+- **The run's end switches the contract off**, whatever the outcome, so your own edits are not
+  refused after a run stops. `--resume` puts the frozen contract back; a run that ended
+  `completed` or `aborted` does not resume.
 - **Every file the run changes is recorded** in `.sdlc/runs/<run-id>/provenance.json`. The write
   hook snapshots a file before the run's first write to it, backing up one that held uncommitted
   or untracked content, and the end of the run reconciles the record against `git status` and the

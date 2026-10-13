@@ -471,7 +471,7 @@ On `approved`, freeze the write contract with `write-contract.mjs`, as step 5 of
 guide, `{{OUTPUT_DIR}}/skills/brownfield-guide.md`, shows:
 
 ```bash
-node '{{PLUGIN_ROOT}}/scripts/write-contract.mjs' --freeze --run-id=<run-id> \
+node '{{PLUGIN_ROOT}}/scripts/write-contract.mjs' --freeze --run-id={{RUN_ID}} \
   --allowlist='<allowlist JSON>' --off-limits='<extra off-limits JSON>' --intent=<intent> \
   --project-root='{{PROJECT_ROOT}}'
 ```
@@ -480,7 +480,7 @@ Then update `intent_brief.md` with the final scope, and prove the write hook run
 command of its own:
 
 ```bash
-node '{{PLUGIN_ROOT}}/scripts/write-contract.mjs' --assert-guard-live --run-id=<run-id> --project-root='{{PROJECT_ROOT}}'
+node '{{PLUGIN_ROOT}}/scripts/write-contract.mjs' --assert-guard-live --run-id={{RUN_ID}} --project-root='{{PROJECT_ROOT}}'
 ```
 
 Never put the freeze and the check in one shell call. The hook judges a call once, before it
@@ -497,11 +497,12 @@ non-zero, print its message and stop. While the contract is live the run writes 
 `.sdlc/runs/<run-id>/` folder and, outside it, only the allowlist.
 
 **Ending a brownfield run.** After the user accepts Gate 4 and its `accepted` line is in
-`gates.jsonl`, `write-contract.mjs --close --run-id=<run-id>` ends the run, closes its provenance
+`gates.jsonl`, `write-contract.mjs --close --run-id={{RUN_ID}}` ends the run, closes its provenance
 record and switches the contract off, before the ledger rows are written. An abort at any gate
-appends that gate's `aborted` line, then runs `write-contract.mjs --abandon --run-id=<run-id>
+appends that gate's `aborted` line, then runs `write-contract.mjs --abandon --run-id={{RUN_ID}}
 --reason='aborted at gate <N>'`. When `--close` refuses, print its message and stop: it names the
-`--abandon` command the user runs to end the run.
+`--abandon` command the user runs to end the run. Any other stop needs no contract command: the
+end record (see "Run logging") ends the contract with that outcome, and a resume puts it back.
 
 **Default the AI-coexistence answer to OFF-LIMITS.** A user who hits `approved` without reading
 must not accidentally authorize the harness to rewrite their `.cursor/rules` or their custom

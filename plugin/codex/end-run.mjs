@@ -2,7 +2,8 @@
 /**
  * Records how a run started by start-run.mjs ended: updates run.json, logs
  * run.end to the run's orchestrator.log, then runs the run-end steps
- * (finalizeRun with route 'interactive').
+ * (finalizeRun with route 'interactive'), which end a brownfield run's write
+ * contract with this outcome unless its close-out already did.
  *
  * Usage:
  *   node end-run.mjs --run-dir=<path> --outcome=<outcome> [--reason=<one line>]
@@ -112,6 +113,7 @@ export async function main(argv = [], deps = {}) {
   const { run, runDir, repeated } = recorded;
   let code = 0;
   let notes = [];
+  let contractLines = [];
   try {
     const { finalizeRun } = await (deps.loadFinalize ?? (() => import("./run-finalize.mjs")))();
     const out = await finalizeRun({
@@ -127,6 +129,7 @@ export async function main(argv = [], deps = {}) {
       codeDir: run.code_dir,
     });
     notes = Array.isArray(out?.notes) ? out.notes : [];
+    contractLines = Array.isArray(out?.contractLines) ? out.contractLines : [];
   } catch (err) {
     stderr.write(
       `end-run: the run's end is recorded, but a run-end step failed: ${err?.message ?? err}. Fix it and re-run the same command.\n`,
@@ -136,6 +139,7 @@ export async function main(argv = [], deps = {}) {
   stdout.write(`run ${run.run_id}: ${run.outcome}${run.reason ? ` — ${run.reason}` : ""}\n`);
   if (repeated) stdout.write(`  already recorded at ${run.ended_at}; the record is kept and the run-end steps ran again\n`);
   for (const n of notes) stderr.write(`  ${n}\n`);
+  for (const line of contractLines) stdout.write(`  ${line}\n`);
   stdout.write(`  run folder:  ${runDir}\n`);
   const report = reportScript(pluginRoot);
   if (report) stdout.write(`  Cost report: node ${shellQuote(report)} ${shellQuote(runDir)} --markdown\n`);

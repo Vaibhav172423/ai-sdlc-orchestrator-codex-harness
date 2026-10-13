@@ -58,11 +58,13 @@ import {
   STDOUT_LINE_MAX,
 } from "./run-record.mjs";
 import { finalizeRun, regenerateDriverFiles } from "./run-finalize.mjs";
+import { hookArgs } from "./hook-wiring.mjs";
+import { abandonCommand, ContractRefusal, reopenRun } from "../scripts/write-contract.mjs";
+import { liveLock, readContract, readLock } from "../scripts/lib/contract-lock.mjs";
 import { renderPrompt, renderSkills } from "./render.mjs";
 
 const CODEX_DIR = dirname(fileURLToPath(import.meta.url));
 const PLUGIN_ROOT = dirname(CODEX_DIR);
-const WRITE_CONTRACT_HOOK = join(CODEX_DIR, "hooks", "write-contract-check.mjs");
 export const WRITE_MANIFEST_MJS = join(PLUGIN_ROOT, "scripts", "write-manifest.mjs");
 
 /** Sandbox and approval pins — see the verification doc's "Pins chosen". */
@@ -219,7 +221,8 @@ export { renderPrompt, renderSkills, RENDERED_SKILLS } from "./render.mjs";
 export function buildCodexArgs({
   pin,
   promptText,
-  hookPath = WRITE_CONTRACT_HOOK,
+  /** Where the write hook's script lives; its wiring comes from <pluginRoot>/hooks/hooks.json. */
+  pluginRoot = PLUGIN_ROOT,
   cwd,
   codexHome = defaultCodexHome(),
   /** Resume this session instead of starting a new one. See RESUME_PROMPT. */
@@ -227,18 +230,6 @@ export function buildCodexArgs({
   /** Greenfield only: a new app's folder is usually not a git repo, and codex refuses one without this. */
   skipGitRepoCheck = false,
 }) {
-  // The hook path is single-quoted inside the TOML double-quoted command
-  // string: this repo's own checkout path contains spaces ("TL ai labs"),
-  // and an unquoted path splits into separate argv entries when codex runs
-  // the hook — the guard then silently never fires, which is the worst
-  // possible failure for a write gate (it fails OPEN, invisibly).
-  const quotedHook = `'${hookPath}'`;
-  const hookConfig =
-    `hooks.PreToolUse=[` +
-    `{matcher="apply_patch",hooks=[{type="command",command="node ${quotedHook}"}]},` +
-    `{matcher="Bash",hooks=[{type="command",command="node ${quotedHook}"}]}` +
-    `]`;
-
   return [
     "exec",
     // `resume <id>` must follow `exec` and precede the prompt. Everything
@@ -275,8 +266,8 @@ export function buildCodexArgs({
     // Writable so a nested `codex exec` (the seat-backed dispatch path) can
     // initialise its own app-server state. See defaultCodexHome above.
     ...(codexHome ? ["-c", `sandbox_workspace_write.writable_roots=["${codexHome}"]`] : []),
-    "-c",
-    hookConfig,
+    // The plugin's own hook entry, wired for this session, and the installed copy off so a call is judged once.
+    ...hookArgs(pluginRoot),
     "--",
     promptText,
   ];
@@ -660,6 +651,25 @@ function shellQuote(value) {
   return `'${String(value).replace(/'/g, "'\\''")}'`;
 }
 
+/**
+ * Why a brownfield run other than `runId` would be refused its Gate 0 freeze in
+ * this project, or null: another run's live lock, or an active contract no
+ * ended lock records.
+ */
+export function contractHeldBy(projectRoot, runId) {
+  const live = liveLock(projectRoot);
+  if (live && live.run_id !== runId) {
+    return `run ${live.run_id} is live and holds this project's write contract, so this run's Gate 0 freeze would be refused. ` +
+      `Resume that run (--resume=${live.run_id}), or end it: ${abandonCommand(live.run_id, projectRoot)}`;
+  }
+  if (live) return null;
+  const contract = readContract(projectRoot);
+  if (contract?.active !== true || contract.run_id === runId || readLock(projectRoot, contract.run_id)?.ended_at) return null;
+  const id = typeof contract.run_id === "string" && contract.run_id ? contract.run_id : null;
+  return `an active write contract${id ? ` for run ${id}` : ""} that no lock records holds this project, so this run's Gate 0 ` +
+    `freeze would be refused.${id ? ` End it: ${abandonCommand(id, projectRoot)}` : ""}`;
+}
+
 /** Where a path flag that names a place outside the project (a brief, a prompt, a binary) resolves: the shell's cwd. */
 function fromCwd(cwd, value) {
   return isAbsolute(value) ? value : resolve(cwd, value);
@@ -790,6 +800,10 @@ async function runDriver(args, deps) {
         "brownfield needs git (git init).",
     );
   }
+  if (runMode !== "greenfield") {
+    const held = contractHeldBy(projectRoot, runId);
+    if (held) throw new UsageError(held);
+  }
 
   // Before anything is rendered: the prompt's --policy, the pin, the driver's
   // rates and the cap all come from this one resolution, the bridge's own.
@@ -854,6 +868,19 @@ async function runDriver(args, deps) {
       ),
     );
     return 0;
+  }
+
+  if (run.resume && runMode !== "greenfield") {
+    // The run end switched the contract off; the resumed conductor writes under it again.
+    let reopened;
+    try {
+      reopened = reopenRun({ projectRoot, runId });
+    } catch (err) {
+      if (err instanceof ContractRefusal) throw new UsageError(err.message);
+      throw err;
+    }
+    if (reopened.reopened) say(`run ${runId}: its write contract binds again, as frozen at Gate 0.`);
+    if (reopened.provenance?.error) warn(`run ${runId}: provenance.json was not reopened: ${reopened.provenance.error}`);
   }
 
   mkdirSync(runDir, { recursive: true });
@@ -1191,7 +1218,7 @@ async function runDriver(args, deps) {
     });
     // Read before the run end rewrites manifest.json with the outcome as its status.
     const summaryWhy = outcome === "completed" ? null : completionEvidence(runDir, runStartedAtMs).summaryReason;
-    const { driverManifest: m, notes: finalNotes } = await finalizeRun({
+    const { driverManifest: m, notes: finalNotes, contractLines } = await finalizeRun({
       projectRoot,
       runDir,
       runId,
@@ -1221,6 +1248,7 @@ async function runDriver(args, deps) {
     }
     if (summaryWhy && existsSync(join(runDir, "SUMMARY.md"))) warn(`  SUMMARY.md does not count as the final report: ${summaryWhy}`);
     for (const n of finalNotes) warn(`  ${n}`);
+    for (const line of contractLines) say(`  ${line}`);
     if (m.pin_rejection) warn(`  the codex CLI rejected the pinned model or effort — ${m.pin_rejection}`);
     for (const w of m.codex_warnings ?? []) warn(`  codex warning: ${w}`);
     const atLeast = m.driver_turns_incomplete ? "at least " : "";

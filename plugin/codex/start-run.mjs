@@ -3,7 +3,8 @@
  * Starts a run from a `$mmo-codex:*` skill in a codex session: checks the
  * session runs the policy's driver pin, creates the run folder, renders the
  * playbooks into `<run folder>/skills/` with real paths, writes run.json,
- * logs run.start, and prints where everything is.
+ * logs run.start, and prints where everything is. A resumed brownfield run
+ * gets back the write contract its end switched off.
  *
  * Usage:
  *   node start-run.mjs --mode=greenfield|brownfield [--project-root=<path>]
@@ -37,6 +38,7 @@ import {
 } from "./interactive-run.mjs";
 import { assertResumePolicy, policyRecord, resolveRunPolicy, RunRefusal } from "./run-policy.mjs";
 import { checkSessionModel } from "./session-model.mjs";
+import { ContractRefusal, reopenRun } from "../scripts/write-contract.mjs";
 import { isRunId, runDirFor } from "../scripts/lib/run-id.mjs";
 import { isMain } from "../scripts/lib/is-main.mjs";
 import { configureSinks, log } from "../scripts/lib/log.mjs";
@@ -238,6 +240,17 @@ export async function startRun(args, deps = {}) {
     throw e;
   }
 
+  let contract = null;
+  if (earlier && mode === "brownfield") {
+    try {
+      contract = reopenRun({ projectRoot, runId, now });
+    } catch (err) {
+      if (err instanceof ContractRefusal) throw new UsageError(err.message);
+      throw err;
+    }
+    if (contract.provenance?.error) warn(`start-run: provenance.json was not reopened: ${contract.provenance.error}`);
+  }
+
   const values = {
     PLUGIN_ROOT: pluginRoot,
     PROJECT_ROOT: projectRoot,
@@ -326,6 +339,7 @@ export async function startRun(args, deps = {}) {
     playbook,
     brownfield_guide: mode === "brownfield" ? guide : null,
     read_first: mode === "brownfield" ? guide : playbook,
+    write_contract: contract?.live ? (contract.reopened ? "reopened" : "live") : null,
     end_run:
       `node ${shellQuote(join(pluginRoot, "codex", "end-run.mjs"))} --run-dir=${shellQuote(runDir)} ` +
       "--outcome=<outcome> --reason='<one line>'",
@@ -339,7 +353,7 @@ export function formatStart(result) {
   ];
   const keys = [
     "run_id", "run_dir", "project_root", "code_dir", "brief", "intent", "intent_brief", "policy",
-    "plugin_root", "playbook", "brownfield_guide", "end_run",
+    "write_contract", "plugin_root", "playbook", "brownfield_guide", "end_run",
   ];
   for (const key of keys) {
     if (result[key] === null || result[key] === undefined) continue;

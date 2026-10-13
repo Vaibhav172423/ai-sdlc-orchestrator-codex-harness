@@ -15,7 +15,7 @@ import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { CodexCliAdapter, parseCodexStream } from "../dist/adapters/CodexCliAdapter.js";
+import { CodexCliAdapter, parseCodexStream, PLUGIN_HOOKS_OFF_CONFIG } from "../dist/adapters/CodexCliAdapter.js";
 
 // Real `codex exec --json` streams from codex-cli 0.160.1 against a localhost
 // mock: `reconnect-only` dropped the first response stream and recovered;
@@ -124,6 +124,16 @@ test("buildArgs carries the model, the effort pin, and a read-only sandbox", () 
   assert.ok(args.includes('model_reasoning_effort="high"'));
   assert.equal(args[args.indexOf("--sandbox") + 1], "read-only", "a judgment call has no business writing files");
   assert.ok(args.includes("--skip-git-repo-check"), "dispatch may run outside a repo");
+});
+
+test("buildArgs switches the installed plugin's write hook off for the nested exec, before the prompt", () => {
+  const adapter = new CodexCliAdapter(BASE_CONFIG, { spawnFn: fakeSpawn(() => ({})) });
+  const args = adapter.buildArgs("/s.json", "/o.txt", "prompt");
+  const at = args.indexOf(PLUGIN_HOOKS_OFF_CONFIG);
+  assert.ok(at > 0, "a trusted plugin hook would otherwise start for every tool call of a read-only worker");
+  assert.equal(args[at - 1], "-c");
+  assert.ok(at < args.indexOf("--"));
+  assert.match(PLUGIN_HOOKS_OFF_CONFIG, /^hooks\.state=\{"[^"]+:hooks\/hooks\.json:pre_tool_use:0:0"=\{enabled=false\}\}$/);
 });
 
 test("buildArgs puts the prompt behind a bare -- separator", () => {
