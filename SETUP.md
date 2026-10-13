@@ -27,9 +27,9 @@ the manual route, or to work inside a clone.
 
 Install or upgrade codex with `npm install -g @openai/codex`.
 
-If `codex login status` says you are not logged in, run `codex login` (ChatGPT seat) or export
-`OPENAI_API_KEY`, which the CLI also accepts. The harness never reads `~/.codex/auth.json`
-itself and never prints its contents.
+If `codex login status` says you are not logged in, run `codex login` (ChatGPT seat), or sign
+in with an API key: `printenv OPENAI_API_KEY | codex login --with-api-key`. The harness never
+reads `~/.codex/auth.json` itself and never prints its contents.
 
 ## 2. Choose a route
 
@@ -149,7 +149,7 @@ node plugin/scripts/setup-policy.mjs --policy=gpt-plus-flash
 | `gpt-plus-flash` | GPT via the OpenAI API | Gemini Flash | Vendor-metered throughout — the policy of record |
 | `gpt-plus-flash-38` | GPT via the OpenAI API | Gemini 3.8 Flash | Vendor-metered throughout |
 | `gpt-seat-plus-flash` | GPT via your local `codex exec` (ChatGPT seat) | Gemini Flash | Judgment cost is **modeled**, not metered |
-| `flash-agsdk-only` | — | Gemini Flash via the agent worker | Mechanical only |
+| `flash-agsdk-only` | Gemini Flash via the agent worker | Gemini Flash via the agent worker | Every dispatch on the agent door; the conductor still runs on the GPT pin |
 
 `gpt-plus-flash` is the default and the one every published cost figure comes from.
 
@@ -206,33 +206,45 @@ Blocking problems make the harness unusable and exit non-zero. Warnings do not.
 
 ## 8. First run
 
-Interactively, inside codex — type `$` to mention a skill, or `/skills` to browse:
+Interactively, inside codex. Start codex in the project folder on the conductor's pin, with the
+sandbox dispatch needs, then type `$` to mention a skill, or `/skills` to browse:
+
+```bash
+codex -s danger-full-access -m gpt-5.6-terra -c model_reasoning_effort="high"
+```
 
 ```
+$mmo-codex:setup          check the install and pick this project's policy
 $mmo-codex:greenfield     generate a new app from a brief, in an empty folder
 $mmo-codex:brownfield     work on an existing repo
 $mmo-codex:policy         show or change this project's policy
 ```
 
-Headless, from a shell:
+[docs/tutorial-first-run.md](docs/tutorial-first-run.md) walks through a greenfield run and a
+brownfield run, gate by gate.
+
+Headless, from a shell, to check the cost figures against codex's own token count:
 
 ```bash
 node plugin/codex/run.mjs \
-  --brief=docs/brief-template.md \
-  --project-root=. \
-  --output-dir=.sdlc \
+  --brief=examples/quick-demo/brief.md \
+  --project-root="$HOME/mmo-runs/ping" \
+  --mode=greenfield \
   --policy=gpt-plus-flash \
+  --gates=auto-approve \
   --dry-run
 ```
 
-`--dry-run` renders the conductor prompt and the `codex exec` argv and exits without spending
-anything. Drop it to run for real. Add `--gates=auto-approve` for an unattended run.
-
-Afterwards:
+`--dry-run` prints the resolved policy, the pin, the run folder and the `codex exec` argv, and
+exits without spending anything. Create the project folder first (`mkdir -p ~/mmo-runs/ping`),
+then drop `--dry-run` to run for real. Afterwards:
 
 ```bash
-node tools/report.mjs .sdlc --markdown
+node plugin/scripts/report.mjs "$HOME/mmo-runs/ping/.sdlc" --markdown
 ```
+
+[docs/headless-runs.md](docs/headless-runs.md) has the whole procedure, including the token
+cross-check and the OpenAI usage dashboard check.
 
 ## Troubleshooting
 
@@ -240,7 +252,7 @@ node tools/report.mjs .sdlc --markdown
 exists because the capability findings this harness relies on were measured against 0.151.0.
 
 **A skill is not offered when you type `$`** — run `node plugin/codex/verify-setup.mjs --fix`
-(step 5), then restart codex, which caches the skill list at startup. Note that the eight skills
+(step 6), then restart codex, which caches the skill list at startup. Note that the eight skills
 which start a full billable run are deliberately excluded from implicit matching and so do not
 appear in suggestions; invoke them by name.
 
@@ -263,7 +275,7 @@ node plugin/scripts/uninstall-cleanup.mjs --dry-run   # see what would go
 node plugin/scripts/uninstall-cleanup.mjs             # do it, with prompts
 ```
 
-It removes `.sdlc/` (per-run records and telemetry), `.agents/` (the skill links from step 5),
+It removes `.sdlc/` (per-run records and telemetry), the skill links under `.agents/skills/` (step 6),
 and the `model-dispatch` MCP registration in `~/.codex/config.toml`. It asks before each, and
 defaults to *no* on `.sdlc/` since that one may hold committed history. `--yes` skips the
 prompts, `--keep-mcp` leaves the registration alone, and `--repo=<path>` targets another

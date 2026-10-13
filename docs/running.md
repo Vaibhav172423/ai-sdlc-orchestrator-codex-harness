@@ -2,7 +2,7 @@
 
 Two ways to run the pipeline, what the gates ask you, and what lands on disk.
 
-> **For:** running the harness once it is set up. **Also see:** [../SETUP.md](../SETUP.md) · [tutorial-first-run.md](tutorial-first-run.md) · [methodology.md](methodology.md) · [brief-template.md](brief-template.md)
+> **For:** running the harness once it is set up. **Also see:** [../SETUP.md](../SETUP.md) · [tutorial-first-run.md](tutorial-first-run.md) · [headless-runs.md](headless-runs.md) · [methodology.md](methodology.md) · [brief-template.md](brief-template.md)
 
 ---
 
@@ -96,22 +96,36 @@ the policy file stays a faithful record of how a run was priced and routed. Both
 same model at the same rates; the `model_id` on each telemetry event is what says which ran.
 Details in [methodology.md](methodology.md#the-mechanical-tier-has-two-doors).
 
-## Two shapes
+## Two routes
 
-**Interactive — inside a codex session.** Type `$` to mention a skill, or `/skills` to browse:
+**Interactive — inside a codex session.** This is how you use the harness. Start codex on the
+conductor's pin, with the sandbox dispatch needs:
+
+```bash
+codex -s danger-full-access -m gpt-5.6-terra -c model_reasoning_effort="high"
+```
+
+Then type `$` to mention a skill, or `/skills` to browse:
 
 ```
+$mmo-codex:setup          check the install and pick this project's policy
 $mmo-codex:greenfield     a new app from a brief, in an empty folder
 $mmo-codex:brownfield     work on an existing repo
+$mmo-codex:bugfix         a brownfield job with its type chosen (also docs, test, refactor,
+                          deps, feature-new, feature-extend)
 $mmo-codex:policy         show or change this project's policy
 $mmo-codex:revert         undo a brownfield run
 ```
 
-The skill asks for what it needs, checks the setup before spending anything, and stops at each
-gate for your answer.
+The skill asks for what it needs, checks the setup before spending anything, starts the run with
+`start-run.mjs`, and stops at each gate for your answer in the chat. The run's end
+(`end-run.mjs`) reads the conductor's cost from codex's session file. The walkthrough is
+[tutorial-first-run.md](tutorial-first-run.md).
 
-**Headless — from a shell.** The driver spawns its own conductor and exits when the run
-ends:
+**Headless — from a shell.** `plugin/codex/run.mjs` spawns its own `codex exec` conductor and
+exits when the run ends. It exists to check the cost figures: codex reports the conductor's tokens
+on its `--json` stream as well as in its session file, and the run's end compares the two token
+for token. [headless-runs.md](headless-runs.md) is the procedure. From a clone:
 
 ```bash
 node plugin/codex/run.mjs \
@@ -127,12 +141,15 @@ The run's record lands in `.sdlc/runs/pass1/`.
 
 ### Which to use
 
-Interactive when you want to answer the gates and steer. Headless for CI, for a replay of a
-known-good run, or when you want the whole thing logged to files and nothing else.
+Interactive for real work: you answer the gates and steer. Headless to check the cost figures
+against codex's own count, for CI, or for a replay of a known-good run.
 
 They are not interchangeable in one respect: if you are **already inside a codex session** and
 invoke `$mmo-codex:pass`, it does the work itself rather than shelling out to `run.mjs`. Spawning
 the driver from inside a session would bill the same work twice.
+
+The rest of this page describes both routes. Where a section says `run.mjs`, or names a flag, it
+is the headless route; a session run takes its settings from the skill's questions.
 
 ## Start with `--dry-run`
 
@@ -210,7 +227,8 @@ delegate to the same operating manual, so the alias only saves you a question.
 
 What differs from greenfield:
 
-- **A git repository is required.** Discovery stops with git-init guidance outside one.
+- **A git repository is required.** `start-run.mjs` in a session, and `run.mjs` from a shell, refuse
+  a folder that is not one before anything is spent.
 - **Discovery runs first**, producing `discovery.md` and a baseline snapshot.
 - **Gate 0 confirms scope** before anything is written. The file allowlist and the off-limits set
   are agreed there, and `.sdlc/local/write-contract.json` is written from that approval.
@@ -245,8 +263,9 @@ and under `auto-approve` it is answered rather than skipped.
 Write a brief following [brief-template.md](brief-template.md) — the requirements and
 architecture phases expect its section headings — save it anywhere, and point `--brief` at it.
 
-For a brownfield run you can skip writing one: the interview builds an intent brief from your
-answers and writes it to `intent_brief.md`.
+For a brownfield run in a codex session you can skip writing one: the interview builds an intent
+brief from your answers and writes it to `intent_brief.md` in the run folder. A `run.mjs` run has
+nobody to interview, so it needs `--brief`, or a `brief.md` at the project root.
 
 ## What lands in the run folder
 
@@ -260,7 +279,7 @@ contract and its decision log under `local/`, the baseline, the ledger — stays
 | `packets.json` | Phase 4 | The TaskPackets the run planned |
 | `review.json` | Phase 6 | Senior review findings and refinement packets |
 | `security_review.md` | Phase 8 | Security findings, gated at Gate 3 |
-| `telemetry.jsonl` | every dispatch | One record per model call, vendor-metered |
+| `telemetry.jsonl` | every dispatch | One record per model call, with its cost and that cost's provenance |
 | `manifest.json` | `write-manifest.mjs`: Phase 9, Gate 4, and every run end | Rollup of the whole run, written by code |
 | `SUMMARY.md` | `write-manifest.mjs`: Phase 9, Gate 4, and a completed run's end | Dispatched cost and its split, the conductor's cost, phases, gates, links to artifacts |
 | `gates.jsonl` | each gate | Gate decisions |
@@ -275,13 +294,20 @@ contract and its decision log under `local/`, the baseline, the ledger — stays
 | `driver-stderr.log` | the driver | What codex wrote to stderr, per invocation |
 | `driver-cost-modeled.jsonl` | the driver | The conductor's own token usage, priced per turn |
 | `driver-manifest.json` | the driver | The pins, how the run ended, its exit code, and the driver cost |
+| `driver-session.jsonl` | `start-run.mjs` and every dispatch from a codex shell | The codex thread each call ran in, which names the conductor's session file |
+| `driver-usage.json` | every run end | The conductor's tokens and modeled cost from codex's session file; on a `run.mjs` run, the token-for-token check against the exec stream |
+| `report.md` | every run end | The cost report |
 
 Brownfield adds `discovery.md`, `intent_brief.md`, and `provenance.json`.
 
 ## Reading the cost
 
+Every run end writes `report.md` in the run folder. To render it again from a clone (an installed
+plugin keeps the script at `scripts/report.mjs` in its own folder, and the run's end prints the
+full command as `Cost report:`):
+
 ```bash
-node tools/report.mjs .sdlc/runs/<run-id> --markdown
+node plugin/scripts/report.mjs .sdlc/runs/<run-id> --markdown
 ```
 
 The report lists dispatched work by phase and the driver loop (modeled), adds them into

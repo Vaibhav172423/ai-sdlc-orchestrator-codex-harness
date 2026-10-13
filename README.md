@@ -14,6 +14,18 @@ Two ways to pay for the judgment tier reach the same model at the same effort pi
 
 Every generated file, every telemetry event, and every cost report lands under your project directory. Nothing is uploaded off the machine.
 
+## Quick start
+
+You use it in a codex session:
+
+1. **Install.** Paste `Set up this plugin from this repo - https://github.com/tl-ai-labs/ai-sdlc-orchestrator-codex-harness` into a codex session and approve the commands it runs ([INSTALL.md](INSTALL.md)).
+2. **Start codex in your project** on the conductor's pin, with the sandbox dispatch needs: `codex -s danger-full-access -m gpt-5.6-terra -c model_reasoning_effort="high"`. When codex asks about the plugin's hook, choose "Trust all and continue"; brownfield runs need it.
+3. **Set up the project** with `$mmo-codex:setup`, which checks credentials and records the project's policy.
+4. **Start a run.** `$mmo-codex:greenfield` builds a new app from a brief in an empty folder. `$mmo-codex:brownfield`, or a job alias such as `$mmo-codex:bugfix POST /login returns 500 when the password is missing`, works on an existing repository.
+5. **Answer the gates** in the chat: `approved`, `revise: <what to change>` or `abort`, and `accept` at the end. The run's record is `.sdlc/runs/<run-id>/`, and its cost report is `report.md` there.
+
+The walkthrough is [docs/tutorial-first-run.md](docs/tutorial-first-run.md). To check the cost figures against codex's own token count, run the same pipeline headlessly: [docs/headless-runs.md](docs/headless-runs.md).
+
 ## Architecture
 
 ### System dataflow
@@ -21,12 +33,12 @@ Every generated file, every telemetry event, and every cost report lands under y
 ```mermaid
 flowchart TD
     User["You in a codex session<br/>$mmo-codex:greenfield<br/>$mmo-codex:brownfield<br/>$mmo-codex:pass"]
-    Driver["driver / conductor<br/>codex exec, effort high<br/>reads policy YAML<br/>decomposes into TaskPackets"]
+    Driver["conductor<br/>your codex session, or codex exec under run.mjs<br/>gpt-5.6-terra, effort high<br/>decomposes into TaskPackets"]
     MCP["bundled MCP bridge<br/>routing · adapters<br/>telemetry · cost"]
     GPT["GPT judgment worker<br/>OpenAI adapter, metered<br/>or codex exec on a seat"]
     GemModel["Gemini as a model<br/>one call per packet<br/>AI Studio or ADC"]
     GemAgent["Gemini as an agent<br/>Antigravity SDK<br/>ADC only<br/>tools + directory"]
-    Out[".sdlc/ artifacts<br/>telemetry.jsonl<br/>manifest.json<br/>provenance.json<br/>generated code"]
+    Out[".sdlc/runs/, one folder per run<br/>telemetry.jsonl<br/>manifest.json · report.md<br/>provenance.json<br/>generated code"]
 
     User --> Driver
     Driver --> MCP
@@ -43,7 +55,7 @@ flowchart TD
 
 The highlighted path is where cost drops — mechanical work routed off the judgment tier into the cheaper one. Which door the mechanical tier uses (model vs agent) is picked once at setup; both reach the same model at the same published rates.
 
-Unlike the Claude harness, the driver calls the bridge itself rather than the model calling it as a tool. A model inside `codex exec` has no per-tool binding for an MCP server, so every dispatch in this harness is a shell call the driver makes — see [docs/verification/p1-codex-runtime.md](docs/verification/p1-codex-runtime.md).
+Unlike the Claude harness, the model never calls the bridge as a tool. A model inside codex has no per-tool binding for an MCP server, so the conductor dispatches by running `plugin/codex/dispatch.mjs`, a shell command that opens the MCP connection itself — see [docs/verification/p1-codex-runtime.md](docs/verification/p1-codex-runtime.md).
 
 ### Phase timeline
 
@@ -127,9 +139,9 @@ Four policies ship as selectable:
 | `gpt-plus-flash` (default) | GPT via the OpenAI API | Gemini Flash | Vendor-metered throughout — the policy of record |
 | `gpt-plus-flash-38` | GPT via the OpenAI API | Gemini 3.8 Flash | Vendor-metered throughout |
 | `gpt-seat-plus-flash` | GPT via local `codex exec` on a ChatGPT seat | Gemini Flash | Judgment cost is **modeled**, not metered |
-| `flash-agsdk-only` | — | Gemini Flash via the agent worker | Mechanical only |
+| `flash-agsdk-only` | Gemini Flash via the agent worker | Gemini Flash via the agent worker | Every dispatch on the agent door; the conductor still runs on the GPT pin |
 
-The driver and judgment legs are both GPT but are **not** the same credential: the conductor runs on the CLI's own login, while judgment work dispatches through the bridge as ordinary metered API calls. That separation is deliberate — it is what keeps per-phase cost attribution honest.
+The driver and judgment legs are both GPT but are **not** the same call path: the conductor runs on the codex CLI's own login, while judgment work dispatches through the bridge as metered API calls on `OPENAI_API_KEY`, one telemetry row each. That separation is deliberate — it is what keeps per-phase cost attribution honest.
 
 ### Running without an API key
 
@@ -189,7 +201,7 @@ Set up this plugin from this repo - https://github.com/tl-ai-labs/ai-sdlc-orches
 
 Codex follows [INSTALL.md](INSTALL.md): registers the marketplace, installs the plugin, builds the bundled MCP server, checks credentials, asks which policy this project should use, and reports where things stand. Approve the commands it asks to run — marketplace registration needs network, which the sandbox otherwise blocks.
 
-No new session is needed afterwards. Codex reads its configuration fresh on every invocation, so the skills are live as soon as the install finishes.
+For a run, start a new session the way the next note says. Codex asks about the plugin's write hook when a session starts, and the run itself needs the sandbox and model flags.
 
 Prefer to drive it yourself:
 
@@ -201,11 +213,11 @@ node "$(ls -d ~/.codex/plugins/cache/tilicho-ai-labs/mmo-codex/*/codex/verify-se
 
 `--fix` installs the bridge's dependencies and compiles it — `dist/` is not tracked, so a fresh install cannot dispatch until it is built. Credentials, the Gemini door choice, and the policy picker are covered step by step in [SETUP.md](SETUP.md).
 
-> **Dispatch needs an unsandboxed session.** The bridge is reached by spawning it and talking over pipes, and codex's sandbox denies piped stdio under both its default and `workspace-write` modes. Start codex with `codex -s danger-full-access`, or run the pipeline headlessly, where the driver spawns the bridge outside codex.
+> **Start codex the way a run needs it.** The bridge is reached by spawning it and talking over pipes, and codex's sandbox denies piped stdio under both its default and `workspace-write` modes, so start codex with `-s danger-full-access`. A run also starts only in a session on the conductor's pin, `gpt-5.6-terra` at effort `high`: `codex -s danger-full-access -m gpt-5.6-terra -c model_reasoning_effort="high"`, or `/model` in a session already open.
 
 ## Commands
 
-The workflow ships as 15 Codex skills. In a codex session, type `$` to mention one, or `/skills` to browse. Custom prompts are deprecated in codex, so there is no `/mmo:*` slash-command surface — the reasoning is recorded in [docs/verification/p1-codex-runtime.md](docs/verification/p1-codex-runtime.md).
+The workflow ships as 13 Codex skills you invoke, plus two playbooks (`pipeline` and `brownfield-guide`) that a run renders into its own folder and follows; you never invoke those two. In a codex session, type `$` to mention a skill, or `/skills` to browse. Custom prompts are deprecated in codex, so there is no `/mmo:*` slash-command surface — the reasoning is recorded in [docs/verification/p1-codex-runtime.md](docs/verification/p1-codex-runtime.md).
 
 ### Run the pipeline
 
@@ -213,7 +225,7 @@ The workflow ships as 15 Codex skills. In a codex session, type `$` to mention o
 |---|---|---|
 | [`$mmo-codex:greenfield`](plugin/skills/greenfield/SKILL.md) | Runs the greenfield pipeline. Interviews you for the brief (or reads one you point at), confirms the output path, shows the routing plan, then starts spending. Takes no arguments. | Empty folder + a project brief. Generates a whole new app into `./src/`. |
 | [`$mmo-codex:brownfield`](plugin/skills/brownfield/SKILL.md) | Runs the brownfield pipeline. Hydrates prior state, runs discovery (or resumes), asks for the intent and brief, freezes scope at Gate 0, then executes. Takes no arguments. | Existing repo. Extends the code you already have. |
-| [`$mmo-codex:pass`](plugin/skills/pass/SKILL.md) | Headless twin of the above. Every setting a flag: `--brief`, `--policy`, `--gates`, `--intent`, `--run-id`, and more. | CI, scripted replays, batch runs. |
+| [`$mmo-codex:pass`](plugin/skills/pass/SKILL.md) | Flag-driven twin of the above: `--brief`, `--policy`, `--gates`, `--intent`, `--run-id`, and more. In a session it starts the run itself; from a shell the same flags drive `plugin/codex/run.mjs`. | Scripted replays, CI. |
 
 ### Run a specific brownfield job
 
@@ -242,41 +254,42 @@ These and `pass` are invoke-only: they start a full billable run, so they never 
 
 | Skill | What it does | When to use it |
 |---|---|---|
-| [`$mmo-codex:revert`](plugin/skills/revert/SKILL.md) | Reads `.sdlc/runs/<run-id>/provenance.json` and restores each touched file to its pre-run state — git checkout for tracked-committed files, per-run backup for uncommitted ones. Refuses in dirty cases and prints a three-way diff instead. | Undoing a specific brownfield run. |
+| [`$mmo-codex:revert`](plugin/skills/revert/SKILL.md) | Reads `.sdlc/runs/<run-id>/provenance.json` and restores each touched file to its pre-run state — git checkout for tracked-committed files, per-run backup for uncommitted ones. When a file changed after the run, or close-out found a change no snapshot saw, it shows the diff and asks before touching that file. | Undoing a specific brownfield run. |
 
 Installed as a plugin, these work everywhere with no extra step. Working **inside a clone** of this repo, codex scans `.agents/skills` rather than the `plugin/skills/` directory they ship in, so run `node plugin/codex/verify-setup.mjs --fix` once to link them.
 
-## Running a pass
+## Check the cost with a headless run
+
+In a codex session, the conductor's cost is read from codex's session file at the run's end. A headless run checks that reading: `plugin/codex/run.mjs` drives the same pipeline from a shell with `codex exec --json`, and at the run's end the harness compares codex's own per-turn token counts with what the session-file reader computes, token for token. From a clone, with the bridge built (`node plugin/codex/verify-setup.mjs --fix`):
 
 ```bash
 node plugin/codex/run.mjs \
-  --brief=./brief.md \
+  --brief=brief.md \
   --project-root="$(pwd)" \
-  --output-dir="$(pwd)/.sdlc"
+  --mode=greenfield \
+  --policy=gpt-plus-flash \
+  --gates=auto-approve
 ```
 
-Add `--dry-run` to see the pinned invocation without spending anything. Then read what it cost:
+Add `--dry-run` to see the pinned invocation without spending anything. The run's record lands in `.sdlc/runs/<run-id>/`, with the cost report in `report.md` there and the token comparison under its driver figure. The report prints `Run total = dispatched + driver` and splits it into a **vendor-metered** total and a **modeled** total. Codex reports no wallet figures at all, so the driver leg's cost can only be derived from token counts at the dated price list's rates — and a driver running on a seat may have cost nothing in money. That is why the modeled figure never enters the vendor-metered total.
 
-```bash
-node tools/report.mjs ./.sdlc
-```
-
-The report prints `Run total = dispatched + driver` and splits it into a **vendor-metered** total and a **modeled** total. Codex reports no wallet figures at all, so the driver leg's cost can only be derived from token counts at the dated price list's rates — and a driver running on a seat may have cost nothing in money. That is why the modeled figure never enters the vendor-metered total.
-
-Every flag is documented in [docs/running.md](docs/running.md).
+Every step, from the API-key login to the OpenAI usage dashboard check, is in [docs/headless-runs.md](docs/headless-runs.md). Every flag is in [docs/running.md](docs/running.md).
 
 ## What a run produces
 
-Every artifact lands under `./.sdlc/`. Generated source lands under `./src/`.
+Each run's record lands in its own folder, `.sdlc/runs/<run-id>/`. Generated source lands under `./src/` (greenfield) or in place (brownfield). The project-level state shared by every run stays in `.sdlc/` itself.
 
 | File | Contents |
 |---|---|
-| `telemetry.jsonl` | One JSON line per model call: phase, model, tokens (input / cached / output), cost, latency, task_id. |
-| `manifest.json` | Rollup of the telemetry, written by `plugin/scripts/write-manifest.mjs`: totals, per-phase, per-module, per-task-type. |
-| `provenance.json` | Every file the run touched, with pre-run hash — the input `$mmo-codex:revert` reads. |
+| `runs/<run-id>/telemetry.jsonl` | One JSON line per model call: phase, model, tokens (input / cached / output), cost, latency, task_id. |
+| `runs/<run-id>/manifest.json` | Rollup of the telemetry, written by `plugin/scripts/write-manifest.mjs`: totals, per-phase, per-module, per-task-type. |
+| `runs/<run-id>/gates.jsonl` | One line per gate decision. |
+| `runs/<run-id>/driver-usage.json` | The conductor's own tokens and modeled cost, read from codex's session file at the run's end. |
+| `runs/<run-id>/report.md` | The cost report, written at the run's end. |
+| `runs/<run-id>/provenance.json` | Brownfield: every file the run touched, with pre-run hash — the input `$mmo-codex:revert` reads. |
 | `local/guard-decisions.jsonl` | One line per hooked call while a brownfield contract binds, allow or deny; outside a run, one line per refusal, and only in a project that already has `.sdlc/`. A denied call leaves no trace in the Codex event stream, so this file is the only record of it. |
-| `delegation/` | Only on runs that used the agent path. Three files per delegated packet: task brief, worker usage sidecar, receipt. |
-| Cost report | `node plugin/scripts/report.mjs <run-folder>` — per-phase table, delegation table if any, the run total with its vendor-metered and modeled parts, methodology footer. |
+| `runs/<run-id>/delegation/` | Only on runs that used the agent path. Three files per delegated packet: task brief, worker usage sidecar, receipt. |
+| Cost report | `report.md` in the run folder, or `node plugin/scripts/report.mjs .sdlc/runs/<run-id>` from a clone — per-phase table, delegation table if any, the run total with its vendor-metered and modeled parts, methodology footer. |
 
 How the numbers are derived is in [docs/methodology.md](docs/methodology.md).
 
@@ -315,13 +328,13 @@ Result:        a working app — GET /ping returns 200, unknown routes 404
 
 The recorded figure was priced at Gemini rates of $1.50 / $0.15 / $9.00 per 1M tokens, about 2× Gemini 3.7 Flash's introductory card. The dated price list (`plugin/mcp/model-dispatch/src/prices.ts`) bills Gemini 3.7 Flash at $0.75 / $0.075 / $3.75 through 2026-12-31 and $1.50 / $0.15 / $7.50 from 2027-01-01, so the same run re-priced costs less on either card. The GPT share is unaffected.
 
-That is one run of one small brief, not a guarantee — cost scales with how much code the brief implies and how many times a phase has to be revised. Render the cost report yourself:
+That is one run of one small brief, not a guarantee — cost scales with how much code the brief implies and how many times a phase has to be revised. Each run writes its cost report to `report.md` in its folder. From a clone, this renders the latest run's again:
 
 ```bash
-node tools/report.mjs ./.sdlc --markdown
+node plugin/scripts/report.mjs .sdlc --markdown
 ```
 
-Step-by-step walkthrough of that run: [docs/tutorial-first-run.md](docs/tutorial-first-run.md).
+The same brief, run step by step in a codex session: [docs/tutorial-first-run.md](docs/tutorial-first-run.md).
 
 ## Verify or repair the install
 
@@ -351,7 +364,8 @@ node tools/setup.mjs
 - [SETUP.md](SETUP.md) — prerequisites, both install routes, credentials, both Gemini doors, the policy pick
 - [docs/running.md](docs/running.md) — the pipeline, policies, bringing your own brief
 - [docs/brief-template.md](docs/brief-template.md) — the section layout a brief needs
-- [docs/tutorial-first-run.md](docs/tutorial-first-run.md) — ten minutes from a fresh install to a completed pass
+- [docs/tutorial-first-run.md](docs/tutorial-first-run.md) — a greenfield run and a brownfield run in a codex session, from install to the cost report
+- [docs/headless-runs.md](docs/headless-runs.md) — check the cost with a headless run: the token cross-check and the OpenAI usage dashboard
 - [docs/troubleshooting.md](docs/troubleshooting.md) — symptom → cause → fix, keyed by the message on screen
 - [docs/understanding-output.md](docs/understanding-output.md) — reading the cost report and the raw files a run leaves behind
 - [docs/architecture.md](docs/architecture.md) — who calls what, adapters, routing, the write contract, telemetry, install routes
