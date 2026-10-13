@@ -280,14 +280,14 @@ Run it from the code directory, not the run folder — `<output_dir>` holds the 
 no `package.json`.
 
 ```bash
-cd <code_dir>
+cd '<code_dir>'
 # Only copy .env.test → .env when neither exists. Never overwrite an existing .env —
 # a real .env holds real secrets and belongs to the user.
-if [ -f .env.test ] && [ ! -f .env ]; then cp .env.test <that folder, absolute>/.env; fi
+if [ -f .env.test ] && [ ! -f .env ]; then cp .env.test '<that folder, absolute>/.env'; fi
 npm install --silent && npm test
 ```
 
-Write the `cp` target as the absolute path of the folder you `cd` into, spelled out. The write hook lets a shell command create a missing `.env` only at a literal absolute path: a relative one can land in a folder the hook cannot see.
+Write the `cp` target as the absolute path of the folder you `cd` into, spelled out and in single quotes. The write hook lets a shell command create a missing `.env` only at a literal absolute path: a relative one can land in a folder the hook cannot see.
 
 **Brownfield mode.** The greenfield env-copy above is refused entirely — the repo already has an `.env` (or an equivalent secrets manager) that the user manages, and copying a codegen-produced fixture would either overwrite real secrets or drop the run into a schema-invalid state. Instead:
 

@@ -1301,3 +1301,86 @@ test("live contract: an unspaced redirect hits the guarded set and the always-of
     assert.ok(rows.every((r) => r.path === null || r.path.startsWith("src/")), JSON.stringify(rows));
   } finally { cleanup(dir); }
 });
+
+// ── a project root with a space in it ──
+
+/** A folder named `name` inside a fresh temp folder, as a git project when `git` is set. */
+function spacedProject(name, { git = true } = {}) {
+  const base = mkdtempSync(join(tmpdir(), "write-contract-space-"));
+  const dir = join(base, name);
+  mkdirSync(git ? join(dir, ".git") : dir, { recursive: true });
+  return { base, dir };
+}
+
+const escapeSpaces = (p) => p.replace(/ /g, "\\ ");
+
+test("scan: a quoted or escaped word is one target with its spaces kept, and a newline or comment ends an argument list", () => {
+  const P = "/w/My Project";
+  const R = `${P}/.sdlc/runs/r1`;
+  for (const form of [`'${R}/gates.jsonl'`, `"${R}/gates.jsonl"`, `${escapeSpaces(R)}/gates.jsonl`]) {
+    assert.deepEqual(extractBashTargets(`printf '{}\\n' >> ${form}`), [`${R}/gates.jsonl`], form);
+  }
+  assert.deepEqual(extractBashTargets(`cp .env.test '${P}/src/.env'`), [`${P}/src/.env`]);
+  assert.deepEqual(extractBashTargets(`echo x | tee -a '${P}/a b.txt' "${P}/c d.txt"`), [`${P}/a b.txt`, `${P}/c d.txt`]);
+  assert.deepEqual(extractBashTargets(`sh -c "cp a '${P}/.env'"`), [`${P}/.env`], "a quoted string is read again as shell");
+  assert.deepEqual(extractBashTargets("bash -c 'cp a b' && cp 'c d' e").sort(), ["b", "e"]);
+  assert.deepEqual(
+    extractBashTargets(`cat > '${P}/src/b.js' <<'EOF'\nconst s = "it's";\nEOF\nprintf x >> '${R}/gates.jsonl'`),
+    [`${P}/src/b.js`, `${R}/gates.jsonl`],
+    "a quote inside a here-document body does not reach the command after it",
+  );
+  assert.deepEqual(extractBashTargets("cp a b\nls -la"), ["b"]);
+  assert.deepEqual(extractBashTargets("cp a b # don't\ncp c d"), ["b", "d"]);
+  assert.deepEqual(extractBashRemovals(`rm -f '${R}/write-contract.lock.json'`), [`${R}/write-contract.lock.json`]);
+  assert.deepEqual(extractBashRemovals(`mv "${P}/.sdlc/local/write-contract.json" /tmp/x`), [`${P}/.sdlc/local/write-contract.json`]);
+});
+
+test("live contract, root with a space: a quoted run-folder or allowlisted path is the run's own write, not a cross-project one", async () => {
+  const { base, dir } = spacedProject("My Project");
+  try {
+    freezeContract({ projectRoot: dir, runId: "r1", allowlist: ["src/**"], offLimits: [], strict: true });
+    mkdirSync(join(dir, "src"));
+    writeFileSync(join(dir, "src", "a.js"), "a\n");
+    const R = join(dir, ".sdlc", "runs", "r1");
+    await expectAll(dir, [
+      `printf '{"gate":1,"decision":"approved"}\\n' >> '${R}/gates.jsonl'`,
+      `printf '{"gate":1,"decision":"approved"}\\n' >> "${R}/gates.jsonl"`,
+      `printf '{}\\n' >> ${escapeSpaces(R)}/gates.jsonl`,
+      `cat > '${R}/state.json' <<'EOF'\n{"note": "the person's call"}\nEOF`,
+      `echo '{}' | tee -a '${R}/gates.jsonl'`,
+      `cat > '${dir}/src/b.js' <<'EOF'\nexport const b = 1;\nEOF`,
+      `cp '${dir}/src/a.js' '${dir}/src/c.js'`,
+    ].map(bashRedirect), "allow");
+    assert.ok(decisions(dir).some((r) => r.decision === "allow" && r.path === ".sdlc/runs/r1/gates.jsonl"));
+    await expectAll(dir, [
+      `printf x > '${dir}/docs/x.md'`,
+      `rm -f '${R}/write-contract.lock.json'`,
+      `rm -f "${R}/write-contract.frozen.json"`,
+      `mv '${dir}/.sdlc/local/write-contract.json' /tmp/x.json`,
+      `printf x > '${base}/elsewhere.txt'`,
+    ].map(bashRedirect), "deny");
+    const r = await runHook(dir, bashRedirect(`printf x > '${dir}/docs/x.md'`));
+    assert.match(r.reason, /^docs\/x\.md is not in the confirmed allowlist for run r1/);
+    const lock = await runHook(dir, bashRedirect(`rm -f '${R}/write-contract.lock.json'`));
+    assert.match(lock.reason, /would remove or move \.sdlc\/runs\/r1\/write-contract\.lock\.json/);
+  } finally { cleanup(base); }
+});
+
+test("no contract, root with a space: Phase 7's env bootstrap creates a missing .env at its quoted path, and never overwrites one", async () => {
+  for (const git of [true, false]) {
+    const { base, dir } = spacedProject("My App", { git });
+    try {
+      mkdirSync(join(dir, ".sdlc"));
+      const code = join(dir, "src");
+      mkdirSync(code);
+      writeFileSync(join(code, ".env.test"), "A=1\n");
+      const bootstrap = (target) => `cd '${code}'\nif [ -f .env.test ] && [ ! -f .env ]; then cp .env.test ${target}; fi`;
+      const forms = [`'${code}/.env'`, `"${code}/.env"`, `${escapeSpaces(code)}/.env`].map((t) => bashRedirect(bootstrap(t)));
+      await expectAll(dir, forms, "allow", `git ${git}: `);
+      writeFileSync(join(code, ".env"), "SECRET=1\n");
+      await expectAll(dir, [...forms, bashRedirect(`echo X=1 > '${code}/.env'`)], "deny", `git ${git}, .env exists: `);
+      const r = await runHook(dir, forms[0]);
+      assert.match(r.reason, /My App\/src\/\.env matches always-off-limits pattern "\.env"/);
+    } finally { cleanup(base); }
+  }
+});

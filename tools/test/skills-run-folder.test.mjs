@@ -36,8 +36,9 @@ test("gate-pending state lives in the run folder, and gates follow the instructi
 
 test("greenfield Phase 7 runs the tests from the code directory, not the run folder", () => {
   const pipeline = read("pipeline");
-  assert.match(pipeline, /```bash\ncd <code_dir>\n/);
-  assert.doesNotMatch(pipeline, /```bash\ncd <output_dir>\n/);
+  assert.match(pipeline, /```bash\ncd '<code_dir>'\n/);
+  assert.doesNotMatch(pipeline, /```bash\ncd '?<output_dir>'?\n/);
+  assert.match(pipeline, /cp \.env\.test '<that folder, absolute>\/\.env'/, "a code folder with a space stays one cp target");
 });
 
 test("the pass skill documents the exit codes run.mjs returns", () => {

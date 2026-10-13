@@ -32,19 +32,178 @@ export function extractApplyPatchTargets(command) {
   return targets;
 }
 
-// Quotes at either end, not only a matching pair: a target that ends a wrapped string (`sh -c 'cp a .env'`) keeps one.
-const unquote = (s) => s.replace(/^['"]+|['"]+$/g, "");
+// ── shell words ────────────────────────────────────────────────────────────
+
+/** Past this many quoted strings inside quoted strings, a string is scanned as it stands. */
+const MAX_NESTING = 8;
+const METACHAR = /[\s;&|()<>]/;
+
+/** Index of the quote that closes the one at `i`, or text.length. A `"` string and a `$'…'` one (`ansi`) take `\` escapes. */
+function closingQuote(text, i, ansi = false) {
+  const q = text[i];
+  for (let j = i + 1; j < text.length; j++) {
+    if (text[j] === "\\" && (q === '"' || ansi)) j++;
+    else if (text[j] === q) return j;
+  }
+  return text.length;
+}
+
+const unescapeDouble = (s) => s.replace(/\\([$`"\\\n])/g, (_, c) => (c === "\n" ? "" : c));
+const unescapeAnsi = (s) => s.replace(/\\([\s\S])/g, "$1");
+
+/** A shell word as the command receives it: quotes and backslashes resolved; `$`, globs and braces kept for wordForms. */
+function dequote(word) {
+  let out = "";
+  for (let i = 0; i < word.length; i++) {
+    const c = word[i];
+    if (c === "\\") {
+      if (word[i + 1] !== "\n") out += word[i + 1] ?? "";
+      i++;
+    } else if (c === "'" || c === '"' || (c === "$" && word[i + 1] === "'")) {
+      const open = c === "$" ? i + 1 : i;
+      const close = closingQuote(word, open, c === "$");
+      const body = word.slice(open + 1, close);
+      out += c === "$" ? `$${unescapeAnsi(body)}` : c === '"' ? unescapeDouble(body) : body;
+      i = close;
+    } else out += c;
+  }
+  return out;
+}
+
+/** The here-document delimiter word after a `<<` that ends at `j`, or null. */
+function heredocAt(text, j) {
+  let k = j;
+  const strip = text[k] === "-";
+  if (strip) k++;
+  while (text[k] === " " || text[k] === "\t") k++;
+  const from = k;
+  while (k < text.length && !METACHAR.test(text[k])) {
+    if (text[k] === "\\") k += 2;
+    else if (text[k] === "'" || text[k] === '"') k = closingQuote(text, k) + 1;
+    else k++;
+  }
+  const to = Math.min(k, text.length);
+  const delim = dequote(text.slice(from, to));
+  return delim ? { delim, strip, from, to } : null;
+}
+
+/** Where a here-document body that starts at `at` ends, and where its delimiter line ends. */
+function heredocBody(text, at, { delim, strip }) {
+  for (let line = at; line < text.length;) {
+    const nl = text.indexOf("\n", line);
+    const end = nl === -1 ? text.length : nl;
+    const l = text.slice(line, end);
+    if ((strip ? l.replace(/^\t+/, "") : l) === delim) return { bodyEnd: line, next: end };
+    line = end + 1;
+  }
+  return { bodyEnd: text.length, next: text.length };
+}
+
+/**
+ * `text` lexed for the scan. `masked` keeps every index: a quoted string or backslash escape is covered with `_`, so
+ * it stays part of its word with any space in it; an unquoted newline, a comment and a here-document body become `;`,
+ * so an argument list ends there. `inner` is what was covered, since `sh -c '…'` or `bash <<EOF` runs it as shell.
+ */
+function lexShell(text) {
+  const m = text.split("");
+  const inner = [];
+  const pending = [];
+  const cover = (from, to, ch) => { for (let k = from; k < to; k++) m[k] = ch; };
+  let atWord = true;
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i];
+    if (c === "\\") {
+      cover(i, Math.min(i + 2, text.length), "_");
+      i++;
+      atWord = false;
+    } else if (c === "'" || c === '"' || (c === "$" && text[i + 1] === "'")) {
+      const open = c === "$" ? i + 1 : i;
+      const close = closingQuote(text, open, c === "$");
+      const body = text.slice(open + 1, close);
+      inner.push({ text: c === '"' ? unescapeDouble(body) : c === "$" ? unescapeAnsi(body) : body, quoted: true });
+      cover(i, Math.min(close + 1, text.length), "_");
+      i = close;
+      atWord = false;
+    } else if (c === "#" && atWord) {
+      const nl = text.indexOf("\n", i);
+      const end = nl === -1 ? text.length : nl;
+      inner.push({ text: text.slice(i + 1, end), quoted: true });
+      cover(i, end, ";");
+      i = end - 1;
+    } else if (c === "<" && text[i + 1] === "<" && text[i + 2] === "<") {
+      i += 2;
+      atWord = true;
+    } else if (c === "<" && text[i + 1] === "<") {
+      const doc = heredocAt(text, i + 2);
+      if (doc) {
+        pending.push(doc);
+        cover(doc.from, doc.to, "_");
+        i = doc.to - 1;
+        atWord = false;
+      } else {
+        i++;
+        atWord = true;
+      }
+    } else if (c === "\n") {
+      m[i] = ";";
+      atWord = true;
+      let at = i + 1;
+      while (pending.length) {
+        const { bodyEnd, next } = heredocBody(text, at, pending.shift());
+        inner.push({ text: text.slice(at, bodyEnd), quoted: false });
+        cover(at, next, ";");
+        at = next;
+      }
+      i = at - 1;
+    } else {
+      atWord = METACHAR.test(c);
+    }
+  }
+  return { masked: m.join(""), inner };
+}
+
+/** `command` and every quoted string, comment and here-document body in it, each lexed; `quoted` marks a string. */
+function shellTexts(command) {
+  const out = [];
+  const visit = (text, quoted, depth) => {
+    if (depth >= MAX_NESTING) { out.push({ text, masked: text, quoted }); return; }
+    const { masked, inner } = lexShell(text);
+    out.push({ text, masked, quoted });
+    for (const t of inner) if (t.text) visit(t.text, t.quoted, depth + 1);
+  };
+  visit(command, false, 0);
+  return out;
+}
+
 // An fd number before a redirect (`cp a b 2>/dev/null`) is not an argument.
 const ARGS = String.raw`((?:-{1,2}[A-Za-z-]*\s+)*(?:(?!\d+>)[^\s;&|()<>-][^\s;&|()<>]*\s*)+)`;
-const argsOf = (text) => text.trim().split(/\s+/).filter(Boolean).map(unquote).filter(Boolean);
+const REDIRECT = String.raw`\d*>{1,2}\s*([^\s;&|()<>]+)`;
+// A `>` that opens a quoted string (`printf '> a quote'`) is read as a redirect written with no space before it.
+const SPACED_REDIRECT_RE = { code: new RegExp(String.raw`(?:^|[\s;&|(])${REDIRECT}`, "dg"), quoted: new RegExp(String.raw`[\s;&|(]${REDIRECT}`, "dg") };
+const TIGHT_REDIRECT_RE = { code: new RegExp(String.raw`[^-=<>\s;&|(]${REDIRECT}`, "dg"), quoted: new RegExp(String.raw`(?:^|[^-=<>\s;&|(])${REDIRECT}`, "dg") };
+const TEE_RE = new RegExp(String.raw`\btee\s+${ARGS}`, "dg");
+const TOUCH_RE = new RegExp(String.raw`\btouch\s+${ARGS}`, "dg");
+const CP_MV_RE = new RegExp(String.raw`\b(cp|mv)\s+${ARGS}`, "dg");
+const RM_RE = new RegExp(String.raw`\b(?:rm|unlink)\s+${ARGS}`, "dg");
+const MV_RE = new RegExp(String.raw`\bmv\s+${ARGS}`, "dg");
+const redirectRe = (set, t) => (t.quoted ? set.quoted : set.code);
+
 /** A match whose last word runs into a `(` (a zsh glob group, `$(`): the scan stops there, so the rest is any text. */
-const gluedParen = (command, m) => command[m.index + m[0].length] === "(" && !/\s$/.test(m[0]);
-/** The words of an argument match, the last one marked open when it runs into a `(`. */
-function wordsOf(command, m, group = 1) {
-  const words = argsOf(m[group]);
-  if (words.length && gluedParen(command, m)) words[words.length - 1] += "*";
+const gluedParen = (masked, m) => masked[m.index + m[0].length] === "(" && !/\s$/.test(m[0]);
+
+/** The words of group `g` of a match in lexed text `t`, quotes resolved, the last one marked open when it runs into a `(`. */
+function wordsAt(t, m, g = 1) {
+  const [from, to] = m.indices[g];
+  const words = [];
+  for (const w of t.masked.slice(from, to).matchAll(/\S+/g)) {
+    const word = dequote(t.text.slice(from + w.index, from + w.index + w[0].length));
+    if (word) words.push(word);
+  }
+  if (words.length && gluedParen(t.masked, m)) words[words.length - 1] += "*";
   return words;
 }
+
+const notFlag = (a) => !a.startsWith("-");
 
 /** Device files a redirect writes to without touching the project (`2>/dev/null`). */
 const DEVICE_RE = /^\/dev\/(?:null|stdout|stderr|tty|fd\/\d+)$/;
@@ -52,8 +211,8 @@ const DEVICE_RE = /^\/dev\/(?:null|stdout|stderr|tty|fd\/\d+)$/;
 /**
  * Write targets of a shell command: redirects, `tee`, `touch`, each file a `cp`/`mv` lands on, and the file headers of
  * an `apply_patch` run through the shell (Codex applies it itself and hands the hook a Bash call). A heuristic, not a
- * shell parser: a form it misses is allowed. With `cwd`, an existing folder named as a `cp`/`mv` destination or source
- * is seen as one.
+ * shell parser: a form it misses is allowed. A quoted or escaped word is one target, its spaces kept. With `cwd`, an
+ * existing folder named as a `cp`/`mv` destination or source is seen as one.
  */
 export function extractBashTargets(command, cwd = null) {
   return bashWriteTargets(command, cwd).files.filter((t) => !DEVICE_RE.test(t));
@@ -140,22 +299,18 @@ function bashWriteTargets(raw, cwd = null) {
   if (typeof raw !== "string") return { files: [], folders: [] };
   const targets = shellPatchTargets(raw);
   const folders = [];
-  const command = shellOnly(raw);
-  const redirectRe = /(?:^|[\s;&|(])\d*>{1,2}\s*([^\s;&|()<>]+)/g;
-  let m;
-  while ((m = redirectRe.exec(command)) !== null) {
-    const target = unquote(m[1].trim());
-    if (target && !/^&\d+$/.test(target)) targets.push(gluedParen(command, m) ? `${target}*` : target);
-  }
-  const teeRe = new RegExp(String.raw`\btee\s+` + ARGS, "g");
-  while ((m = teeRe.exec(command)) !== null) targets.push(...wordsOf(command, m).filter((a) => !a.startsWith("-")));
-  const touchRe = new RegExp(String.raw`\btouch\s+` + ARGS, "g");
-  while ((m = touchRe.exec(command)) !== null) targets.push(...wordsOf(command, m).filter((a) => !a.startsWith("-")));
-  const cpMvRe = new RegExp(String.raw`\b(cp|mv)\s+` + ARGS, "g");
-  while ((m = cpMvRe.exec(command)) !== null) {
-    const copied = copyTargets(m[1], wordsOf(command, m, 2), cwd);
-    targets.push(...copied.files);
-    folders.push(...copied.folders);
+  for (const t of shellTexts(shellOnly(raw))) {
+    for (const m of t.masked.matchAll(redirectRe(SPACED_REDIRECT_RE, t))) {
+      const [target] = wordsAt(t, m);
+      if (target && !/^&\d+$/.test(target)) targets.push(target);
+    }
+    for (const m of t.masked.matchAll(TEE_RE)) targets.push(...wordsAt(t, m).filter(notFlag));
+    for (const m of t.masked.matchAll(TOUCH_RE)) targets.push(...wordsAt(t, m).filter(notFlag));
+    for (const m of t.masked.matchAll(CP_MV_RE)) {
+      const copied = copyTargets(m[1], wordsAt(t, m, 2), cwd);
+      targets.push(...copied.files);
+      folders.push(...copied.folders);
+    }
   }
   return { files: targets, folders };
 }
@@ -166,13 +321,12 @@ function bashWriteTargets(raw, cwd = null) {
  */
 export function extractBashTightRedirects(raw) {
   if (typeof raw !== "string") return [];
-  const command = shellOnly(raw);
   const out = [];
-  const re = /[^-=<>\s;&|(]\d*>{1,2}\s*([^\s;&|()<>]+)/g;
-  let m;
-  while ((m = re.exec(command)) !== null) {
-    const target = unquote(m[1].trim());
-    if (target && !/^&\d+$/.test(target) && !DEVICE_RE.test(target)) out.push(gluedParen(command, m) ? `${target}*` : target);
+  for (const t of shellTexts(shellOnly(raw))) {
+    for (const m of t.masked.matchAll(redirectRe(TIGHT_REDIRECT_RE, t))) {
+      const [target] = wordsAt(t, m);
+      if (target && !/^&\d+$/.test(target) && !DEVICE_RE.test(target)) out.push(target);
+    }
   }
   return out;
 }
@@ -180,13 +334,11 @@ export function extractBashTightRedirects(raw) {
 /** Paths a shell command removes or moves away: `rm`/`unlink` arguments and `mv` sources. Judged for the guarded set only. */
 export function extractBashRemovals(raw) {
   if (typeof raw !== "string") return [];
-  const command = shellOnly(raw);
   const out = [];
-  let m;
-  const rmRe = new RegExp(String.raw`\b(?:rm|unlink)\s+` + ARGS, "g");
-  while ((m = rmRe.exec(command)) !== null) out.push(...wordsOf(command, m).filter((a) => !a.startsWith("-")));
-  const mvRe = new RegExp(String.raw`\bmv\s+` + ARGS, "g");
-  while ((m = mvRe.exec(command)) !== null) out.push(...wordsOf(command, m).filter((a) => !a.startsWith("-")).slice(0, -1));
+  for (const t of shellTexts(shellOnly(raw))) {
+    for (const m of t.masked.matchAll(RM_RE)) out.push(...wordsAt(t, m).filter(notFlag));
+    for (const m of t.masked.matchAll(MV_RE)) out.push(...wordsAt(t, m).filter(notFlag).slice(0, -1));
+  }
   return out;
 }
 
@@ -445,7 +597,7 @@ function reachRefusal(target, hit, removal) {
 
 const statusOf = (st) => ({ root: st.root, run_id: st.runId ?? st.live?.run_id ?? null, binds: st.binds });
 
-/** A word the shell writes to as it stands: no `~` or `=` expansion, variable, command substitution, glob or quoting. */
+/** A word that names one path as it stands: no `~` or `=` expansion, variable, command substitution, glob or quote left. */
 export const isLiteralWord = (w) => typeof w === "string" && w.length > 0 && !/^[~=]/.test(w) && !/[$`*?[\]{}\\'"]/.test(w);
 
 const absent = (p) => { try { lstatSync(p); return false; } catch (e) { return e?.code === "ENOENT"; } };
@@ -453,8 +605,8 @@ const absent = (p) => { try { lstatSync(p); return false; } catch (e) { return e
 /**
  * Whether a missing `.env`-family fixture may be created at `target`, with nothing at it now. Only where the hook knows
  * the folder the write lands in: an `apply_patch` Add File, whose paths Codex resolves against the payload's `cwd`, or
- * a shell target written as a literal absolute path. A relative shell path may land elsewhere: the shell tool's
- * `workdir` is not in the payload, and a `cd` can hide inside a quoted `sh -c '…'`.
+ * a shell target that is a literal absolute path once its quotes are resolved. A relative shell path may land
+ * elsewhere: the shell tool's `workdir` is not in the payload, and a `cd` can hide inside a quoted `sh -c '…'`.
  */
 function mayCreateWhenAbsent(call, target, cwd) {
   if (!isLiteralWord(target)) return false;
