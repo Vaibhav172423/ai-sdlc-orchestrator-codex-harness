@@ -28,10 +28,13 @@ const telemetryRows = (path, rows) => writeJsonl(path, rows.map((r, i) => ({ tas
 const driverRows = (run, costs) =>
   writeJsonl(join(run, "driver-cost-modeled.jsonl"), costs.map((c, i) => ({ invocation: i + 1, status: "complete", cost_usd: c, provenance: "modeled" })));
 
-/** A conductor whose single pin-model response costs $2.00 (1M fresh input at $2/M). */
+/** Four responses of 250,000 fresh input each, all under the 272,000 long-context threshold. */
+const MILLION_STANDARD = Array.from({ length: 4 }, () => ({ usage: u(250_000) }));
+
+/** A conductor whose pin-model turn costs $2.00 (1M fresh input at $2/M). */
 function liveConductor(s, { model } = {}) {
   const r = new SyntheticRollout({ threadId: THREAD, originator: "codex-tui" });
-  const t = r.turn({ text: "$mmo-codex:greenfield", model, responses: [{ usage: u(1_000_000) }], end: null });
+  const t = r.turn({ text: "$mmo-codex:greenfield", model, responses: MILLION_STANDARD, end: null });
   r.write(s.home);
   writeJsonl(join(s.run, "driver-session.jsonl"), [marker(THREAD, inside(t))]);
 }
@@ -100,6 +103,22 @@ test("with no driver rows yet, the conductor's session file is read live, includ
     assert.equal(spend.driver_source, "session-file");
     assert.equal(spend.driver_usd, 2);
     assert.throws(() => assertUnderCostCap(capped(1.5), s.telemetry, { env: { CODEX_HOME: s.home } }), /modeled from the codex session file/);
+  } finally {
+    s.done();
+  }
+});
+
+test("the live session file is priced from the dated list response by response, so one long request bills the long-context card", () => {
+  const s = sandbox();
+  try {
+    const r = new SyntheticRollout({ threadId: THREAD, originator: "codex-tui" });
+    const t = r.turn({ text: "$mmo-codex:greenfield", responses: [{ usage: u(300_000) }, { usage: u(100_000) }], end: null });
+    r.write(s.home);
+    writeJsonl(join(s.run, "driver-session.jsonl"), [marker(THREAD, inside(t))]);
+    const spend = recordedSpend(capped(5), s.telemetry, { codexHome: s.home });
+    // 300,000 input at $4.00/M (over 272,000) plus 100,000 at $2.00/M.
+    assert.equal(spend.driver_usd, 1.4);
+    assert.equal(spend.driver_source, "session-file");
   } finally {
     s.done();
   }
@@ -186,7 +205,7 @@ test("a conductor partly off the pin counts the pin part, and the refusal says w
   const s = sandbox();
   try {
     const r = new SyntheticRollout({ threadId: THREAD, originator: "codex-tui" });
-    const a = r.turn({ text: "$mmo-codex:greenfield", responses: [{ usage: u(1_000_000) }] });
+    const a = r.turn({ text: "$mmo-codex:greenfield", responses: MILLION_STANDARD });
     const b = r.turn({ model: "gpt-6.1-sol", responses: [{ usage: u(1_000_000) }], end: null });
     r.write(s.home);
     writeJsonl(join(s.run, "driver-session.jsonl"), [marker(THREAD, inside(a)), marker(THREAD, inside(b))]);

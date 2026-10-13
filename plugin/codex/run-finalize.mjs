@@ -1,7 +1,8 @@
 /**
  * What runs once a run stops, whatever the outcome and the route: the driver
- * files (run.mjs only), the brownfield write contract's end with its
- * provenance record, and manifest.json.
+ * files (run.mjs only), the conductor's cost from its session file, the
+ * brownfield write contract's end with its provenance record, manifest.json
+ * and report.md.
  */
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -11,6 +12,41 @@ import { buildDriverManifest, gate4Acceptance, gateDecision, writeFileAtomic } f
 import { readRunRecords } from "./run-folder.mjs";
 import { ACCEPTED_STATUSES, codeWrittenSummary, writeManifest } from "../scripts/write-manifest.mjs";
 import { abandonCommand, endRun } from "../scripts/write-contract.mjs";
+import { collectDriverUsage } from "../scripts/collect-driver-usage.mjs";
+import { readRun, summarize, writeReport } from "../scripts/report.mjs";
+import { fixedDriverPriceFn, listDriverPriceFn } from "../mcp/model-dispatch/dist/driverPricing.js";
+import { defaultCodexHome, execSessionFacts } from "../mcp/model-dispatch/dist/sessionUsage.js";
+
+/**
+ * How the conductor's turns are priced: the dated price list for the run's
+ * policy, with each turn's per-response sizes from the session file when
+ * `codexHome` holds it. `driver.pricing` alone is a fixed card, labelled
+ * custom. `baselines` are the session file's running totals for threads this
+ * folder first sees in a resume.
+ */
+export function driverTurnPricing(driver, { records = [], codexHome = null } = {}) {
+  const priceFn =
+    driver.priceFn ??
+    (driver.policy ? listDriverPriceFn(driver.policy) : driver.pricing ? fixedDriverPriceFn(driver.pricing) : listDriverPriceFn(null));
+  let requests = null;
+  let baselines = {};
+  if (codexHome) {
+    try {
+      ({ requests, baselines } = execSessionFacts(records, codexHome));
+    } catch {
+      requests = null;
+      baselines = {};
+    }
+  }
+  return {
+    pricing: {
+      model: driver.model,
+      priceFn,
+      ...(requests?.size ? { requestsFor: (turn) => requests.get(turn.invocation) ?? null } : {}),
+    },
+    baselines,
+  };
+}
 
 /**
  * Rewrites driver-cost-modeled.jsonl and driver-manifest.json from
@@ -18,8 +54,9 @@ import { abandonCommand, endRun } from "../scripts/write-contract.mjs";
  * live append cannot know about yet.
  */
 export function regenerateDriverFiles({ runDir, runId, records = readRunRecords(runDir), driver }) {
-  const { pricing, model, policyName, policyVersion = 1, policyRecord, pin, sandbox, approvalPolicy, auth } = driver;
-  const rows = modeledDriverCostRows(records, { runId, model, pricing, policyName, policyVersion });
+  const { model, policyName, policyVersion = 1, policyRecord, pin, sandbox, approvalPolicy, auth, policy } = driver;
+  const { pricing, baselines } = driverTurnPricing(driver, { records, codexHome: driver.codexHome ?? null });
+  const rows = modeledDriverCostRows(records, { runId, model, policyName, policyVersion, baselines, ...pricing });
   writeFileAtomic(
     join(runDir, "driver-cost-modeled.jsonl"),
     rows.map((r) => JSON.stringify(r)).join("\n") + (rows.length ? "\n" : ""),
@@ -28,14 +65,77 @@ export function regenerateDriverFiles({ runDir, runId, records = readRunRecords(
     runId,
     policyName,
     policyRecord,
+    policy,
     pin,
     sandbox,
     approvalPolicy,
-    pricing,
+    turnPricing: pricing,
+    baselines,
     driverAuth: auth,
   });
   writeFileAtomic(join(runDir, "driver-manifest.json"), JSON.stringify(manifest, null, 2) + "\n");
   return { rows, manifest };
+}
+
+/** The collector's booked figure, copied into driver-manifest.json beside the exec stream's own. */
+export function bookCollectedUsage(runDir, driverManifest, report) {
+  const cc = report.cross_check;
+  const merged = {
+    ...driverManifest,
+    driver_cost_usd_exec_stream: driverManifest.driver_cost_usd_modeled,
+    driver_cost_usd_modeled: report.cost_usd_modeled,
+    driver_cost_source: report.cost_source,
+    driver_verified: report.verified,
+    driver_cost_complete: report.cost_complete,
+    driver_cross_check: cc
+      ? { verdict: cc.verdict, verified: cc.verified, exec_stream_cost_usd: cc.exec_stream_cost_usd, missing_invocations: cc.missing_invocations }
+      : null,
+  };
+  writeFileAtomic(join(runDir, "driver-manifest.json"), JSON.stringify(merged, null, 2) + "\n");
+  return merged;
+}
+
+/**
+ * Collects the conductor's cost into driver-usage.json. Never throws, and a
+ * figure it cannot collect is a note: the run's outcome stands either way.
+ */
+function collectConductorUsage(ctx, { route, codexHome, env, notes }) {
+  const warn = (m) => notes.push(`driver usage: ${String(m).replace(/^collect-driver-usage: /, "")}`);
+  // In the conductor's own shell the closing turn gets a marker; elsewhere the window closes at the last one.
+  const fromConductor = route === "interactive" && Boolean(env.CODEX_THREAD_ID);
+  if (route === "interactive" && !fromConductor) {
+    notes.push("driver usage: end-run.mjs ran outside the codex session, so the turns after the last dispatch are not in the conductor's figure");
+  }
+  let result;
+  try {
+    result = collectDriverUsage(ctx.runDir, {
+      env,
+      codexHome,
+      route,
+      policy: ctx.driver?.policy,
+      projectRoot: ctx.projectRoot,
+      fromConductor,
+      warn,
+    });
+  } catch (err) {
+    result = { ok: false, message: err?.message ?? String(err) };
+  }
+  if (!result.ok) notes.push(`driver usage: not collected (${String(result.message).replace(/; pass --thread=<id>$/, "")})`);
+  return result;
+}
+
+/** The run's cost as the report books it, for the run.cost log line and the console. */
+export function runCost(runDir) {
+  const t = summarize(readRun(runDir)).totals;
+  return {
+    dispatched_usd: t.dispatched_usd,
+    driver_usd_modeled: t.driver_usd,
+    driver_bound: t.driver_bound,
+    run_total_usd: t.run_total_usd,
+    run_total_bound: t.run_total_bound,
+    vendor_metered_usd: t.vendor_metered_usd,
+    modeled_usd: t.modeled_usd,
+  };
 }
 
 const STATUS_FOR_OUTCOME = { max_turns: "incomplete", codex_failed: "failed" };
@@ -95,28 +195,42 @@ export function endWriteContract({ projectRoot, runDir, runId, mode, outcome, re
 
 /**
  * ctx: {route, projectRoot, runDir, runId, mode, outcome, deliberate, reason,
- * policyName, codeDir, records, driver}. `route` is 'headless' (run.mjs, the
- * default) or 'interactive' (end-run.mjs). `driver` carries what pricing the
- * conductor needs: {pricing, model, policyName, policyVersion, policyRecord,
- * pin, sandbox, approvalPolicy, auth}; an interactive run has no driver-events.jsonl, so it
- * has neither `driver` nor driver files to regenerate. Returns
- * {driverManifest, manifest, contract, notes, contractLines}; a manifest.json
- * or contract end that fails is a note, never a failed run end.
+ * policyName, codeDir, records, driver, env, codexHome}. `route` is
+ * 'headless' (run.mjs, the default) or 'interactive' (end-run.mjs). `driver`
+ * carries what pricing the conductor needs: {policy, model, policyName,
+ * policyVersion, policyRecord, pin, sandbox, approvalPolicy, auth}; an
+ * interactive run has no driver-events.jsonl, so it has neither `driver` nor
+ * driver files to regenerate. Returns {driverManifest, driverUsage, manifest,
+ * contract, notes, contractLines, reportPath, cost}; a step that fails is a
+ * note, never a failed run end.
  */
 export async function finalizeRun(ctx) {
+  const env = ctx.env ?? process.env;
+  const codexHome = ctx.codexHome ?? ctx.driver?.codexHome ?? defaultCodexHome(env);
+  const notes = [];
   let driverManifest = null;
-  if (ctx.route !== "interactive") {
+  const route = ctx.route === "interactive" ? "interactive" : "headless";
+  if (route === "headless") {
     const records = ctx.records ?? readRunRecords(ctx.runDir);
     ({ manifest: driverManifest } = regenerateDriverFiles({
       runDir: ctx.runDir,
       runId: ctx.runId,
       records,
-      driver: { policyName: ctx.policyName, ...ctx.driver },
+      driver: { policyName: ctx.policyName, codexHome, ...ctx.driver },
     }));
+  }
+  // Before the manifest and the report, which book the figure it writes.
+  const collected = collectConductorUsage(ctx, { route, codexHome, env, notes });
+  if (collected.ok && driverManifest) {
+    try {
+      driverManifest = bookCollectedUsage(ctx.runDir, driverManifest, collected.report);
+    } catch (err) {
+      notes.push(`driver-manifest.json: the collected figure was not copied in (${err?.message ?? err})`);
+    }
   }
   // Before the manifest: its brownfield file count reads the provenance record this closes.
   const ended = endWriteContract(ctx);
-  const notes = [...ended.notes];
+  notes.push(...ended.notes);
   let manifest = null;
   try {
     // The completed run's SUMMARY.md is rendered again, now with the conductor's final figure.
@@ -134,5 +248,22 @@ export async function finalizeRun(ctx) {
   } catch (err) {
     notes.push(`manifest.json was not written: ${err?.message ?? err}`);
   }
-  return { driverManifest, manifest, contract: ended.contract, notes, contractLines: ended.lines };
+  let reportPath = null;
+  let cost = null;
+  try {
+    reportPath = writeReport(ctx.runDir);
+    cost = runCost(ctx.runDir);
+  } catch (err) {
+    notes.push(`report.md was not written: ${err?.message ?? err}`);
+  }
+  return {
+    driverManifest,
+    driverUsage: collected.ok ? collected.report : null,
+    manifest,
+    contract: ended.contract,
+    notes,
+    contractLines: ended.lines,
+    reportPath,
+    cost,
+  };
 }

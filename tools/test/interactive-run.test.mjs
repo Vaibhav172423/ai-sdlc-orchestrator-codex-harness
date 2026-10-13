@@ -391,7 +391,9 @@ test("the run-end steps get the interactive context, and a failing one still lea
       loadFinalize: async () => ({ finalizeRun: async (ctx) => { seen = ctx; } }),
     });
     assert.equal(r.code, 0);
-    assert.deepEqual(seen, {
+    const { env: seenEnv, ...rest } = seen;
+    assert.ok(seenEnv && typeof seenEnv === "object", "the run end gets the environment, so the collector can find the session");
+    assert.deepEqual(rest, {
       route: "interactive",
       projectRoot: p.root,
       runDir,
@@ -424,8 +426,10 @@ test("finalizeRun leaves the driver files alone on the interactive route and sti
     assert.deepEqual([m.route, m.status, m.driver, m.policy], ["interactive", "aborted", null, "gpt-plus-flash"]);
     assert.equal(existsSync(join(p.root, "SUMMARY.md")), false, "only a completed run end renders SUMMARY.md");
 
-    out = await finalizeRun(ctx);
-    assert.deepEqual(out.notes, ["manifest.json was not written: --policy is missing"], "a run with no policy recorded is a note, not a failed end");
+    out = await finalizeRun({ ...ctx, env: { CODEX_HOME: join(p.root, "no-codex-home") } });
+    assert.ok(out.notes.includes("manifest.json was not written: --policy is missing"), "a run with no policy recorded is a note, not a failed end");
+    assert.ok(out.notes.some((n) => /^driver usage: not collected \(no conductor thread recorded/.test(n)), out.notes.join("\n"));
+    assert.ok(out.notes.some((n) => /ran outside the codex session/.test(n)), "no CODEX_THREAD_ID: the closing turn has no marker, and the note says so");
   } finally { p.done(); }
 });
 

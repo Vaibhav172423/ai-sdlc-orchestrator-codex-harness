@@ -161,7 +161,7 @@ test("the run total is dispatched plus driver, with the modeled parts named", ()
   assert.match(out, /Vendor-metered total\s+\$0\.0500/);
   assert.match(out, /Modeled \(seat\) total\s+\$0\.9900/);
   assert.match(lineOf(out, "of which driver loop"), /\$0\.9900$/);
-  assert.match(out, /Modeled figures are token counts at the pinned rates, not a bill\./);
+  assert.match(out, /Modeled figures are token counts at the price list's rates, not a bill\./);
   assert.doesNotMatch(out, /at least/);
   const md = report(dir, ["--markdown"]).stdout;
   assert.match(md, /^## Run total$/m);

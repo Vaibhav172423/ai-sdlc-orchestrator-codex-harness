@@ -91,9 +91,15 @@ whole running total), and `about` one with reasons of both kinds.
 Every adapter prices a dispatch from the list entry that covers the dispatch's UTC day, and
 `plugin/mcp/model-dispatch/src/pricing.ts` turns tokens and that card into dollars with
 `computeCostUsd`. The `claude-cli` adapter reports its own cost and uses the list only to refuse a
-model it cannot price. The driver loop in `driver-cost-modeled.jsonl` is priced at the `pricing:` card in
-the policy's `driver:` block, which a test holds equal to the list's card for today. USD per 1M
-tokens, `from` and `to` inclusive:
+model it cannot price. The conductor is priced from the same list
+(`plugin/mcp/model-dispatch/src/driverPricing.ts`), on the UTC day each turn or response was spent:
+`driver-cost-modeled.jsonl` per turn from the exec stream, `driver-usage.json` per response from the
+codex session file, and the cost cap from whichever of the two the report books. A turn the exec
+stream reports only as a sum is priced response by response when the session file holds its
+responses; without them, a sum above 272,000 input tokens bills the standard card and is labelled
+`TIER UNVERIFIED`. The `pricing:` card in the policy's `driver:` block is documentation unless it
+sets `pricing_override: true`, and a test holds it equal to the list. USD per 1M tokens, `from` and
+`to` inclusive:
 
 | Model | From | To | Input | Cached input | Output |
 |---|---|---|---|---|---|
@@ -155,7 +161,7 @@ client's 900-second call timeout:
 `usage_complete: false` marks a lower bound: the call spent at least that much.
 
 `adapter_provenance: "modeled"` marks every event from a seat adapter (`codex-cli`). Its `estimated`
-rows are seat floors priced at the pinned rates, not metered spend, so they belong with the modeled
+rows are seat floors priced at the price list's rates, not metered spend, so they belong with the modeled
 figures rather than the vendor-metered total.
 
 An OpenAI request that got no answer, or an answer of 408, 409, 429 or 5xx, is sent again up to

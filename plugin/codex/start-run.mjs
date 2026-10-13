@@ -38,6 +38,7 @@ import {
 } from "./interactive-run.mjs";
 import { assertResumePolicy, policyRecord, resolveRunPolicy, RunRefusal } from "./run-policy.mjs";
 import { checkSessionModel } from "./session-model.mjs";
+import { appendSessionMarker } from "./session-marker.mjs";
 import { ContractRefusal, reopenRun } from "../scripts/write-contract.mjs";
 import { isRunId, runDirFor } from "../scripts/lib/run-id.mjs";
 import { isMain } from "../scripts/lib/is-main.mjs";
@@ -182,6 +183,7 @@ export async function startRun(args, deps = {}) {
       projectRoot,
       policyArg: args.policy ?? earlier?.policy_requested ?? earlier?.policy ?? null,
       warn,
+      now,
     });
     if (earlier) {
       assertResumePolicy({
@@ -303,6 +305,8 @@ export async function startRun(args, deps = {}) {
         reason: null,
       };
   writeRunJson(runDir, record);
+  // Opens the conductor's cost window at the turn that started the run, before any dispatch.
+  appendSessionMarker(runDir, { tool: "start_run", policy: policy.path ?? policy.name }, { env, now: () => at, warn });
 
   configureSinks({ runLogPath: join(runDir, "orchestrator.log") });
   log("info", "run.start", {

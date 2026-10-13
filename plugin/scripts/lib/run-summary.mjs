@@ -94,25 +94,25 @@ export function driverLine(m) {
   const seat = d?.driver_auth === "chatgpt" ? " The conductor signed in with ChatGPT, and a seat bills no money per token." : "";
   if (Number.isFinite(cost) && t.driver_cost_source === "driver-usage.json") {
     const basis = t.driver_usage?.cost_source ? ` Booked from the ${t.driver_usage.cost_source}.` : "";
-    return `Conductor (driver) cost, modeled from driver-usage.json: ${usd(cost)}.${basis} Modeled means token counts at the pinned rates, not a bill.${seat}`;
+    return `Conductor (driver) cost, modeled from driver-usage.json: ${usd(cost)}.${basis} Modeled means token counts at the dated price list's rates, not a bill.${seat}`;
   }
   if (d && Number.isFinite(cost)) {
     const incomplete = Number(d.driver_turns_incomplete) || 0;
     const floor = incomplete ? `, ${incomplete} incomplete: their cost is not known, so this figure is a floor` : "";
     const head = `Conductor (driver) cost, modeled: ${usd(cost)} over ${plural(Number(d.driver_turns) || 0, "turn")}${floor}.`;
-    const tail = " Modeled means token counts at the pinned rates, not a bill." + seat;
+    const tail = " Modeled means token counts at the dated price list's rates, not a bill." + seat;
     if (d.outcome) return head + tail;
     return `${head} The run is still going: run.mjs re-renders this summary with the final figure when it completes.${tail}`;
   }
   if (Number.isFinite(cost) && t.driver_cost_source) {
-    return `Conductor (driver) cost, modeled from ${t.driver_cost_source}: ${usd(cost)}. Modeled means token counts at the pinned rates, not a bill.`;
+    return `Conductor (driver) cost, modeled from ${t.driver_cost_source}: ${usd(cost)}. Modeled means token counts at the dated price list's rates, not a bill.`;
   }
   if (m.route === "headless") {
     return "Conductor (driver) cost: run.mjs models it from the codex event stream when this invocation ends, and re-renders this summary with it when the run completes.";
   }
   return (
-    "Conductor (driver) cost not measured: this run was started from an interactive skill, and nothing read the " +
-    `conductor's own token usage. Dispatched work alone is ${dispatched}; it is not the run's cost.`
+    "Conductor (driver) cost: end-run.mjs reads it from the conductor's codex session file when the run ends, " +
+    `and re-renders this summary with it when the run completes. Dispatched work alone is ${dispatched}; it is not the run's cost.`
   );
 }
 

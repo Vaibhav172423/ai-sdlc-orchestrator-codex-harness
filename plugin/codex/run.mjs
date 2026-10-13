@@ -27,7 +27,7 @@ import { fileURLToPath } from "node:url";
 import { codexEvents, driverCostRow, modeledDriverCostRows, readDriverRecord } from "./telemetry/event-reader.mjs";
 import { argvPin, assertPinnedInvocation, findPinRejection } from "./telemetry/fairnessPin.mjs";
 import { assertResumePolicy, codexEnv, policyRecord, readRecordedPolicy, resolveRunPolicy, RunRefusal } from "./run-policy.mjs";
-import { assertUnderCostCap, COST_CAP_EXCEEDED } from "../mcp/model-dispatch/dist/costCap.js";
+import { assertUnderCostCap, COST_CAP_EXCEEDED, driverCapWarning } from "../mcp/model-dispatch/dist/costCap.js";
 import { DriverTurnTracker } from "../mcp/model-dispatch/dist/driverUsage.js";
 import { configureSinks, log, redactText } from "../scripts/lib/log.mjs";
 import {
@@ -62,6 +62,8 @@ import { hookArgs } from "./hook-wiring.mjs";
 import { abandonCommand, ContractRefusal, reopenRun } from "../scripts/write-contract.mjs";
 import { liveLock, readContract, readLock } from "../scripts/lib/contract-lock.mjs";
 import { renderPrompt, renderSkills } from "./render.mjs";
+import { listDriverPriceFn } from "../mcp/model-dispatch/dist/driverPricing.js";
+import { reportCommand } from "../scripts/report.mjs";
 
 const CODEX_DIR = dirname(fileURLToPath(import.meta.url));
 const PLUGIN_ROOT = dirname(CODEX_DIR);
@@ -314,7 +316,9 @@ function writeQuietly(stream, text) {
  */
 export function costCapStop(policy, telemetryPath, opts = {}) {
   try {
-    assertUnderCostCap(policy, telemetryPath, opts);
+    const spend = assertUnderCostCap(policy, telemetryPath, opts);
+    const warning = spend ? driverCapWarning(spend) : null;
+    if (warning) opts.onDriverWarning?.(warning);
     return null;
   } catch (err) {
     if (err?.code === COST_CAP_EXCEEDED) return err.message;
@@ -645,7 +649,26 @@ function runLogOutcome(outcome) {
   return "aborted";
 }
 
-const REPORT_MJS = resolve(PLUGIN_ROOT, "..", "tools", "report.mjs");
+const BOUND_WORD = { floor: "at least ", ceiling: "at most ", mixed: "about " };
+
+function money(usd, bound) {
+  return usd == null ? "not measured" : `${BOUND_WORD[bound] ?? ""}$${usd.toFixed(4)}`;
+}
+
+/** The conductor's figure and how it was checked, as the run's last lines say it; `cost` is the report's booking. */
+function driverLines(m, usage, cost) {
+  const lines = [];
+  const incomplete = m.driver_turns_incomplete ? ` (${m.driver_turns_incomplete} incomplete: cost not known, not $0)` : "";
+  const figure = cost ? money(cost.driver_usd_modeled, cost.driver_bound) : money(m.driver_cost_usd_modeled, m.driver_turns_incomplete ? "floor" : "exact");
+  lines.push(`invocations ${m.codex_invocations}, turns ${m.driver_turns}${incomplete}, driver cost (modeled) ${figure}`);
+  if (m.driver_cost_source) lines.push(`driver cost booked from: ${m.driver_cost_source}`);
+  const cc = usage?.cross_check;
+  if (cc) {
+    const exec = cc.exec_stream_cost_usd == null ? "" : ` (exec stream ${money(cc.exec_stream_cost_usd)})`;
+    lines.push(`token cross-check: ${cc.verdict}${cc.verified ? ", verified" : ", UNVERIFIED"}${exec}`);
+  }
+  return lines;
+}
 
 function shellQuote(value) {
   return `'${String(value).replace(/'/g, "'\\''")}'`;
@@ -813,6 +836,7 @@ async function runDriver(args, deps) {
       projectRoot,
       policyArg: args.policy ?? recorded.policy_requested ?? recorded.policy ?? null,
       warn,
+      now: deps.now ? new Date(deps.now()) : new Date(),
     });
     if (deps.loadPolicy) policyRun = { ...policyRun, policy: deps.loadPolicy(policyRun.name) };
   } catch (err) {
@@ -826,6 +850,14 @@ async function runDriver(args, deps) {
   const policyName = policyRun.name;
   const pin = policyRun.driver.pin;
   const codexHome = env.CODEX_HOME ?? join(homedir(), ".codex");
+  const priceFn = listDriverPriceFn(policy);
+  const capWarned = new Set();
+  // The bridge logs the same events before a dispatch; the driver logs each kind once per run.
+  const onDriverWarning = (w) => {
+    if (capWarned.has(w.event)) return;
+    capWarned.add(w.event);
+    log("warn", w.event, { run_id: runId, reason: w.reason ?? undefined });
+  };
   const skipGitRepoCheck = runMode === "greenfield";
 
   const renderValues = {
@@ -857,6 +889,7 @@ async function runDriver(args, deps) {
         {
           ...policyRecord(policyRun),
           pin,
+          driver_price: policyRun.driver.price,
           run_id: runId,
           output_dir: runDir,
           code_dir: codeDir,
@@ -889,14 +922,17 @@ async function runDriver(args, deps) {
   if (run.resume?.foreignThread) {
     warn(
       `run ${runId}: no run folder under ${join(projectRoot, ".sdlc", "runs")} records thread ${threadId}; its earlier ` +
-        `turns' cost is not in ${runDir}, and the first resumed turn is priced at the thread's whole running total ` +
+        `turns' cost is not in ${runDir}. The first resumed turn is priced from the thread's earlier total in codex's ` +
+        `session file under ${codexHome} when that file is there, and at the thread's whole running total otherwise ` +
         "(flagged baseline_unknown). If that run used --output-dir, stop this one and pass the same --output-dir again.",
     );
   }
   configureSinks({ runLogPath: join(runDir, "orchestrator.log") });
   const driverAuth = await readDriverAuth({ spawnFn, codexBin, cwd: projectRoot, env });
   const driver = {
-    pricing: policyRun.driver.pricing,
+    policy,
+    priceFn,
+    codexHome,
     model: pin.model,
     policyName,
     policyVersion: policyRun.version ?? 1,
@@ -988,7 +1024,7 @@ async function runDriver(args, deps) {
         reason = `the driver received ${stopping}`;
         break;
       }
-      const capBefore = costCapStop(policy, telemetryPath, { env, codexHome });
+      const capBefore = costCapStop(policy, telemetryPath, { env, codexHome, priceFn, onDriverWarning });
       if (capBefore) {
         outcome = "cost_cap";
         reason = capBefore;
@@ -1126,7 +1162,7 @@ async function runDriver(args, deps) {
       const waiting = stop?.outcome === "gate_pending" || stop?.outcome === "question_pending";
       if (!stop || waiting) {
         // Before a waiting gate too: a run over its cap ends here instead of asking for an answer it cannot act on.
-        const capAfter = costCapStop(policy, telemetryPath, { env, codexHome });
+        const capAfter = costCapStop(policy, telemetryPath, { env, codexHome, priceFn, onDriverWarning });
         if (capAfter) {
           outcome = "cost_cap";
           reason = !waiting
@@ -1218,7 +1254,14 @@ async function runDriver(args, deps) {
     });
     // Read before the run end rewrites manifest.json with the outcome as its status.
     const summaryWhy = outcome === "completed" ? null : completionEvidence(runDir, runStartedAtMs).summaryReason;
-    const { driverManifest: m, notes: finalNotes, contractLines } = await finalizeRun({
+    const {
+      driverManifest: m,
+      driverUsage,
+      notes: finalNotes,
+      contractLines,
+      reportPath,
+      cost,
+    } = await finalizeRun({
       projectRoot,
       runDir,
       runId,
@@ -1230,7 +1273,10 @@ async function runDriver(args, deps) {
       codeDir,
       records: readRunRecords(runDir),
       driver,
+      env,
+      codexHome,
     });
+    if (cost) log("info", "run.cost", { run_id: runId, ...cost, driver_provenance: "modeled" });
     log(outcome === "completed" ? "info" : "warn", "run.end", {
       run_id: runId,
       outcome: runLogOutcome(outcome),
@@ -1251,11 +1297,11 @@ async function runDriver(args, deps) {
     for (const line of contractLines) say(`  ${line}`);
     if (m.pin_rejection) warn(`  the codex CLI rejected the pinned model or effort — ${m.pin_rejection}`);
     for (const w of m.codex_warnings ?? []) warn(`  codex warning: ${w}`);
-    const atLeast = m.driver_turns_incomplete ? "at least " : "";
-    const incompleteNote = m.driver_turns_incomplete ? ` (${m.driver_turns_incomplete} incomplete: cost not known, not $0)` : "";
-    say(`  invocations ${m.codex_invocations}, turns ${m.driver_turns}${incompleteNote}, driver cost (modeled) ${atLeast}$${m.driver_cost_usd_modeled}`);
+    for (const line of driverLines(m, driverUsage, cost)) say(`  ${line}`);
+    if (cost) say(`  run total (dispatched + driver): ${money(cost.run_total_usd, cost.run_total_bound)}`);
     say(`  run folder:  ${runDir}`);
-    if (existsSync(REPORT_MJS)) say(`  Cost report: node ${shellQuote(REPORT_MJS)} ${shellQuote(runDir)}`);
+    if (reportPath) say(`  report:      ${reportPath}`);
+    say(`  Cost report: ${reportCommand(runDir)}`);
     if (outcome !== "completed") {
       const outputDir = runDir === runDirFor(projectRoot, runId) ? "" : ` --output-dir=${shellQuote(runDir)}`;
       say(`  Continue:    node ${shellQuote(join(CODEX_DIR, "run.mjs"))} --resume=${runId} --project-root=${shellQuote(projectRoot)}${outputDir}`);

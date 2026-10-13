@@ -1,7 +1,8 @@
 /**
  * The policy a headless run uses, resolved by the bridge's own resolver
- * (dist/policy.js), so run.mjs's pin, driver rates and cost cap come from
- * the same file its dispatches route by.
+ * (dist/policy.js), so run.mjs's pin and cost cap come from the same file
+ * its dispatches route by, and the conductor's price from the same dated
+ * list (dist/driverPricing.js).
  */
 
 import { existsSync, readFileSync } from "node:fs";
@@ -14,17 +15,18 @@ import { POLICY_PATH_ENV } from "./dispatch.mjs";
 export { POLICY_PATH_ENV };
 
 const DIST_POLICY = new URL("../mcp/model-dispatch/dist/policy.js", import.meta.url);
+const DIST_DRIVER_PRICING = new URL("../mcp/model-dispatch/dist/driverPricing.js", import.meta.url);
 
 let bridge = null;
 let bridgeLoadError = null;
 try {
-  bridge = await import(DIST_POLICY.href);
+  bridge = { ...(await import(DIST_POLICY.href)), ...(await import(DIST_DRIVER_PRICING.href)) };
 } catch (err) {
   bridgeLoadError = err;
 }
 
 function bridgePolicy() {
-  if (bridge?.resolvePolicy && bridge?.isReplayFixture) return bridge;
+  if (bridge?.resolvePolicy && bridge?.isReplayFixture && bridge?.driverPriceRecord) return bridge;
   const why = bridgeLoadError?.message ?? "it has no resolvePolicy export, so it was built from an older checkout";
   throw new RunRefusal(
     `run: cannot load the policy resolver from ${fileURLToPath(DIST_POLICY)} (${why}). ` +
@@ -71,11 +73,12 @@ function replayAdvice(resolved, projectRoot, presets) {
 /**
  * Resolves the run's policy (routing-policy.yaml, then --policy, then the
  * project.json default, then the built-in default) and reads its driver pin
- * and rates. Refuses a replay fixture, and a name the dispatch command line
+ * and the price list entry for it on `now`. Refuses a replay fixture, a
+ * conductor model nothing prices, and a name the dispatch command line
  * cannot carry unquoted.
  */
-export function resolveRunPolicy({ projectRoot, policyArg = null, warn = stderrWarn } = {}) {
-  const { resolvePolicy, isReplayFixture, shippedPresetNames, POLICY_NAME_RE } = bridgePolicy();
+export function resolveRunPolicy({ projectRoot, policyArg = null, warn = stderrWarn, now = new Date() } = {}) {
+  const { resolvePolicy, isReplayFixture, shippedPresetNames, POLICY_NAME_RE, driverPriceRecord } = bridgePolicy();
   const requested = typeof policyArg === "string" && policyArg.length > 0 ? policyArg : null;
   let resolved;
   try {
@@ -102,6 +105,13 @@ export function resolveRunPolicy({ projectRoot, policyArg = null, warn = stderrW
   } catch (err) {
     throw refuseWith(err);
   }
+  const price = driverPriceRecord(policy, driver.pin.model, now);
+  if (price.unpriced_reason) {
+    throw new RunRefusal(
+      `run: the conductor's model cannot be priced, so its cost could not be modeled or capped: ${price.unpriced_reason}.`,
+    );
+  }
+  for (const w of price.warnings) warn(`run: ${w}`);
   const notice =
     requested && resolved.source === "project-override"
       ? `run: ${resolved.path} (policy '${policy.name}') is used instead of --policy=${requested}; ` +
@@ -115,7 +125,7 @@ export function resolveRunPolicy({ projectRoot, policyArg = null, warn = stderrW
     path: resolved.path,
     sha256: resolved.sha256,
     requested,
-    driver,
+    driver: { ...driver, price },
     notice,
   };
 }

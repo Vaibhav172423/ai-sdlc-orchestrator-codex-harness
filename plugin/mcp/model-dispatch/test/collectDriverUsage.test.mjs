@@ -212,6 +212,29 @@ test("a headless run folder gets its cross-check", () => {
   }
 });
 
+test("the CLI prints the token cross-check per thread and invocation, and the file records what it was measured from", () => {
+  const s = sandbox();
+  try {
+    const r = new SyntheticRollout({ threadId: CONDUCTOR });
+    const a = r.turn({ responses: [{ usage: u(1000, 200, 50, 10) }] });
+    const b = r.turn({ responses: [{ usage: u(3000, 900, 70, 20) }] });
+    r.write(s.home);
+    writeJsonl(join(s.run, "driver-events.jsonl"), driverEventLines(CONDUCTOR, [{ turn: a }, { turn: b }]));
+    const out = cli([s.run, `--codex-home=${s.home}`]);
+    assert.equal(out.status, 0, out.stderr);
+    const lines = out.stdout.trim().split("\n");
+    assert.match(lines[1], /^token cross-check: equal, verified \(exec stream\/session file, difference\)$/);
+    assert.equal(lines[2], `  thread ${CONDUCTOR}: equal; input 4000/4000 (0), cached input 1100/1100 (0), output 120/120 (0), reasoning 30/30 (0)`);
+    assert.equal(lines[3], `  invocation 1 (${CONDUCTOR}): equal; input 1000/1000 (0), cached input 200/200 (0), output 50/50 (0), reasoning 10/10 (0)`);
+    assert.equal(lines[4], `  invocation 2 (${CONDUCTOR}): equal; input 3000/3000 (0), cached input 900/900 (0), output 70/70 (0), reasoning 20/20 (0)`);
+    const written = JSON.parse(readFileSync(join(s.run, "driver-usage.json"), "utf-8"));
+    assert.equal(written.inputs["driver-events.jsonl"], readFileSync(join(s.run, "driver-events.jsonl")).length);
+    assert.equal(written.inputs["driver-session.jsonl"], 0);
+  } finally {
+    s.done();
+  }
+});
+
 test("nothing to measure writes nothing; the CLI exits 1 and names the way out", () => {
   const s = sandbox();
   try {

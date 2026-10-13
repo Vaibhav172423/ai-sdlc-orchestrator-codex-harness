@@ -124,7 +124,7 @@ What the contract does and does not guarantee is stated plainly in the [README](
 Two sources feed one file:
 
 - **Dispatched work.** Every `execute_with_model` call writes an event with vendor-reported token counts. `provenance: "vendor"`.
-- **The driver loop.** `event-reader.mjs` parses the `codex exec --json` event stream and builds one event per turn from its usage figures. `provenance: "modeled"` — codex reports tokens but no money, so the cost is derived at the pinned rates.
+- **The driver loop.** `event-reader.mjs` parses the `codex exec --json` event stream and builds one row per turn from its usage figures, priced from the dated price list on the turn's day (`src/driverPricing.ts`). At every run end, `run-finalize.mjs` runs `collect-driver-usage.mjs`, which reads the same conductor from codex's session file into `driver-usage.json`, response by response, and on a `run.mjs` run cross-checks the two token for token. `provenance: "modeled"` — codex reports tokens but no money, so the cost is derived from the list.
 
 The report adds the two into a run total and keeps the modeled figure out of the vendor-metered total. Why is in [methodology.md](methodology.md), and how the report lays them out is in [understanding-output.md](understanding-output.md).
 

@@ -1,8 +1,9 @@
 #!/usr/bin/env node
 /**
  * Writes <run-dir>/driver-usage.json: the conductor's modeled cost, read from
- * its codex session file and, for a headless run, cross-checked against the
- * exec stream in driver-events.jsonl.
+ * its codex session file and priced from the dated price list, and, for a
+ * headless run, cross-checked token for token against the exec stream in
+ * driver-events.jsonl. run-finalize.mjs runs it at every run end.
  *
  *   node plugin/scripts/collect-driver-usage.mjs <run-dir> [--codex-home=<dir>]
  *     [--thread=<id>]... [--policy=<name> | --policy-path=<file>] [--project-root=<dir>]
@@ -18,6 +19,7 @@ import { fileURLToPath } from "node:url";
 import {
   DRIVER_EVENTS_FILE,
   DRIVER_USAGE_FILE,
+  driverUsageInputs,
   isThreadId,
   measureDriverUsage,
   parseDriverEvents,
@@ -150,7 +152,7 @@ export function collectDriverUsage(runDir, opts = {}) {
     return { ok: false, code: "read", message: `could not read the conductor's usage: ${err?.message ?? err}` };
   }
   if (!measured.ok) return { ok: false, code: measured.code, message: measured.message };
-  const report = { ...measured.report, collected_at: now() };
+  const report = { ...measured.report, inputs: driverUsageInputs(dir), collected_at: now() };
   const path = join(dir, DRIVER_USAGE_FILE);
   if (!opts.dryRun) {
     try {
@@ -165,6 +167,36 @@ export function collectDriverUsage(runDir, opts = {}) {
 export function summaryLine(report, path, written) {
   const usd = `$${report.cost_usd_modeled.toFixed(6)}`;
   return `driver usage: ${usd} modeled, ${report.cost_source}${written ? ` -> ${path}` : " (dry run, nothing written)"}`;
+}
+
+const CHECK_BUCKETS = [
+  ["input_tokens", "input"],
+  ["cached_input_tokens", "cached input"],
+  ["output_tokens", "output"],
+  ["reasoning_output_tokens", "reasoning"],
+];
+
+/**
+ * The exec-stream versus session-file token comparison, one line per thread
+ * and per invocation: each bucket as `exec/session (difference)`, the
+ * difference being session minus exec.
+ */
+export function crossCheckLines(report) {
+  const cc = report?.cross_check;
+  if (!cc) return [];
+  const cell = (exec, session) =>
+    CHECK_BUCKETS.map(([k, label]) => {
+      const a = exec ? exec[k] : null;
+      const b = session ? session[k] : null;
+      const d = a == null || b == null ? "?" : b - a;
+      return `${label} ${a ?? "-"}/${b ?? "-"} (${d})`;
+    }).join(", ");
+  const lines = [`token cross-check: ${cc.verdict}${cc.verified ? ", verified" : ", UNVERIFIED"} (exec stream/session file, difference)`];
+  for (const t of cc.threads ?? []) lines.push(`  thread ${t.thread_id}: ${t.verdict}; ${cell(t.exec_stream_tokens, t.session_tokens)}`);
+  for (const i of cc.invocations ?? []) {
+    lines.push(`  invocation ${i.invocation} (${i.thread_id}): ${i.status}; ${cell(i.exec_delta, i.session_turn_tokens)}`);
+  }
+  return lines;
 }
 
 if (process.argv[1] && fileURLToPath(import.meta.url) === resolve(process.argv[1])) {
@@ -192,6 +224,9 @@ if (process.argv[1] && fileURLToPath(import.meta.url) === resolve(process.argv[1
     process.exit(result.code === "no_run_dir" || result.code === "policy" ? 2 : 1);
   }
   if (args.dryRun) console.log(JSON.stringify(result.report, null, 2));
-  else console.log(summaryLine(result.report, result.path, result.written));
+  else {
+    console.log(summaryLine(result.report, result.path, result.written));
+    for (const line of crossCheckLines(result.report)) console.log(line);
+  }
   process.exit(0);
 }

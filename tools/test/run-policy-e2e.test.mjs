@@ -30,14 +30,14 @@ function shipped(name) {
   return readFileSync(join(POLICIES, `${name}.yaml`), "utf-8");
 }
 
-/** gpt-plus-flash renamed, with driver rates double the preset's. */
-function customOverride() {
+/** gpt-plus-flash renamed, with driver rates double the preset's; billed only under pricing_override. */
+function customOverride({ override = true } = {}) {
   return shipped("gpt-plus-flash")
     .replace(/^name: .*$/m, "name: my-custom")
     .replace(/^hard_cost_cap_usd: .*$/m, "hard_cost_cap_usd: 5")
     .replace(
       /^(driver:\n(?:  .*\n)*?)  pricing: .*$/m,
-      "$1  pricing: { input: 4.00, input_cached: 0.40, output: 24.00 }",
+      `$1  pricing: { input: 4.00, input_cached: 0.40, output: 24.00 }${override ? "\n  pricing_override: true" : ""}`,
     );
 }
 
@@ -110,14 +110,28 @@ test("a run gives codex the routing-policy.yaml path, records it, and prices the
     assert.equal(m.policy_path, join(t.root, "routing-policy.yaml"));
     assert.equal(m.policy_requested, "gpt-seat-plus-flash");
     assert.match(m.policy_sha256, /^[0-9a-f]{64}$/);
-    // 1000 input at $4.00/M + 100 output at $24.00/M; the preset's rates would give 0.0032.
+    // 1000 input at $4.00/M + 100 output at $24.00/M; the price list would give 0.0032.
     assert.equal(m.driver_cost_usd_modeled, 0.0064);
+    assert.equal(m.driver_price.basis, "custom");
 
     const start = lines(join(t.outputDir, "driver-events.jsonl")).map((l) => JSON.parse(l)).find((r) => r.kind === "invocation_start");
     assert.equal(start.policy, "my-custom");
     assert.equal(start.policy_path, m.policy_path, "a run killed before it ends still records the file it started on");
     assert.equal(start.policy_sha256, m.policy_sha256);
     assert.equal(start.policy_requested, "gpt-seat-plus-flash");
+  });
+});
+
+test("a driver pricing block that differs from the list is documentation: the list bills, with a warning", () => {
+  withSetup({ override: customOverride({ override: false }) }, (t) => {
+    const r = runMjs(t);
+    const m = manifest(t);
+    assert.equal(m.driver_cost_usd_modeled, 0.0032, `exit ${r.status}\n${r.stderr}`);
+    assert.equal(m.driver_price.basis, "list");
+    assert.deepEqual(m.driver_price.rates, { input: 2, input_cached: 0.2, output: 12 });
+    assert.match(r.stderr, /differs on input, input_cached, output from the price list 2\/0\.2\/12/);
+    const row = lines(join(t.outputDir, "driver-cost-modeled.jsonl")).map((l) => JSON.parse(l))[0];
+    assert.deepEqual([row.price_basis, row.price_tier, row.price_verified], ["list", "standard", m.price_list_verified]);
   });
 });
 

@@ -20,12 +20,18 @@
  *                     --telemetry=<path> [--policy=<name>] [--policy-path=<file>] \
  *                     [--project-root=<path>] [--work-dir=<path>]
  *   node dispatch.mjs --log-phase=<state> --task-type=skipped|in_session \
-                     --telemetry=<path> --out=<receipt.json> \
-                     [--module=<name>] [--reason=<text>] [--policy=<name>]
-   node dispatch.mjs --preflight --auth-mode=vendor [--policy=<name>] \
+ *                     --telemetry=<path> --out=<receipt.json> \
+ *                     [--module=<name>] [--reason=<text>] [--policy=<name>]
+ *   node dispatch.mjs --preflight --auth-mode=vendor [--policy=<name>] \
  *                     [--project-root=<path>] --out=<result.json>
  *   node dispatch.mjs --load-policy [--policy=<name>] [--project-root=<path>] \
  *                     --out=<policy.json>
+ *
+ * --telemetry is required for --packet and --log-phase. Every call run from a
+ * codex shell appends a CODEX_THREAD_ID marker to the run folder's
+ * driver-session.jsonl, which names the conductor's session file. Exit 0 on
+ * success; 1 when the call failed, preflight said ok:false, or the model call
+ * returned success:false (its result file is still written).
  */
 
 import { readFileSync, writeFileSync, mkdirSync } from "node:fs";
@@ -152,11 +158,6 @@ function writeResult(outPath, payload) {
 }
 
 /**
- * Core dispatch. `connect` is injected so tests can exercise argument
- * construction, result writing and summarizing without a live bridge or
- * any vendor call.
- */
-/**
  * A zero-cost event for a phase that ran no model call — one the intent
  * skipped, or one the conductor completed in-session without dispatching.
  *
@@ -213,6 +214,11 @@ export function buildLogEventArgs({ phase, taskType, module, reason, policyName,
   };
 }
 
+/**
+ * Core dispatch. `connect` is injected so tests can exercise argument
+ * construction, result writing and summarizing without a live bridge or
+ * any vendor call.
+ */
 export async function runDispatch(args, { connect, env = process.env } = {}) {
   const projectRoot = args["project-root"] ? resolve(args["project-root"]) : process.cwd();
   const outPath = args.out;

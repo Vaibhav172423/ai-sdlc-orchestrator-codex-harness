@@ -22,10 +22,12 @@
 version: 1
 name: gpt-seat-plus-flash
 
-# The conductor `codex exec` runs as: run.mjs pins -m and the effort from here
-# and models the driver's cost at these rates. Not a models[] entry, because it
-# is never dispatched and preflight would demand its credential. The same in
-# every runnable policy, so a comparison between policies holds it constant.
+# The conductor `codex exec` runs as: run.mjs pins -m and the effort from here.
+# Its modeled cost is priced from the dated price list (src/prices.ts); the
+# pricing block below documents that rate, and a test holds it to the list.
+# Not a models[] entry, because it is never dispatched and preflight would
+# demand its credential. The same in every runnable policy, so a comparison
+# between policies holds it constant.
 driver:
   model_name: gpt-5.6-terra
   reasoning: { effort: high }

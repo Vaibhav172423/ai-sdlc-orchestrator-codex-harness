@@ -316,12 +316,12 @@ test("SUMMARY.md is written only with --summary, and every figure in it is the m
   }
 });
 
-test("the conductor's line says what is known: not measured, still being counted, or the final modeled figure", () => {
+test("the conductor's line says what is known: not measured yet, still being counted, or the final modeled figure", () => {
   const p = project();
   try {
     p.telemetry(EVENTS);
     p.write({ summary: true });
-    assert.match(p.summary(), /Conductor \(driver\) cost not measured: this run was started from an interactive skill/);
+    assert.match(p.summary(), /end-run\.mjs reads it from the conductor's codex session file when the run ends/);
     assert.match(p.summary(), /Dispatched work alone is \$0\.1700; it is not the run's cost\./);
     assert.match(p.summary(), /\| Conductor \(driver\) loop — modeled \| not measured \|/);
 

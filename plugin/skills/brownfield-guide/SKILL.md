@@ -350,12 +350,17 @@ Then, in the same turn:
 4. Run Phase 9's write-manifest command again with `--status=accepted` (or
    `--status=auto-approved`), as the pipeline's Gate 4 says. The run counts as finished from
    that write, so it comes after steps 1-3.
-5. Record the end (`--outcome=completed`, after Gate 4 is accepted), once step 4 has run. Its
-   `Cost report:` line gives the cost report command for this run folder, or says this install
-   has none.
+5. Record the end (`--outcome=completed`, after Gate 4 is accepted), once step 4 has run. It
+   reads your own token usage from this session's codex session file into `driver-usage.json`,
+   writes `report.md` in the run folder, and prints the conductor's figure, the run total and a
+   `Cost report:` line with the cost report command for this run folder.
 6. Print the report to the user with cost breakdown, files touched (from
    `.sdlc/runs/<run-id>/provenance.json`), and the `$mmo-codex:revert <run-id>` line `--close`
-   printed as the way to undo the run.
+   printed as the way to undo the run. The breakdown is the one this command prints:
+
+   ```bash
+   node '{{PLUGIN_ROOT}}/scripts/report.mjs' '{{OUTPUT_DIR}}' --markdown
+   ```
 
 **An abort at Gate 1, 2, 3 or 4** ends the run too. Append the gate's `aborted` line, with that
 gate's number and artifact (here, an abort at Gate 2):

@@ -313,6 +313,19 @@ function validateDriver(d: any) {
     throw new Error("Policy driver: 'reasoning.effort' (non-empty string) required");
   }
   if (d.pricing !== undefined) validatePricing(d.pricing, "Policy driver");
+  if (d.pricing_override !== undefined && typeof d.pricing_override !== "boolean") {
+    throw new Error("Policy driver: pricing_override must be true or false");
+  }
+  if (d.pricing_override === true && d.pricing === undefined) {
+    throw new Error("Policy driver: pricing_override: true needs a pricing block to bill");
+  }
+  if (d.pricing_override !== true && !isListedModel(d.model_name)) {
+    throw new Error(
+      `Policy driver: '${d.model_name}' is not on the price list (plugin/mcp/model-dispatch/src/prices.ts), ` +
+        `so the conductor's cost could not be modeled. Add its verified price entry there, or give the driver ` +
+        `block a pricing block with pricing_override: true.`
+    );
+  }
 }
 
 export function getModel(policy: Policy, modelId: string): ModelConfig {

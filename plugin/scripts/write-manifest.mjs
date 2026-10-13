@@ -17,6 +17,7 @@ import { basename, dirname, join, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { buildManifest } from "../mcp/model-dispatch/dist/telemetry.js";
+import { driverUsageIsFresh } from "./lib/driver-usage-fresh.mjs";
 import { productCounts } from "./lib/product-count.mjs";
 import { isRunId } from "./lib/run-id.mjs";
 import { ACCEPTED_STATUSES, codeWrittenSummary, isCodeWritten, MANIFEST_WRITER, renderRunSummary, sha256 } from "./lib/run-summary.mjs";
@@ -194,17 +195,23 @@ function driverBlock(dm) {
     thread_ids: Array.isArray(dm.thread_ids) ? dm.thread_ids : [],
     pin: dm.pin ?? null,
     driver_auth: dm.driver_auth ?? null,
+    driver_price: dm.driver_price ?? null,
+    price_list_verified: dm.price_list_verified ?? null,
+    driver_cost_source: dm.driver_cost_source ?? null,
+    driver_verified: typeof dm.driver_verified === "boolean" ? dm.driver_verified : null,
   };
 }
 
 /**
  * The conductor's modeled cost: the session collector's driver-usage.json,
  * which books the session file where the exec stream disagrees with it, else
- * run.mjs's driver-manifest.json. The cost report reads them in the same order.
+ * run.mjs's driver-manifest.json. The cost report reads them in the same
+ * order, and both pass over a driver-usage.json a resumed run has spent past.
  */
 function driverTotals(runDir, dm) {
   const usage = readJson(join(runDir, "driver-usage.json"));
-  if (usage && finite(usage.cost_usd_modeled) !== null) {
+  const stale = usage && !driverUsageIsFresh(runDir, usage) && dm && finite(dm.driver_cost_usd_modeled) !== null;
+  if (usage && !stale && finite(usage.cost_usd_modeled) !== null) {
     return {
       driver_cost_usd_modeled: usage.cost_usd_modeled,
       driver_turns_incomplete: null,

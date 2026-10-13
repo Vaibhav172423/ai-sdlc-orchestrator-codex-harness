@@ -14,6 +14,7 @@ import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { ACTOR, ACTOR_LEGEND, gutter } from "./lib/actors.mjs";
+import { driverUsageIsFresh } from "./lib/driver-usage-fresh.mjs";
 
 export const REPORT_SCRIPT = fileURLToPath(import.meta.url);
 
@@ -23,6 +24,7 @@ export const SDLC_PHASES = [
   "codegen", "tests", "docs", "test_run", "senior_code_review", "security_review",
 ];
 const OVERHEAD_ORDER = ["debug", "refactor", "final_report", "driver_loop"];
+const OVERHEAD_NOTE = "Runner overhead is dispatched work outside the SDLC phases: debug retries, refactor passes, the final report, and any phase the bridge does not name.";
 const PROVENANCES = ["vendor", "estimated", "modeled", "none", "unknown"];
 
 export const RUN_TOTAL_LABEL = "Run total = dispatched + driver";
@@ -71,15 +73,18 @@ export function readRun(runDir) {
       .map((n) => readJson(join(at("delegation"), n)))
       .filter((r) => r && Object.keys(r).length > 0);
   } catch { /* no delegation folder */ }
+  const driverUsage = readJson(at("driver-usage.json"));
   return {
     runDir,
     events: readJsonl(at("telemetry.jsonl")),
     driverRows: readJsonl(at("driver-cost-modeled.jsonl")),
     driverFile: isFile(at("driver-cost-modeled.jsonl")),
-    driverUsage: readJson(at("driver-usage.json")),
+    driverUsage,
+    driverUsageFresh: driverUsageIsFresh(runDir, driverUsage),
     driverStream: readJsonl(at("driver-events.jsonl")),
     manifest: readJson(at("manifest.json")) ?? {},
     driverManifest: readJson(at("driver-manifest.json")) ?? {},
+    runJson: readJson(at("run.json")) ?? {},
     receipts,
     selected: null,
   };
@@ -214,12 +219,22 @@ export function identity(run) {
   const wallMs = Date.parse(d.ended_at) - Date.parse(d.started_at);
   const positive = (v) => (isNum(v) && v > 0 ? v : undefined);
   const exitCode = [d.exit_code, m.exit_code, m.driver?.exit_code].find(Number.isInteger);
+  const rj = run.runJson ?? {};
+  const usageWindow = run.driverUsage?.window && typeof run.driverUsage.window === "object" ? run.driverUsage.window : {};
+  const windowFrom = [
+    ["driver-manifest.json", str(d.started_at), str(d.ended_at)],
+    ["run.json", str(rj.started_at), str(rj.ended_at)],
+    ["driver-usage.json", str(usageWindow.start), str(usageWindow.end)],
+  ].find(([, start]) => start);
   return {
+    run_window: windowFrom ? { start: windowFrom[1], end: windowFrom[2] ?? null, source: windowFrom[0] } : null,
+    driver_price: d.driver_price && typeof d.driver_price === "object" ? d.driver_price : null,
+    price_list_verified: str(d.price_list_verified) ?? str(run.driverUsage?.price_list_verified) ?? null,
     run_id: str(d.run_id) ?? str(m.run_id) ?? str(m.pass) ?? str(m.pass_id) ?? firstEvent((e) => str(e.pass)) ?? basename(run.runDir),
     policy: policySources[0]?.policy ?? null,
     policy_sources: policySources,
     policy_disagreement: new Set(policySources.map((s) => s.policy)).size > 1,
-    started_at: str(d.started_at) ?? str(m.started_at) ?? null,
+    started_at: str(d.started_at) ?? str(m.started_at) ?? str(rj.started_at) ?? null,
     duration_sec: positive(wallMs / 1000) ?? positive(m.duration_sec) ?? positive(m.total_wall_clock_sec) ?? null,
     outcome: str(d.outcome) ?? str(m.outcome) ?? str(m.driver?.outcome) ?? null,
     outcome_reason: str(d.outcome_reason) ?? str(m.outcome_reason) ?? str(m.driver?.outcome_reason) ?? null,
@@ -296,7 +311,46 @@ const COST_SOURCE_QUALIFIERS = [
   ["PROVISIONAL", /\bPROVISIONAL\b/],
   ["WHOLE THREAD", /\bWHOLE THREAD\b/],
   ["UPPER BOUND", /\bupper bound\b/i],
+  ["TIER UNVERIFIED", /\bTIER UNVERIFIED\b/],
 ];
+
+/** The buckets the exec stream and the session file are compared on; cache writes only when either side has any. */
+const CHECK_BUCKETS = ["input_tokens", "cached_input_tokens", "output_tokens", "reasoning_output_tokens"];
+
+function bucketRows(exec, session) {
+  const has = (k) => num(exec?.[k]) !== 0 || num(session?.[k]) !== 0;
+  const keys = [...CHECK_BUCKETS, ...(has("cache_write_input_tokens") ? ["cache_write_input_tokens"] : [])];
+  return keys.map((bucket) => {
+    const e = exec && isNum(exec[bucket]) ? exec[bucket] : null;
+    const x = session && isNum(session[bucket]) ? session[bucket] : null;
+    return { bucket, exec_stream: e, session_file: x, difference: e == null || x == null ? null : x - e };
+  });
+}
+
+/**
+ * The cross-check as token counts: each thread's exec-stream total against
+ * what the session file books for it, and each invocation's exec-stream
+ * share against the session-file responses inside it. Difference is session
+ * file minus exec stream.
+ */
+function tokenCheck(cc) {
+  if (!cc || typeof cc !== "object" || !Array.isArray(cc.threads)) return null;
+  return {
+    verdict: verdictOf(cc) ?? null,
+    verified: typeof cc.verified === "boolean" ? cc.verified : VERIFIED_VERDICTS.has(verdictOf(cc)),
+    threads: cc.threads.filter((t) => t && typeof t === "object").map((t) => ({
+      thread_id: str(t.thread_id) ?? null,
+      verdict: str(t.verdict) ?? null,
+      buckets: bucketRows(t.exec_stream_tokens, t.session_tokens),
+    })),
+    invocations: (Array.isArray(cc.invocations) ? cc.invocations : []).filter((i) => i && typeof i === "object").map((i) => ({
+      invocation: i.invocation ?? null,
+      thread_id: str(i.thread_id) ?? null,
+      status: str(i.status) ?? null,
+      buckets: bucketRows(i.exec_delta, i.session_turn_tokens),
+    })),
+  };
+}
 
 function verificationOf(costSource, verifiedFlag, cc) {
   const verdict = cc && typeof cc === "object" ? verdictOf(cc) : undefined;
@@ -355,13 +409,17 @@ function driverSummary(run) {
   const stream = streamIncompleteTurns(run.driverStream);
   const incomplete = Math.max(incompleteRows.length, manifestIncomplete, stream.total);
   const rowThreads = strings(rows.map((r) => r.thread_id));
-  const usage = usableUsage(run.driverUsage);
+  const collected = usableUsage(run.driverUsage);
+  // A resumed run spent past an older collection; its live rows are the newer figure.
+  const staleUsage = collected != null && run.driverUsageFresh === false;
+  const usage = staleUsage && run.driverFile ? null : collected;
   const base = {
     measured: false, booked_from: null, source: null, cost_source: null, verification: null,
     turns: 0, turns_incomplete: incomplete, turns_incomplete_unpriced: incomplete,
     m: null, input_tokens: null, cached_input_tokens: null, output_tokens: null,
     thread_ids: strings(d.thread_ids).length ? strings(d.thread_ids) : rowThreads,
     window: null, unpriced: [], cross_check: d.driver_cross_check ?? null, flags: {},
+    token_check: null, tier_unverified_turns: 0, stale_collection: staleUsage,
   };
   const floorFacts = [];
   const ceilingFacts = [];
@@ -406,7 +464,10 @@ function driverSummary(run) {
       window: usage.window ?? null,
       unpriced: describeUnpriced(usage.unpriced),
       cross_check: crossCheck,
+      token_check: tokenCheck(crossCheck),
+      tier_unverified_turns: Array.isArray(usage.turns) ? usage.turns.filter((t) => t?.price_tier === "unverified").length : num(usage.tier_unverified_turns),
     };
+    if (staleUsage) floorFacts.push("driver-usage.json was collected before the run's last recorded activity; run collect-driver-usage.mjs again for the later turns");
     const threads = Array.isArray(usage.threads) ? usage.threads : [];
     const unread = threads.filter((t) => t && t.booked_from == null && t.rollout !== "found").map((t) => str(t.thread_id)).filter(Boolean);
     if (unread.length) floorFacts.push(`${plural(unread.length, "conductor thread")} had no readable session file (${unread.join(", ")})`);
@@ -438,7 +499,9 @@ function driverSummary(run) {
       cached_input_tokens: complete.reduce((s, r) => s + num(r.input_tokens_cached), 0),
       output_tokens: complete.reduce((s, r) => s + num(r.output_tokens), 0),
       flags: driverFlagCounts(complete, d),
+      tier_unverified_turns: complete.filter((r) => r.price_tier === "unverified").length,
     };
+    if (staleUsage) floorFacts.push("driver-usage.json predates the run's last invocation, so the driver figure is the exec stream's from driver-cost-modeled.jsonl; run collect-driver-usage.mjs again to cross-check it");
     const unpricedRows = complete.length - priced.length;
     if (unpricedRows > 0) driver.unpriced = [`${plural(unpricedRows, "turn")} with no cost recorded`];
     const flags = driver.flags;
@@ -455,6 +518,9 @@ function driverSummary(run) {
   }
   if (driver.measured) {
     if (driver.turns_incomplete_unpriced > 0) floorFacts.unshift(`${plural(driver.turns_incomplete_unpriced, "driver turn")} reported no usage`);
+    if (driver.tier_unverified_turns > 0) {
+      floorFacts.push(`${plural(driver.tier_unverified_turns, "driver turn")} summed more than a long-context threshold of input with no per-response sizes, and ${driver.tier_unverified_turns === 1 ? "was" : "were"} priced at the standard card; a request above the threshold bills more`);
+    }
     if (driver.unpriced.length > 0) floorFacts.push(`Unpriced driver turns (${driver.unpriced.join(", ")}) are not in the driver figure`);
     const completeFlag = usage ? [usage.cost_complete, usage.complete].find((b) => typeof b === "boolean") : d.driver_cost_complete;
     const flagged = driver.verification?.qualifiers.some((q) => q === "INCOMPLETE" || q === "LOWER BOUND" || q === "PROVISIONAL");
@@ -502,9 +568,10 @@ export function summarize(run) {
     bucket.calls += 1;
     bucket.m += cost;
 
-    const rec = phases.get(phase) ?? { phase, sdlc: isSdlc, calls: 0, tokIn: 0, tokOut: 0, m: 0, prov: zeroCounts() };
+    const rec = phases.get(phase) ?? { phase, sdlc: isSdlc, calls: 0, tokIn: 0, tokCached: 0, tokOut: 0, m: 0, prov: zeroCounts() };
     rec.calls += 1;
     rec.tokIn += num(e.input_tokens);
+    rec.tokCached += num(e.input_tokens_cached);
     rec.tokOut += num(e.output_tokens);
     rec.m += cost;
     rec.prov[prov] += 1;
@@ -522,7 +589,7 @@ export function summarize(run) {
   }
 
   const phaseOut = (rec) => ({
-    phase: rec.phase, calls: rec.calls, input_tokens: rec.tokIn, output_tokens: rec.tokOut,
+    phase: rec.phase, calls: rec.calls, input_tokens: rec.tokIn, cached_input_tokens: rec.tokCached, output_tokens: rec.tokOut,
     cost_usd: dollars(rec.m), provenance: provenanceTag(rec.prov), provenance_counts: rec.prov,
   });
   const seen = [...phases.keys()];
@@ -691,6 +758,33 @@ function crossCheckText(cc) {
 
 const verificationText = (v) => (v ? [v.verified ? "verified" : "UNVERIFIED", ...v.qualifiers].join(" · ") : null);
 
+const rate = (n) => (isNum(n) ? n.toFixed(2) : "?");
+const card = (c) => `${rate(c?.input)} / ${rate(c?.input_cached)} / ${rate(c?.output)}`;
+
+/** driver-manifest.json driver_price, as one line. */
+function priceText(price, listVerified) {
+  if (!price) return null;
+  if (!price.rates) return `${price.model}: unpriced (${price.unpriced_reason ?? "no list entry"})`;
+  const basis = price.basis === "custom" ? "the policy's pricing_override block" : `price list, verified ${price.verified ?? listVerified ?? "?"}`;
+  const tiers = (price.tiers ?? []).map((t) => `; over ${Number(t.above_input_tokens).toLocaleString("en-US")} input tokens ${card(t)}`).join("");
+  return `${price.model} ${card(price.rates)} per 1M input / cached / output (${basis})${tiers}`;
+}
+
+function windowLine(w) {
+  if (!w?.start) return null;
+  return `${w.start} → ${w.end ?? "open"} (UTC, from ${w.source})`;
+}
+
+const BUCKET_LABEL = {
+  input_tokens: "input", cached_input_tokens: "cached input", output_tokens: "output",
+  reasoning_output_tokens: "reasoning", cache_write_input_tokens: "cache write",
+};
+const signed = (n) => (n == null ? "?" : n > 0 ? `+${n}` : String(n));
+
+function checkCells(buckets) {
+  return buckets.map((b) => `${BUCKET_LABEL[b.bucket] ?? b.bucket} ${b.exec_stream ?? "-"}/${b.session_file ?? "-"} (${signed(b.difference)})`).join(" · ");
+}
+
 /** Only a floor bound lets the note call the driver figure a floor; with a ceiling reason as well it is neither. */
 function incompleteNote(dr) {
   const priced = dr.turns_incomplete - dr.turns_incomplete_unpriced;
@@ -708,8 +802,8 @@ function flagsText(flags) {
 /** The paragraph under the driver figure, by how the driver signed in. */
 function driverCostNote(auth, { markdown = false } = {}) {
   const lead = markdown
-    ? ["Codex reports no wallet or usage figures, so this is derived from turn token", "counts at the policy's pinned rates."]
-    : ["Codex reports no wallet figures, so this is token counts at the pinned rates."];
+    ? ["Codex reports no wallet or usage figures, so this is derived from turn token", "counts at the dated price list's rates."]
+    : ["Codex reports no wallet figures, so this is token counts at the price list's rates."];
   if (auth === "api_key") {
     return [
       ...lead,
@@ -727,6 +821,8 @@ function driverCostNote(auth, { markdown = false } = {}) {
 
 /** An API-key driver is billed per token, so its modeled share is not seat work. */
 const modeledLabel = (auth) => (auth === "api_key" ? "Modeled total" : "Modeled (seat) total");
+
+const DASHBOARD_HINT = "The driver signed in with an OpenAI API key: compare its tokens with the OpenAI usage dashboard for this window.";
 
 const BOUND_PREFIX = { floor: "at least ", ceiling: "at most ", mixed: "about " };
 const amount = (usd, bound = "exact") => (usd == null ? "not measured" : `${BOUND_PREFIX[bound === true ? "floor" : bound] ?? ""}${fmtUSD(usd)}`);
@@ -750,10 +846,10 @@ function renderText(r) {
   const dr = r.driver;
   const rule = `  ${"─".repeat(70)}`;
   const money = (label, value) => p(`  ${label.padEnd(Math.max(label.length + 1, 70 - value.length))}${value}`);
-  const counted = (label, calls, value) => p(`  ${label.padEnd(30)}${String(calls).padStart(7)}${"".padStart(22)}${value.padStart(11)}`);
+  const counted = (label, calls, value) => p(`  ${label.padEnd(27)}${String(calls).padStart(6)}${"".padStart(26)}${value.padStart(11)}`);
   const phaseRow = (ph, indent = "") => {
-    const tok = `${fmtCompact(ph.input_tokens)} / ${fmtCompact(ph.output_tokens)}`;
-    p(`  ${(indent + ph.phase).padEnd(24)}${ph.provenance.padStart(6)}${String(ph.calls).padStart(7)}${tok.padStart(22)}${fmtUSD(ph.cost_usd).padStart(11)}`);
+    const tok = `${fmtCompact(ph.input_tokens)} / ${fmtCompact(num(ph.cached_input_tokens))} / ${fmtCompact(ph.output_tokens)}`;
+    p(`  ${(indent + ph.phase).padEnd(22)}${ph.provenance.padStart(5)}${String(ph.calls).padStart(6)}${tok.padStart(26)}${fmtUSD(ph.cost_usd).padStart(11)}`);
   };
   const field = (label, value) => p(`  ${label.padEnd(24)}${value}`);
   const wrappedField = (label, value, width = 54) => {
@@ -779,14 +875,17 @@ function renderText(r) {
   p(`  Started:   ${id.started_at ?? "—"}`);
   const duration = fmtDuration(id.duration_sec);
   if (duration) p(`  Duration:  ${duration}`);
+  const win = windowLine(id.run_window);
+  if (win) p(`  Window:    ${win}`);
   if (id.outcome) p(`  Outcome:   ${outcomeText(id)}`);
   if (r.selected) p(`  Selected:  ${selectedText(r.selected, r.run_dir)}`);
+  if (win && id.driver_auth === "api_key") p(`  Check:     ${DASHBOARD_HINT}`);
   p();
 
   if (r.dispatched.calls > 0) {
     p(`  Dispatched work`);
     p();
-    p(`  ${"Phase".padEnd(24)}${"Prov".padStart(6)}${"Calls".padStart(7)}${"Tokens (in / out)".padStart(22)}${"Cost".padStart(11)}`);
+    p(`  ${"Phase".padEnd(22)}${"Prov".padStart(5)}${"Calls".padStart(6)}${"Tokens in / cached / out".padStart(26)}${"Cost".padStart(11)}`);
     p(rule);
     for (const ph of r.dispatched.phases) phaseRow(ph);
     p(rule);
@@ -796,6 +895,9 @@ function renderText(r) {
       for (const ph of r.dispatched.overhead_phases) phaseRow(ph, "  ");
     }
     counted("Dispatched total", r.dispatched.calls, fmtUSD(r.dispatched.cost_usd));
+    p();
+    p(`  Tokens: fresh input / cached input / output.`);
+    if (r.dispatched.overhead.calls > 0) p(`  ${OVERHEAD_NOTE}`);
     p();
   } else {
     p(`  No dispatched calls recorded.`);
@@ -829,6 +931,14 @@ function renderText(r) {
     if (flags) field("Flags", flags);
     const cc = dr.cross_check ? crossCheckText(dr.cross_check) : null;
     if (cc) field("Cross-check", cc);
+    const price = priceText(id.driver_price, id.price_list_verified);
+    if (price) wrappedField("Price", price);
+    if (dr.token_check) {
+      p();
+      p(`  Token cross-check: exec stream / session file (session minus exec)`);
+      for (const t of dr.token_check.threads) p(`    thread ${t.thread_id} — ${t.verdict}: ${checkCells(t.buckets)}`);
+      for (const i of dr.token_check.invocations) p(`    invocation ${i.invocation} — ${i.status}: ${checkCells(i.buckets)}`);
+    }
     p();
     for (const l of driverCostNote(id.driver_auth)) p(`  ${l}`);
   }
@@ -852,7 +962,7 @@ function renderText(r) {
     p(`  The driver loop was not measured, so this run has no total. Dispatched work`);
     p(`  alone is ${fmtUSD(t.dispatched_usd)}; it is not the run's cost.`);
   } else if (t.modeled_usd > 0) {
-    p(`  Modeled figures are token counts at the pinned rates, not a bill.`);
+    p(`  Modeled figures are token counts at the price list's rates, not a bill.`);
   }
   for (const reason of boundNotes(t)) p(`  ${reason}`);
   p();
@@ -894,7 +1004,7 @@ function renderMarkdown(r) {
   const t = r.totals;
   const dr = r.driver;
   const phaseRow = (ph, prefix = "") => {
-    p(`| ${prefix}\`${ph.phase}\` | ${ph.provenance} | ${ph.calls} | ${fmtCompact(ph.input_tokens)} / ${fmtCompact(ph.output_tokens)} | ${fmtUSD(ph.cost_usd)} |`);
+    p(`| ${prefix}\`${ph.phase}\` | ${ph.provenance} | ${ph.calls} | ${fmtCompact(ph.input_tokens)} / ${fmtCompact(num(ph.cached_input_tokens))} / ${fmtCompact(ph.output_tokens)} | ${fmtUSD(ph.cost_usd)} |`);
   };
 
   p(`# Run report — ${id.run_id}`);
@@ -906,14 +1016,21 @@ function renderMarkdown(r) {
   p(`| Started | ${id.started_at ?? "—"} |`);
   const duration = fmtDuration(id.duration_sec);
   if (duration) p(`| Duration | ${duration} |`);
+  const win = windowLine(id.run_window);
+  if (win) p(`| Window | ${win} |`);
   if (id.outcome) p(`| Outcome | ${outcomeText(id)} |`);
   if (r.selected) p(`| Selected | ${selectedText(r.selected, r.run_dir)} |`);
+  if (id.price_list_verified) p(`| Price list | verified ${id.price_list_verified} |`);
   p();
+  if (win && id.driver_auth === "api_key") {
+    p(`_${DASHBOARD_HINT}_`);
+    p();
+  }
 
   if (r.dispatched.calls > 0) {
     p(`## Dispatched work`);
     p();
-    p(`| Phase | Prov | Calls | Tokens (in / out) | Cost |`);
+    p(`| Phase | Prov | Calls | Tokens (in / cached / out) | Cost |`);
     p(`|---|:---:|---:|---|---:|`);
     for (const ph of r.dispatched.phases) phaseRow(ph);
     p(`| **SDLC total** | | ${r.dispatched.sdlc.calls} | | **${fmtUSD(r.dispatched.sdlc.cost_usd)}** |`);
@@ -922,6 +1039,8 @@ function renderMarkdown(r) {
       for (const ph of r.dispatched.overhead_phases) phaseRow(ph, "↳ ");
     }
     p(`| **Dispatched total** | | ${r.dispatched.calls} | | **${fmtUSD(r.dispatched.cost_usd)}** |`);
+    p();
+    p(`_Tokens: fresh input / cached input / output.${r.dispatched.overhead.calls > 0 ? ` ${OVERHEAD_NOTE}` : ""}_`);
     p();
   } else {
     p(`## Dispatched work`);
@@ -957,8 +1076,26 @@ function renderMarkdown(r) {
     if (flags) bullets.push(`Flags: ${flags}`);
     const cc = dr.cross_check ? crossCheckText(dr.cross_check) : null;
     if (cc) bullets.push(`Cross-check: ${cc}`);
+    const price = priceText(id.driver_price, id.price_list_verified);
+    if (price) bullets.push(`Price: ${price}`);
     for (const b of bullets) p(`- ${b}`);
     if (bullets.length) p();
+    if (dr.token_check) {
+      p(`### Token cross-check: exec stream against the session file`);
+      p();
+      p(`| Scope | Status | Bucket | Exec stream | Session file | Difference |`);
+      p(`|---|---|---|---:|---:|---:|`);
+      const rows = (scope, status, buckets) => {
+        for (const b of buckets) {
+          p(`| ${scope} | ${status ?? "—"} | ${BUCKET_LABEL[b.bucket] ?? b.bucket} | ${b.exec_stream ?? "—"} | ${b.session_file ?? "—"} | ${signed(b.difference)} |`);
+        }
+      };
+      for (const t of dr.token_check.threads) rows(`thread \`${t.thread_id}\``, t.verdict, t.buckets);
+      for (const i of dr.token_check.invocations) rows(`invocation ${i.invocation}`, i.status, i.buckets);
+      p();
+      p(`_Difference is the session file minus the exec stream. A thread row compares the whole thread; an invocation row compares that invocation's share of the running total with the session-file responses inside it._`);
+      p();
+    }
     for (const l of driverCostNote(id.driver_auth, { markdown: true })) p(`> ${l}`);
   }
   p();
@@ -980,7 +1117,7 @@ function renderMarkdown(r) {
   if (t.run_total_usd == null) {
     p(`_The driver loop was not measured, so this run has no total. Dispatched work alone is ${fmtUSD(t.dispatched_usd)}; it is not the run's cost._`);
   } else if (t.modeled_usd > 0) {
-    p(`_Modeled figures are token counts at the pinned rates, not a bill._`);
+    p(`_Modeled figures are token counts at the price list's rates, not a bill._`);
   }
   for (const reason of boundNotes(t)) p(`_${reason}_`);
   p();

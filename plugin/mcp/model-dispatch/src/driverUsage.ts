@@ -6,8 +6,9 @@
  * priced from consecutive differences of its totals; summing the totals bills
  * every earlier invocation again.
  */
-import { computeCostUsd } from "./pricing.js";
-import type { ModelPricing } from "./types.js";
+import { fixedDriverPriceFn, priceDriverTokens, type DriverPriceFn, type PricedTokens, type TokenBuckets } from "./driverPricing.js";
+import { computeCostUsd, round6 } from "./pricing.js";
+import type { ModelPricing, PriceBasis, PriceTierLabel } from "./types.js";
 
 export const USAGE_BUCKETS = [
   "input_tokens",
@@ -362,32 +363,99 @@ export function priceUsage(usage: DriverUsage, pricing: ModelPricing): PricedUsa
   return { tokens, reasoning: usage.reasoning_output_tokens, cost_usd: computeCostUsd(tokens, pricing) };
 }
 
+/** How a run's driver turns are priced: the pin's model through one price function. */
+export interface TurnPricing {
+  model: string;
+  priceFn: DriverPriceFn;
+  /** The session file's per-response usage for a complete turn, when it is known. */
+  requestsFor?: (turn: DriverTurn) => TokenBuckets[] | null;
+  /** The day a turn with no timestamp of its own is priced on. */
+  now?: () => string;
+}
+
+export interface PricedDriverTurn extends PriceLabels {
+  tokens: { input: number; input_cached: number; output: number };
+  reasoning: number;
+  /** Rounded to the micro-dollar, as a driver row stores it; null when nothing prices the model that day. */
+  cost_usd: number | null;
+  priced_at: string | null;
+  long_context_requests: number;
+  unpriced_reason: string | null;
+}
+
+export interface PriceLabels {
+  price_basis: PriceBasis | null;
+  price_tier: PriceTierLabel | null;
+  price_verified: string | null;
+}
+
+function asTurnPricing(p: ModelPricing | TurnPricing, model = "driver"): TurnPricing {
+  return "priceFn" in p ? p : { model, priceFn: fixedDriverPriceFn(p) };
+}
+
+/** A complete turn priced at its own day; null for an incomplete one, whose usage never arrived. */
+export function priceDriverTurn(turn: DriverTurn, pricing: ModelPricing | TurnPricing): PricedDriverTurn | null {
+  if (turn.status !== "complete" || !turn.delta) return null;
+  const p = asTurnPricing(pricing);
+  const at = turn.ended_at ?? turn.started_at ?? p.now?.() ?? null;
+  const requests = p.requestsFor?.(turn) ?? null;
+  const priced: PricedTokens = priceDriverTokens(turn.delta, p.model, at, p.priceFn, requests);
+  const split = priceUsage(turn.delta, { input: 0, input_cached: 0, output: 0 });
+  return {
+    tokens: split.tokens,
+    reasoning: split.reasoning,
+    cost_usd: priced.cost_usd === null ? null : round6(priced.cost_usd),
+    priced_at: at,
+    price_basis: priced.basis,
+    price_tier: priced.tier,
+    price_verified: priced.verified,
+    long_context_requests: priced.long_context_requests,
+    unpriced_reason: priced.unpriced_reason,
+  };
+}
+
 export interface DriverUsageSummary {
   turns: number;
   turns_complete: number;
   turns_incomplete: number;
+  /** Complete turns no card priced; their cost is left out of cost_usd. */
+  turns_unpriced: number;
+  /** Turns whose summed input crossed a tier threshold with no per-response sizes to prove which card bills. */
+  turns_tier_unverified: number;
+  turns_long_context: number;
   cost_usd: number;
   thread_ids: string[];
   flags: DriverTurnFlag[];
 }
 
-export function summarizeDriverTurns(turns: DriverTurn[], pricing: ModelPricing): DriverUsageSummary {
+export function summarizeDriverTurns(turns: DriverTurn[], pricing: ModelPricing | TurnPricing): DriverUsageSummary {
+  const p = asTurnPricing(pricing);
   let cost = 0;
   let complete = 0;
+  let unpriced = 0;
+  let unverified = 0;
+  let long = 0;
   const threads: string[] = [];
   const flags = new Set<DriverTurnFlag>();
   for (const t of turns) {
     if (t.thread_id && !threads.includes(t.thread_id)) threads.push(t.thread_id);
     for (const f of t.flags) flags.add(f);
-    if (t.status !== "complete" || !t.delta) continue;
+    const priced = priceDriverTurn(t, p);
+    if (!priced) continue;
     complete += 1;
-    cost += priceUsage(t.delta, pricing).cost_usd;
+    if (priced.cost_usd === null) unpriced += 1;
+    else cost += priced.cost_usd;
+    if (priced.price_tier === "unverified") unverified += 1;
+    if (priced.price_tier === "long_context") long += 1;
   }
   return {
     turns: turns.length,
     turns_complete: complete,
     turns_incomplete: turns.length - complete,
-    cost_usd: Math.round(cost * 1e6) / 1e6,
+    turns_unpriced: unpriced,
+    turns_tier_unverified: unverified,
+    turns_long_context: long,
+    cost_usd: round6(cost),
     thread_ids: threads,
     flags: [...flags],
   };

@@ -9,12 +9,16 @@
  * running totals.
  */
 
-import { existsSync, readdirSync, readFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, join, relative, resolve } from "node:path";
 import * as zlib from "node:zlib";
+import { DriverTurnTracker, type DriverTurn } from "./driverUsage.js";
+import { bucketsCostUsd, listDriverPriceFn, PRICE_LIST_VERIFIED, priceDriverTokens, type DriverPriceFn, type DriverRate, type PriceContext } from "./driverPricing.js";
 import { round6 } from "./pricing.js";
-import type { ModelPricing, Policy } from "./types.js";
+import type { ModelPricing, Policy, PriceTierLabel } from "./types.js";
+
+export type { DriverPriceFn, DriverRate, PriceContext };
 
 export const USAGE_BUCKETS = [
   "input_tokens",
@@ -436,6 +440,58 @@ export const SESSION_MARKERS_FILE = "driver-session.jsonl";
 export const DRIVER_EVENTS_FILE = "driver-events.jsonl";
 export const DRIVER_USAGE_FILE = "driver-usage.json";
 export const DRIVER_COST_MODELED_FILE = "driver-cost-modeled.jsonl";
+export const TELEMETRY_FILE = "telemetry.jsonl";
+export const RUN_JSON_FILE = "run.json";
+
+/** The byte size of each append-only file a measurement reads, so a later append shows. */
+export function driverUsageInputs(runDir: string): Record<string, number> {
+  const out: Record<string, number> = {};
+  for (const f of [DRIVER_EVENTS_FILE, SESSION_MARKERS_FILE]) {
+    try {
+      out[f] = statSync(join(runDir, f)).size;
+    } catch {
+      out[f] = 0;
+    }
+  }
+  return out;
+}
+
+/**
+ * False once driver-events.jsonl or driver-session.jsonl has grown since the
+ * driver-usage.json `usage` was collected: a resumed run spent past it. A
+ * file that records no inputs predates the check and counts as fresh.
+ */
+export function driverUsageIsFresh(runDir: string, usage: any): boolean {
+  const inputs = usage?.inputs;
+  if (!inputs || typeof inputs !== "object") return true;
+  const now = driverUsageInputs(runDir);
+  return Object.entries(now).every(([f, size]) => typeof inputs[f] !== "number" || inputs[f] === size);
+}
+
+/** Threads a codex-cli dispatch of this run ran in (telemetry.jsonl codex_thread_id): never the conductor's. */
+export function nestedDispatchThreads(runDir: string): Set<string> {
+  const out = new Set<string>();
+  for (const ev of readJsonl(join(runDir, TELEMETRY_FILE))) {
+    if (isThreadId(ev?.codex_thread_id)) out.add(ev.codex_thread_id);
+  }
+  return out;
+}
+
+/** The conductor threads start-run.mjs recorded in run.json, one per start or resume; empty when none did. */
+export function recordedConductorThreads(runDir: string): Set<string> {
+  const out = new Set<string>();
+  const path = join(runDir, RUN_JSON_FILE);
+  if (!existsSync(path)) return out;
+  try {
+    const run = JSON.parse(readFileSync(path, "utf-8"));
+    for (const st of Array.isArray(run?.starts) ? run.starts : []) {
+      if (isThreadId(st?.codex_thread_id)) out.add(st.codex_thread_id);
+    }
+  } catch {
+    // An unreadable run.json scopes nothing; the markers stand on their own.
+  }
+  return out;
+}
 
 /** Torn lines are skipped: these files are appended to while they are read. */
 export function readJsonl(path: string): any[] {
@@ -640,6 +696,48 @@ export function invocationSpans(invs: ExecInvocation[], all: ExecInvocation[], r
   });
 }
 
+export interface ExecSessionFacts {
+  /** Per-response usage for each invocation, keyed by invocation number. */
+  requests: Map<number, Usage[]>;
+  /** Running totals for threads whose first invocation resumes a thread this run folder has no earlier record of. */
+  baselines: Record<string, Usage>;
+}
+
+/**
+ * What the session file adds to an exec stream (`lines`, driver-events.jsonl)
+ * for pricing it: each invocation's per-response usage, so a turn the stream
+ * reports only as a sum is priced response by response; and, for a thread
+ * first seen in a resume, its total before that invocation, so the first
+ * turn is not priced at the thread's whole running total. Left out of
+ * `requests`: threads with no per-response records, invocations with more
+ * than one completed turn, and compaction calls (the stream's totals omit
+ * them).
+ */
+export function execSessionFacts(lines: any[], codexHome: string): ExecSessionFacts {
+  const all = parseDriverEvents(lines).filter((i) => !i.legacy && i.started_at && typeof i.invocation === "number");
+  const out: ExecSessionFacts = { requests: new Map(), baselines: {} };
+  const threads = [...new Set(all.map((i) => i.thread_id).filter((t): t is string => isThreadId(t)))];
+  for (const thread of threads) {
+    const loaded = loadRollout(codexHome, thread);
+    if (loaded.status !== "found") continue;
+    const rollout = loaded.rollout;
+    const invs = all.filter((i) => i.thread_id === thread);
+    if (invs[0].mode === "resume") {
+      const before = lastTokenCountAtOrBefore(rollout, ms(invs[0].started_at) - 1);
+      if (before) out.baselines[thread] = before.total;
+    }
+    if (rollout.series !== "token_usage_record") continue;
+    const spans = invocationSpans(invs, all, rollout);
+    invs.forEach((inv, k) => {
+      if (inv.completed_turns !== 1) return;
+      const ids = new Set(turnsInSpans(rollout, [spans[k]]).map((t) => t.turn_id));
+      const usages = rollout.records.filter((r) => r.turn_id && ids.has(r.turn_id) && !r.compaction).map((r) => r.usage);
+      if (usages.length > 0) out.requests.set(inv.invocation as number, usages);
+    });
+  }
+  return out;
+}
+
 /**
  * Interactive route. Opens at the latest `$mmo-codex:<run skill>` turn at or
  * before the first marker, else at the turn holding that marker (a lower
@@ -743,34 +841,14 @@ export function driverPin(policy: Policy | null | undefined): DriverPin | null {
   return null;
 }
 
-export interface PriceContext {
-  /** Input tokens of the one request being priced, for a size-tiered rate. */
-  requestInputTokens?: number;
-  /** Set when the usage is a sum over requests, so a size tier cannot be applied. */
-  aggregate?: boolean;
-}
-
-/**
- * `at` is the ISO time the tokens were spent. The shape matches the dated
- * price list's `effectivePricing(model, at, {requestInputTokens})`, so a
- * caller can pass that in place of the policy's own rates.
- */
-export type DriverPriceFn = (model: string, at: string | null, ctx: PriceContext) => ModelPricing | null;
-
-/** The same rates run.mjs prices driver turns at: the driver block's pricing, else a model entry naming the pin. */
-export function policyDriverPriceFn(policy: Policy | null | undefined): DriverPriceFn {
-  return (model) => {
-    if (policy?.driver?.model_name === model && policy.driver.pricing) return policy.driver.pricing;
-    const models = policy?.models ?? [];
-    const entry = models.find((m) => m.id === "gpt" && m.model_name === model) ?? models.find((m) => m.model_name === model);
-    return entry?.pricing ?? null;
-  };
+/** The conductor's default price function: the dated price list, at the day each response was spent. */
+export function defaultDriverPriceFn(policy: Policy | null | undefined): DriverPriceFn {
+  return listDriverPriceFn(policy);
 }
 
 /** Codex counts cached input inside input_tokens and reasoning inside output_tokens. */
 export function usageCostUsd(u: Usage, p: ModelPricing): number {
-  const fresh = Math.max(0, u.input_tokens - u.cached_input_tokens);
-  return (fresh * p.input + u.cached_input_tokens * p.input_cached + u.output_tokens * p.output) / 1_000_000;
+  return bucketsCostUsd(u, p);
 }
 
 export interface DriverTurnUsage {
@@ -789,6 +867,9 @@ export interface DriverTurnUsage {
   tokens: Usage;
   cost_usd: number | null;
   unpriced_reason: string | null;
+  /** `long_context` when a response crossed a tier; `unverified` when only a sum over responses was known. */
+  price_tier: PriceTierLabel | null;
+  long_context_requests: number;
 }
 
 export interface UnpricedEntry {
@@ -838,16 +919,27 @@ function priceTurns(
     let cost = 0;
     let priced = 0;
     let reason: string | null = null;
+    let long = 0;
+    let unverified = 0;
+    let standard = 0;
     const touched = new Set<UnpricedEntry>();
     for (const r of recs) {
       addInto(tokens, r.usage);
       const model = r.model ?? t.model;
       let why = unpricedReason(model, pin);
       if (!why && pin) {
-        const pricing = priceFn(pin.model, r.ts, { requestInputTokens: r.usage.input_tokens });
+        // A token_count difference can span responses, so it proves no tier.
+        const size: PriceContext =
+          rollout.series === "token_count"
+            ? { aggregateInputTokens: r.usage.input_tokens, aggregate: true }
+            : { requestInputTokens: r.usage.input_tokens };
+        const pricing = priceFn(pin.model, r.ts, size);
         if (pricing) {
           cost += usageCostUsd(r.usage, pricing);
           priced++;
+          if (pricing.tier === "long_context") long++;
+          else if (pricing.tier === "unverified") unverified++;
+          else standard++;
         } else {
           why = `no price for ${pin.model}${r.ts ? ` on ${r.ts.slice(0, 10)}` : ""}`;
         }
@@ -880,6 +972,8 @@ function priceTurns(
       tokens,
       cost_usd: reason && priced === 0 ? null : round6(cost),
       unpriced_reason: reason,
+      price_tier: unverified > 0 ? "unverified" : long > 0 ? "long_context" : standard > 0 ? "standard" : null,
+      long_context_requests: long,
     });
     addInto(out.tokens, tokens);
     out.requests += recs.length;
@@ -922,43 +1016,40 @@ export interface ExecThreadTotals {
 }
 
 /**
- * Prices a thread from consecutive differences of its running totals. A
- * thread first seen in a resume subtracts `sessionBaseline` when the session
- * file supplies one; without it the first difference is the whole total.
+ * Prices a thread from consecutive differences of its running totals, by the
+ * same rule driver-cost-modeled.jsonl uses (driverUsage.ts DriverTurnTracker).
+ * A thread whose first invocation is not known to be fresh subtracts
+ * `sessionBaseline` when the session file supplies one; without it the first
+ * difference is the whole total.
  */
 export function execThreadTotals(invs: ExecInvocation[], sessionBaseline: Usage | null): ExecThreadTotals {
   const first = invs[0];
-  let prev: Usage | null;
-  let baseline: ExecBaseline;
-  if (!first || first.mode === "fresh") {
-    prev = zeroUsage();
-    baseline = "zero";
-  } else if (sessionBaseline) {
-    prev = sessionBaseline;
-    baseline = "session-file";
-  } else {
-    prev = null;
-    baseline = "unknown";
-  }
+  const thread = first?.thread_id ?? "(no thread id)";
+  const fresh = !first || first.mode === "fresh";
+  const baseline: ExecBaseline = fresh ? "zero" : sessionBaseline ? "session-file" : "unknown";
+  const tracker = new DriverTurnTracker(!fresh && sessionBaseline ? { baselines: { [thread]: sessionBaseline } } : {});
   const out: ExecThreadTotals = { delta: zeroUsage(), baseline, reset: false, per_invocation: [], unreported: 0 };
-  for (const inv of invs) {
-    const c = inv.cumulative;
-    if (!c) {
+  invs.forEach((inv, k) => {
+    const mode = k === 0 && fresh ? "fresh" : "resume";
+    tracker.push({ v: 1, kind: "invocation_start", invocation: k + 1, mode, resume_thread_id: mode === "resume" ? thread : null });
+    const turns: DriverTurn[] = [];
+    if (inv.cumulative) {
+      turns.push(...tracker.push({ v: 1, kind: "codex", invocation: k + 1, thread_id: thread, event: { type: "turn.started" } }));
+      turns.push(...tracker.push({ v: 1, kind: "codex", invocation: k + 1, thread_id: thread, event: { type: "turn.completed", usage: inv.cumulative } }));
+    }
+    turns.push(...tracker.push({ v: 1, kind: "invocation_end", invocation: k + 1, ended_by: "exit" }));
+    const done = turns.find((t) => t.status === "complete" && t.delta);
+    if (!done) {
       out.per_invocation.push({ inv, delta: null });
       out.unreported++;
-      continue;
+      return;
     }
     out.unreported = 0;
-    let d: Usage;
-    if (!prev) d = { ...c };
-    else if (dropped(c, prev)) {
-      d = { ...c };
-      out.reset = true;
-    } else d = minus(c, prev);
-    prev = c;
+    if (done.flags.includes("cumulative_reset")) out.reset = true;
+    const d = toUsage(done.delta);
     addInto(out.delta, d);
     out.per_invocation.push({ inv, delta: d });
-  }
+  });
   return out;
 }
 
@@ -1077,7 +1168,7 @@ function checkThread(
   spans: Span[] | null,
   rollout: Rollout,
   windowTurns: RolloutTurn[],
-): { thread: ThreadCrossCheck; invocations: InvocationCheck[]; exec: ExecThreadTotals } {
+): { thread: ThreadCrossCheck; invocations: InvocationCheck[]; exec: ExecThreadTotals; execRequests: Usage[][] } {
   const windowIds = new Set(windowTurns.map((t) => t.turn_id));
   const windowRecords = rollout.records.filter((r) => r.turn_id && windowIds.has(r.turn_id));
   const session = sumUsage(windowRecords.map((r) => r.usage));
@@ -1100,12 +1191,15 @@ function checkThread(
   };
 
   const checks: InvocationCheck[] = [];
+  const execRequests: Usage[][] = [];
   const incompleteTurnIds = new Set<string>();
   let lastMatched: TokenCountTotal | null = null;
   for (let k = 0; k < invs.length; k++) {
     const inv = invs[k];
     const turns = turnsOf(k);
     const matched = turns.at(-1) ?? null;
+    const ids = new Set(turns.map((t) => t.turn_id));
+    execRequests.push(windowRecords.filter((r) => ids.has(r.turn_id as string) && !r.compaction).map((r) => r.usage));
     const cumulative = inv.cumulative;
     const base = {
       invocation: inv.invocation ?? k + 1,
@@ -1193,6 +1287,7 @@ function checkThread(
     },
     invocations: checks,
     exec,
+    execRequests,
   };
 }
 
@@ -1333,6 +1428,11 @@ export interface DriverUsageReport {
   cost_complete: boolean;
   unpriced: UnpricedEntry[];
   cross_check: CrossCheck | null;
+  /** Threads a marker or the exec stream named that are not the conductor's, and why. */
+  excluded_threads: { thread_id: string; reason: string }[];
+  /** Turns whose summed input crossed a tier threshold with no per-response sizes, billed at the standard card. */
+  tier_unverified_turns: number;
+  price_list_verified: string;
 }
 
 export interface MeasureOptions {
@@ -1367,6 +1467,8 @@ interface ThreadResult {
   window: DriverWindow | null;
   check: { thread: ThreadCrossCheck; invocations: InvocationCheck[] } | null;
   exec: ExecThreadTotals | null;
+  /** Per invocation, the session file's responses inside it, which prove the exec stream's tier. */
+  execRequests?: Usage[][];
 }
 
 function execStreamThread(
@@ -1376,25 +1478,36 @@ function execStreamThread(
   priceFn: DriverPriceFn,
 ): ThreadResult {
   const exec = execThreadTotals(invs, null);
-  const lastEnd = invs.map((i) => i.ended_at).filter(Boolean).at(-1) ?? null;
-  const pricing = pin ? priceFn(pin.model, lastEnd, { aggregate: true }) : null;
-  const turns: DriverTurnUsage[] = exec.per_invocation.map(({ inv, delta }) => ({
-    thread_id: info.thread_id,
-    turn_id: `invocation-${inv.invocation ?? "?"}`,
-    invocation: inv.invocation,
-    usage_source: "exec-stream",
-    model: pin?.model ?? null,
-    effort: pin?.effort ?? null,
-    started_at: inv.started_at,
-    ended_at: inv.ended_at,
-    ended_by: null,
-    requests: 0,
-    compaction_requests: 0,
-    web_search_calls: 0,
-    tokens: delta ?? zeroUsage(),
-    cost_usd: delta && pricing ? round6(usageCostUsd(delta, pricing)) : null,
-    unpriced_reason: delta ? (pricing ? null : pin ? `no price for ${pin.model}` : "the policy names no driver pin") : "no turn.completed in this invocation",
-  }));
+  let cost = 0;
+  let unpricedAny = false;
+  const turns: DriverTurnUsage[] = exec.per_invocation.map(({ inv, delta }) => {
+    const priced = delta && pin ? priceExecDelta(delta, inv, pin, priceFn) : null;
+    if (priced?.cost_usd != null) cost += priced.cost_usd;
+    else if (delta) unpricedAny = true;
+    return {
+      thread_id: info.thread_id,
+      turn_id: `invocation-${inv.invocation ?? "?"}`,
+      invocation: inv.invocation,
+      usage_source: "exec-stream",
+      model: pin?.model ?? null,
+      effort: pin?.effort ?? null,
+      started_at: inv.started_at,
+      ended_at: inv.ended_at,
+      ended_by: null,
+      requests: 0,
+      compaction_requests: 0,
+      web_search_calls: 0,
+      tokens: delta ?? zeroUsage(),
+      cost_usd: priced?.cost_usd != null ? round6(priced.cost_usd) : null,
+      unpriced_reason: !delta
+        ? "no turn.completed in this invocation"
+        : !pin
+          ? "the policy names no driver pin"
+          : (priced?.unpriced_reason ?? null),
+      price_tier: priced?.tier ?? null,
+      long_context_requests: 0,
+    };
+  });
   info.booked_from = "exec-stream";
   return {
     info,
@@ -1402,13 +1515,22 @@ function execStreamThread(
     tokens: exec.delta,
     requests: 0,
     compaction_requests: 0,
-    cost_usd: pricing ? usageCostUsd(exec.delta, pricing) : 0,
-    cost_complete: pricing !== null && exec.baseline !== "unknown" && exec.unreported === 0,
+    cost_usd: cost,
+    cost_complete: pin !== null && !unpricedAny && exec.baseline !== "unknown" && exec.unreported === 0,
     unpriced: [],
     window: headlessWindow(invs),
     check: execOnlyCheck(info.thread_id, exec),
     exec,
   };
+}
+
+/**
+ * One invocation's exec-stream share of its thread, priced at the day it
+ * ended: response by response when the session file's responses for it are
+ * given, else as a sum, which proves no tier.
+ */
+function priceExecDelta(delta: Usage, inv: ExecInvocation, pin: DriverPin, priceFn: DriverPriceFn, requests: Usage[] | null = null) {
+  return priceDriverTokens(delta, pin.model, inv.ended_at ?? inv.started_at, priceFn, requests && requests.length ? requests : null);
 }
 
 function missingInvocations(check: ThreadResult["check"]): number {
@@ -1423,8 +1545,14 @@ function combineChecks(results: ThreadResult[], byOrder: boolean, pin: DriverPin
   const baselines: Record<string, ExecBaseline> = {};
   for (const r of results) if (r.exec) baselines[r.info.thread_id] = r.exec.baseline;
   const allInvs = execTotals.flatMap((e) => e.per_invocation.map((p) => p.inv));
-  const lastEnd = allInvs.map((i) => i.ended_at).filter(Boolean).at(-1) ?? null;
-  const execPricing = pin ? priceFn(pin.model, lastEnd, { aggregate: true }) : null;
+  let execCost: number | null = pin ? 0 : null;
+  for (const r of results) {
+    (r.exec?.per_invocation ?? []).forEach((p, k) => {
+      if (!p.delta || execCost === null) return;
+      const priced = priceExecDelta(p.delta, p.inv, pin!, priceFn, r.execRequests?.[k] ?? null);
+      execCost = priced.cost_usd === null ? null : execCost + priced.cost_usd;
+    });
+  }
   const verdict = threads.reduce<CrossCheckVerdict>(
     (worst, t) => (VERDICT_RANK.indexOf(t.verdict) > VERDICT_RANK.indexOf(worst) ? t.verdict : worst),
     "equal",
@@ -1439,7 +1567,7 @@ function combineChecks(results: ThreadResult[], byOrder: boolean, pin: DriverPin
     session_tokens: sumUsage(compared.map((t) => t.session_tokens ?? zeroUsage())),
     exec_stream_tokens: execTokens,
     exec_stream_baseline: baselines,
-    exec_stream_cost_usd: execPricing ? round6(usageCostUsd(execTokens, execPricing)) : null,
+    exec_stream_cost_usd: execCost === null ? null : round6(execCost),
     compaction_requests: sum((t) => t.compaction_requests),
     compaction_tokens: sumUsage(threads.map((t) => t.compaction_tokens)),
     incomplete_invocations: allInvs.filter((i) => !i.cumulative).length,
@@ -1456,7 +1584,7 @@ function combineChecks(results: ThreadResult[], byOrder: boolean, pin: DriverPin
 
 export function measureDriverUsage(opts: MeasureOptions): MeasureResult {
   const codexHome = opts.codexHome ?? defaultCodexHome(opts.env);
-  const priceFn = opts.priceFn ?? policyDriverPriceFn(opts.policy);
+  const priceFn = opts.priceFn ?? defaultDriverPriceFn(opts.policy);
   const pin = driverPin(opts.policy);
   let invocations = parseDriverEvents(readJsonl(join(opts.runDir, DRIVER_EVENTS_FILE)));
   if (opts.ignoreLegacy) invocations = invocations.filter((i) => !i.legacy);
@@ -1467,23 +1595,35 @@ export function measureDriverUsage(opts: MeasureOptions): MeasureResult {
   const route: DriverRoute = opts.route ?? (invocations.length > 0 ? "headless" : "interactive");
 
   const threadIds: string[] = [];
-  const addThread = (id: unknown) => {
-    if (isThreadId(id) && !threadIds.includes(id)) threadIds.push(id);
+  const excluded: { thread_id: string; reason: string }[] = [];
+  const workers = nestedDispatchThreads(opts.runDir);
+  const conductors = route === "interactive" ? recordedConductorThreads(opts.runDir) : new Set<string>();
+  const exclude = (id: string, reason: string) => {
+    if (!excluded.some((e) => e.thread_id === id)) excluded.push({ thread_id: id, reason });
+  };
+  const addThread = (id: unknown, recorded: boolean) => {
+    if (!isThreadId(id) || threadIds.includes(id)) return;
+    if (workers.has(id)) return exclude(id, "a codex-cli dispatch of this run ran in it (telemetry.jsonl codex_thread_id)");
+    if (recorded && conductors.size > 0 && !conductors.has(id)) {
+      return exclude(id, "run.json records no start of this run in it");
+    }
+    threadIds.push(id);
   };
   // Headless threads come from the exec stream only: a codex exec started from
   // a codex shell can inherit that shell's CODEX_THREAD_ID, so markers may name
   // the parent session instead.
-  if (route === "headless") invocations.forEach((i) => addThread(i.thread_id));
-  else markers.forEach((m) => addThread(m.thread_id));
-  (opts.threadIds ?? []).forEach(addThread);
+  if (route === "headless") invocations.forEach((i) => addThread(i.thread_id, true));
+  else markers.forEach((m) => addThread(m.thread_id, true));
+  (opts.threadIds ?? []).forEach((id) => addThread(id, false));
   if (threadIds.length === 0) {
+    const skipped = excluded.length ? ` (left out as not the conductor's: ${excluded.map((e) => `${e.thread_id}, ${e.reason}`).join("; ")})` : "";
     return {
       ok: false,
       code: "no_threads",
       message:
         route === "headless"
-          ? `no codex thread id in ${join(opts.runDir, DRIVER_EVENTS_FILE)}; pass --thread=<id>`
-          : `no conductor thread recorded in ${join(opts.runDir, SESSION_MARKERS_FILE)}; pass --thread=<id>`,
+          ? `no codex thread id in ${join(opts.runDir, DRIVER_EVENTS_FILE)}${skipped}; pass --thread=<id>`
+          : `no conductor thread recorded in ${join(opts.runDir, SESSION_MARKERS_FILE)}${skipped}; pass --thread=<id>`,
     };
   }
 
@@ -1572,11 +1712,13 @@ export function measureDriverUsage(opts: MeasureOptions): MeasureResult {
     const priced = priceTurns(threadId, rollout, windowTurns, pin, priceFn, invocationOf);
     let check: ThreadResult["check"] = null;
     let exec: ExecThreadTotals | null = null;
+    let execRequests: Usage[][] | undefined;
     if (route === "headless" && opts.crossCheck !== false) {
       if (invs.length > 0) {
         const c = checkThread(threadId, invs, spans, rollout, windowTurns);
         check = { thread: c.thread, invocations: c.invocations };
         exec = c.exec;
+        execRequests = c.execRequests;
       } else {
         check = { thread: uncheckedThread(threadId, priced.tokens), invocations: [] };
       }
@@ -1593,6 +1735,7 @@ export function measureDriverUsage(opts: MeasureOptions): MeasureResult {
       window,
       check,
       exec,
+      execRequests,
     });
   }
 
@@ -1638,6 +1781,10 @@ export function measureDriverUsage(opts: MeasureOptions): MeasureResult {
   if (missing > 0) costSource += `; INCOMPLETE: ${missing} invocation(s) missing from the session file`;
   const webSearches = results.reduce((n, r) => n + r.turns.reduce((m, t) => m + t.web_search_calls, 0), 0);
   if (webSearches > 0) costSource += `; INCOMPLETE: ${webSearches} hosted web search call(s), billed per call, not priced`;
+  const tierUnverified = results.reduce((n, r) => n + r.turns.filter((t) => t.price_tier === "unverified").length, 0);
+  if (tierUnverified > 0) {
+    costSource += `; TIER UNVERIFIED: ${tierUnverified} turn(s) priced at the standard card from summed input above a long-context threshold`;
+  }
 
   const tokens = sumUsage(results.map((r) => r.tokens));
   const policy = opts.policy;
@@ -1666,6 +1813,9 @@ export function measureDriverUsage(opts: MeasureOptions): MeasureResult {
       cost_complete: unread.length === 0 && webSearches === 0 && results.every((r) => r.cost_complete),
       unpriced,
       cross_check: crossCheck,
+      excluded_threads: excluded,
+      tier_unverified_turns: tierUnverified,
+      price_list_verified: PRICE_LIST_VERIFIED,
     },
   };
 }
@@ -1696,6 +1846,18 @@ export interface DriverSpendOptions {
   priceFn?: DriverPriceFn;
 }
 
+/** driver-usage.json when it parses and holds a figure, else null. */
+export function readDriverUsageFile(runDir: string): any | null {
+  const path = join(runDir, DRIVER_USAGE_FILE);
+  if (!existsSync(path)) return null;
+  try {
+    const usage = JSON.parse(readFileSync(path, "utf-8"));
+    return typeof usage?.cost_usd_modeled === "number" && Number.isFinite(usage.cost_usd_modeled) ? usage : null;
+  } catch {
+    return null;
+  }
+}
+
 /** Read from a live report or a parsed driver-usage.json, so every field is checked. */
 function notCounted(report: any): string[] {
   const out: string[] = [];
@@ -1713,41 +1875,40 @@ function notCounted(report: any): string[] {
 }
 
 /**
- * The conductor's modeled spend for a run folder, from one source only:
- * complete rows of driver-cost-modeled.jsonl, else driver-usage.json, else the
- * session file read live (which also covers the turn still running).
+ * The conductor's modeled spend for a run folder, from one source only, in
+ * the order the cost report books it: driver-usage.json while nothing was
+ * recorded after it, else the complete rows of driver-cost-modeled.jsonl,
+ * else the session file read live (which also covers the turn still running).
  */
 export function driverSpendForCap(runDir: string, policy: Policy, opts: DriverSpendOptions = {}): DriverSpend {
+  const usage = readDriverUsageFile(runDir);
+  if (usage && driverUsageIsFresh(runDir, usage)) {
+    return {
+      usd: round6(usage.cost_usd_modeled),
+      source: "driver-usage",
+      note: str(usage.cost_source),
+      not_counted: notCounted(usage),
+      unmeasured: false,
+    };
+  }
+
   const all = readJsonl(join(runDir, DRIVER_COST_MODELED_FILE));
   const rows = all.filter((r) => r?.status === "complete" && typeof r.cost_usd === "number" && Number.isFinite(r.cost_usd));
   if (rows.length > 0) {
     const usd = rows.reduce((s, r) => s + r.cost_usd, 0);
     const incomplete = all.filter((r) => r?.status === "incomplete").length;
+    const unpricedRows = all.filter((r) => r?.status === "complete" && r.cost_usd == null).length;
+    const notCountedRows = [
+      ...(incomplete > 0 ? [`${incomplete} incomplete driver turn(s)`] : []),
+      ...(unpricedRows > 0 ? [`${unpricedRows} unpriced driver turn(s)`] : []),
+    ];
     return {
       usd: round6(usd),
       source: "driver-cost-modeled",
       note: `${rows.length} complete driver turn(s)`,
-      not_counted: incomplete > 0 ? [`${incomplete} incomplete driver turn(s)`] : [],
+      not_counted: notCountedRows,
       unmeasured: false,
     };
-  }
-
-  const usagePath = join(runDir, DRIVER_USAGE_FILE);
-  if (existsSync(usagePath)) {
-    try {
-      const usage = JSON.parse(readFileSync(usagePath, "utf-8"));
-      if (typeof usage?.cost_usd_modeled === "number" && Number.isFinite(usage.cost_usd_modeled)) {
-        return {
-          usd: round6(usage.cost_usd_modeled),
-          source: "driver-usage",
-          note: str(usage.cost_source),
-          not_counted: notCounted(usage),
-          unmeasured: false,
-        };
-      }
-    } catch {
-      // Unparseable: fall through to the live session file.
-    }
   }
 
   const codexHome = opts.codexHome ?? defaultCodexHome(opts.env);

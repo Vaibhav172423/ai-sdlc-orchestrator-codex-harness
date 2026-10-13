@@ -14,7 +14,9 @@ import {
   measureDriverUsage,
   driverSpendForCap,
   driverPin,
-  policyDriverPriceFn,
+  defaultDriverPriceFn,
+  driverUsageInputs,
+  driverUsageIsFresh,
   windowFromMarkers,
 } from "../dist/sessionUsage.js";
 import { loadPolicyFromPath } from "../dist/policy.js";
@@ -26,6 +28,8 @@ const POLICY = loadPolicyFromPath(join(PLUGIN, "config", "policies", "gpt-plus-f
 const T1 = "01a2000a-0000-7000-8000-000000000001";
 const T2 = "01a2000a-0000-7000-8000-000000000002";
 
+/** 1M fresh input as four responses, each under the 272,000 long-context threshold: $2.00 at the standard card. */
+const MILLION = Array.from({ length: 4 }, () => ({ usage: u(250_000) }));
 const cost = (x) => ((x.input_tokens - x.cached_input_tokens) * 2 + x.cached_input_tokens * 0.2 + x.output_tokens * 12) / 1e6;
 const r6 = (n) => Math.round(n * 1e6) / 1e6;
 
@@ -50,14 +54,23 @@ test("the pinned model comes from the driver block when a policy has one, else f
   assert.equal(driverPin({ ...legacy, models: legacy.models.filter((m) => m.id !== "gpt") }), null);
 });
 
-test("the conductor is priced from the driver block when no model entry names the pin", () => {
+test("the conductor is priced from the dated list on the day it spent, whatever model entries the policy has", () => {
   const flashOnly = loadPolicyFromPath(join(PLUGIN, "config", "policies", "flash-agsdk-only.yaml"));
   assert.equal(flashOnly.models.some((m) => m.model_name === PIN), false, "the fixture has no model entry for the pin");
-  assert.deepEqual(policyDriverPriceFn(flashOnly)(PIN, null, {}), flashOnly.driver.pricing);
-  assert.deepEqual(policyDriverPriceFn(POLICY)(PIN, null, {}), POLICY.driver.pricing);
-  const { driver: _driver, ...legacy } = POLICY;
-  assert.deepEqual(policyDriverPriceFn(legacy)(PIN, null, {}), POLICY.models.find((m) => m.id === "gpt").pricing);
-  assert.equal(policyDriverPriceFn({ ...flashOnly, driver: { ...flashOnly.driver, pricing: undefined } })(PIN, null, {}), null);
+  const card = (r) => r && { input: r.input, input_cached: r.input_cached, output: r.output };
+  const at = "2026-10-13T10:00:00.000Z";
+  for (const policy of [flashOnly, POLICY, { ...flashOnly, driver: { ...flashOnly.driver, pricing: undefined } }]) {
+    const rate = defaultDriverPriceFn(policy)(PIN, at, { requestInputTokens: 1000 });
+    assert.deepEqual(card(rate), { input: 2, input_cached: 0.2, output: 12 });
+    assert.deepEqual([rate.basis, rate.tier], ["list", "standard"]);
+  }
+  const long = defaultDriverPriceFn(POLICY)(PIN, at, { requestInputTokens: 300_000 });
+  assert.deepEqual([card(long), long.tier], [{ input: 4, input_cached: 0.4, output: 18 }, "long_context"]);
+  const summed = defaultDriverPriceFn(POLICY)(PIN, at, { aggregateInputTokens: 300_000, aggregate: true });
+  assert.deepEqual([card(summed), summed.tier], [{ input: 2, input_cached: 0.2, output: 12 }, "unverified"], "a sum over responses proves no tier");
+  assert.equal(defaultDriverPriceFn(POLICY)(PIN, "2026-08-01T00:00:00.000Z", {}), null, "before the list's first entry nothing prices it");
+  const custom = { ...POLICY, driver: { ...POLICY.driver, pricing: { input: 9, input_cached: 0.9, output: 90 }, pricing_override: true } };
+  assert.deepEqual(card(defaultDriverPriceFn(custom)(PIN, at, {})), { input: 9, input_cached: 0.9, output: 90 });
 });
 
 test("the session file is found by thread id in any date folder, plain before compressed, then live before archived", () => {
@@ -479,20 +492,16 @@ test("headless: a marker naming another thread does not add it; only the exec st
   }
 });
 
-test("the cap reads complete driver rows first, then driver-usage.json, then the session file live", () => {
+test("the cap books driver-usage.json while nothing was recorded after it, then complete driver rows, then the session file live", () => {
   const s = sandbox();
   try {
     const r = new SyntheticRollout({ threadId: T1 });
-    const a = r.turn({ text: "$mmo-codex:greenfield", responses: [{ usage: u(1_000_000, 0, 0) }], end: null });
+    const a = r.turn({ text: "$mmo-codex:greenfield", responses: MILLION, end: null });
     r.write(s.home);
     writeJsonl(join(s.run, "driver-session.jsonl"), [marker(T1, inside(a))]);
 
     const live = driverSpendForCap(s.run, POLICY, { codexHome: s.home });
     assert.deepEqual([live.source, live.usd], ["session-file", 2]);
-
-    writeFileSync(join(s.run, "driver-usage.json"), JSON.stringify({ cost_usd_modeled: 1.5, cost_source: "session file (x)" }));
-    const usage = driverSpendForCap(s.run, POLICY, { codexHome: s.home });
-    assert.deepEqual([usage.source, usage.usd], ["driver-usage", 1.5]);
 
     writeJsonl(join(s.run, "driver-cost-modeled.jsonl"), [
       { status: "complete", cost_usd: 0.25 },
@@ -501,6 +510,16 @@ test("the cap reads complete driver rows first, then driver-usage.json, then the
     ]);
     const rows = driverSpendForCap(s.run, POLICY, { codexHome: s.home });
     assert.deepEqual([rows.source, rows.usd], ["driver-cost-modeled", 0.75]);
+
+    const usagePath = join(s.run, "driver-usage.json");
+    writeFileSync(usagePath, JSON.stringify({ cost_usd_modeled: 1.5, cost_source: "session file (x)", inputs: driverUsageInputs(s.run) }));
+    const usage = driverSpendForCap(s.run, POLICY, { codexHome: s.home });
+    assert.deepEqual([usage.source, usage.usd], ["driver-usage", 1.5], "the collector's booked figure, as the report books it");
+
+    writeJsonl(join(s.run, "driver-session.jsonl"), [marker(T1, inside(a)), marker(T1, inside(a, 2))]);
+    assert.equal(driverUsageIsFresh(s.run, JSON.parse(readFileSync(usagePath, "utf-8"))), false);
+    const stale = driverSpendForCap(s.run, POLICY, { codexHome: s.home });
+    assert.deepEqual([stale.source, stale.usd], ["driver-cost-modeled", 0.75], "a run that went on after the collection is counted from its live rows");
   } finally {
     s.done();
   }
@@ -756,7 +775,7 @@ test("the cap ignores legacy driver-events lines and reads the conductor through
   const s = sandbox();
   try {
     const r = new SyntheticRollout({ threadId: T1, originator: "codex-tui" });
-    const a = r.turn({ text: "$mmo-codex:greenfield", responses: [{ usage: u(1_000_000) }], end: null });
+    const a = r.turn({ text: "$mmo-codex:greenfield", responses: MILLION, end: null });
     r.write(s.home);
     writeJsonl(join(s.run, "driver-session.jsonl"), [marker(T1, inside(a))]);
     const other = new SyntheticRollout({ threadId: T2 });
@@ -832,7 +851,7 @@ test("interactive: a window whose completed turns have no usage line leaves that
     r.lines = r.lines.filter((l) => !(isUsageLine(l) && l.timestamp >= a.started_at));
     r.write(s.home);
     const other = new SyntheticRollout({ threadId: T2, originator: "codex-tui", start: "2026-10-13T12:00:00.000Z" });
-    const c = other.turn({ text: "$mmo-codex:brownfield", responses: [{ usage: u(1_000_000) }] });
+    const c = other.turn({ text: "$mmo-codex:brownfield", responses: MILLION });
     other.write(s.home);
     writeJsonl(join(s.run, "driver-session.jsonl"), [marker(T1, inside(a)), marker(T1, inside(b)), marker(T2, inside(c))]);
 

@@ -49,7 +49,8 @@ test("before the first driver row, run.mjs's cap reads the running turn from the
     const policy = { ...loadPolicyFromPath(SHIPPED), hard_cost_cap_usd: 1.5 };
 
     const stop = costCapStop(policy, telemetry, { codexHome: home });
-    assert.match(stop, /\+ \$2\.0000 conductor \(modeled from the codex session file\)/);
+    // One request of 1,000,000 input tokens is over the 272,000 threshold, so the list bills 4.00 per 1M.
+    assert.match(stop, /\+ \$4\.0000 conductor \(modeled from the codex session file\)/);
     assert.equal(costCapStop(policy, telemetry, { codexHome: join(dir, "empty-home") }), null, "no session file there: the conductor is unmeasured and adds $0");
   } finally {
     rmSync(dir, { recursive: true, force: true });

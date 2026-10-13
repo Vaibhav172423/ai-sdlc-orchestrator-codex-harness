@@ -1175,7 +1175,8 @@ test("a completed run's SUMMARY.md is rendered again with the conductor's modele
     assert.equal(m.driver.driver_turns, 1);
     const summary = readFileSync(join(h.runDirOf("r1"), "SUMMARY.md"), "utf-8");
     const cost = h.manifest("r1").driver_cost_usd_modeled;
-    assert.ok(summary.includes(`Conductor (driver) cost, modeled: $${cost.toFixed(4)} over 1 turn.`), summary);
+    // No session file in this CODEX_HOME: the collector books the exec stream and says so.
+    assert.ok(summary.includes(`Conductor (driver) cost, modeled from driver-usage.json: $${cost.toFixed(4)}. Booked from the exec stream`), summary);
     assert.doesNotMatch(summary, /still going/);
     assert.match(summary, /Status: \*\*auto-approved\*\*/);
 

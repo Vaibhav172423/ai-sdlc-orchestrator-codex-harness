@@ -11,6 +11,7 @@ import { dirname, join } from "node:path";
 import { codexEvents } from "./telemetry/event-reader.mjs";
 import { findCodexWarnings, findPinRejection } from "./telemetry/fairnessPin.mjs";
 import { driverTurns, summarizeDriverTurns } from "../mcp/model-dispatch/dist/driverUsage.js";
+import { driverPriceRecord, listDriverPriceFn, PRICE_LIST_VERIFIED } from "../mcp/model-dispatch/dist/driverPricing.js";
 import { ACCEPTED_STATUSES, codeWrittenSummary } from "../scripts/write-manifest.mjs";
 
 export const RECORD_VERSION = 1;
@@ -344,12 +345,18 @@ function uniqueInOrder(values) {
 }
 
 /** driver-manifest.json, rebuilt whole from the record. */
-export function buildDriverManifest(records, { runId, policyName, policyRecord, pin, sandbox, approvalPolicy, pricing, driverAuth }) {
+/**
+ * `turnPricing` is {model, priceFn, requestsFor?} (run-finalize.mjs
+ * driverTurnPricing); a bare `pricing` card still works and is labelled
+ * custom. `policy` names the driver's price record; `baselines` are known
+ * running totals for threads first seen in a resume.
+ */
+export function buildDriverManifest(records, { runId, policyName, policyRecord, policy, pin, sandbox, approvalPolicy, pricing, turnPricing, baselines, driverAuth }) {
   const starts = records.filter((r) => r.kind === "invocation_start");
   const ends = records.filter((r) => r.kind === "invocation_end");
   const events = codexEvents(records);
-  const turns = driverTurns(records);
-  const summary = summarizeDriverTurns(turns, pricing);
+  const turns = driverTurns(records, { baselines });
+  const summary = summarizeDriverTurns(turns, turnPricing ?? pricing ?? { model: pin?.model, priceFn: listDriverPriceFn(policy ?? null) });
   const end = lastRunEnd(records);
   const lastEnd = ends[ends.length - 1] ?? null;
   return {
@@ -363,12 +370,17 @@ export function buildDriverManifest(records, { runId, policyName, policyRecord, 
     codex_exit_status: lastEnd?.exit_status ?? null,
     driver_turns: summary.turns,
     driver_turns_incomplete: summary.turns_incomplete,
-    driver_cost_complete: summary.turns_incomplete === 0,
+    driver_turns_unpriced: summary.turns_unpriced,
+    driver_turns_tier_unverified: summary.turns_tier_unverified,
+    driver_cost_complete: summary.turns_incomplete === 0 && summary.turns_unpriced === 0,
     driver_cost_flags: summary.flags,
+    driver_cost_source: "exec stream (driver-cost-modeled.jsonl)",
     codex_invocations: starts.length,
     completed: end?.outcome === "completed",
     cost_cap_stop: end?.outcome === "cost_cap" ? end.reason : null,
     driver_cost_usd_modeled: summary.cost_usd,
+    driver_price: pin?.model ? driverPriceRecord(policy ?? null, pin.model, starts[0]?.at ?? new Date()) : null,
+    price_list_verified: PRICE_LIST_VERIFIED,
     pin_rejection: findPinRejection(events),
     events_captured: events.length,
     thread_ids: summary.thread_ids,

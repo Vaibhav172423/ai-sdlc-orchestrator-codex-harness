@@ -24,9 +24,10 @@ function stderrWarn(message) {
 }
 
 /**
- * The conductor's pin and the rates its modeled cost uses. Prefers the
- * `driver:` block; a policy written before it existed falls back to its
- * `gpt` model entry, with a warning.
+ * The conductor's pin, and the rates its policy block documents (the dated
+ * price list in src/prices.ts is what prices it, see driverPricing.ts).
+ * Prefers the `driver:` block; a policy written before it existed falls back
+ * to its `gpt` model entry, with a warning.
  */
 export function readDriver(policy, { warn = stderrWarn } = {}) {
   const models = Array.isArray(policy?.models) ? policy.models : [];
@@ -39,12 +40,6 @@ export function readDriver(policy, { warn = stderrWarn } = {}) {
       );
     }
     const pricing = policy.driver.pricing ?? models.find((m) => m.model_name === model)?.pricing ?? null;
-    if (!pricing) {
-      throw new Error(
-        `fairness pin: policy '${policy.name}''s driver block has no pricing, and no model entry prices ` +
-          `'${model}'. Add pricing: { input, input_cached, output } to the driver block.`,
-      );
-    }
     return { pin: { model, effort }, pricing, from: "driver" };
   }
   const gpt = models.find((m) => m.id === "gpt");

@@ -46,9 +46,9 @@ test("readDriver takes the rates from a model entry for the same model when the 
   assert.deepEqual(readDriver(policy).pricing, RATES);
 });
 
-test("readDriver throws when nothing prices the driver model", () => {
+test("readDriver leaves the price to the dated list: a driver block with no pricing block is not an error", () => {
   const policy = { name: "p", driver: { model_name: "gpt-9", reasoning: { effort: "high" } }, models: [] };
-  assert.throws(() => readDriver(policy), /no pricing/);
+  assert.deepEqual(readDriver(policy), { pin: { model: "gpt-9", effort: "high" }, pricing: null, from: "driver" });
 });
 
 test("a policy with no driver block falls back to its gpt entry, with a warning", () => {

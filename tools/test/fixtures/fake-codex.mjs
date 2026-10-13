@@ -12,7 +12,9 @@
  * directory where manifest.json goes), freeze (Gate 0's write-contract.mjs
  * --freeze, given {allowlist}), close (close-out's --close, after this
  * step's gates), sleepMs (after turn.started, or after turn.completed with
- * sleepAfterTurn), ignoreTerm, exit.
+ * sleepAfterTurn), ignoreTerm, exit, rollout (the turn's per-response usages,
+ * written to the thread's session file under CODEX_HOME as codex 0.160.1
+ * writes it; turn.completed then reports the thread's running total).
  */
 import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
@@ -99,6 +101,35 @@ function writeFiles() {
 
 const thread = step.thread ?? scenario.thread ?? "01a1340d-41da-7e31-84cd-b0907e9bc31f";
 
+const BUCKETS = ["input_tokens", "cached_input_tokens", "cache_write_input_tokens", "output_tokens", "reasoning_output_tokens"];
+const usageOf = (u = {}) => Object.fromEntries(BUCKETS.map((k) => [k, u[k] ?? 0]));
+
+/** Appends this turn to the thread's session file and returns the thread's running total after it. */
+function writeRollout(responses) {
+  const dir = join(env.CODEX_HOME, "sessions", "2026", "10", "13");
+  mkdirSync(dir, { recursive: true });
+  const path = join(dir, `rollout-2026-10-13T10-00-00-${thread}.jsonl`);
+  const earlier = existsSync(path) ? readFileSync(path, "utf-8").split("\n").filter((l) => l.trim()).map((l) => JSON.parse(l)) : [];
+  let total = usageOf(earlier.filter((l) => l.payload?.type === "token_count").at(-1)?.payload.info.total_token_usage);
+  const model = argv[argv.indexOf("-m") + 1];
+  const effort = /^model_reasoning_effort="(.*)"$/.exec(argv.find((a) => a.startsWith("model_reasoning_effort=")) ?? "")?.[1] ?? null;
+  const lines = [];
+  const push = (type, payload) => lines.push({ timestamp: new Date().toISOString(), type, payload });
+  if (earlier.length === 0) push("session_meta", { id: thread, originator: "codex_exec", source: "exec", cli_version: "0.160.1", model_provider: "openai" });
+  const turnId = `turn-${n}-${thread.slice(0, 8)}`;
+  push("event_msg", { type: "task_started", turn_id: turnId });
+  push("turn_context", { turn_id: turnId, model, effort });
+  responses.forEach((r, i) => {
+    const usage = usageOf(r);
+    push("token_usage_record", { thread_id: thread, turn_id: turnId, response_id: `resp-${n}-${i}`, usage });
+    total = Object.fromEntries(BUCKETS.map((k) => [k, total[k] + usage[k]]));
+    push("event_msg", { type: "token_count", info: { total_token_usage: total, last_token_usage: usage } });
+  });
+  push("event_msg", { type: "task_complete", turn_id: turnId });
+  appendFileSync(path, lines.map((l) => JSON.stringify(l)).join("\n") + "\n");
+  return total;
+}
+
 if (step.fixture) {
   const fixtures = join(dirname(fileURLToPath(import.meta.url)), "codex-0.160.1");
   writeFiles();
@@ -116,7 +147,8 @@ if (step.fixture) {
     out({ type: "turn.failed", error: { message: step.failTurn } });
   } else {
     out({ type: "item.completed", item: { id: "item_1", type: "agent_message", text: step.message ?? "ok" } });
-    out({ type: "turn.completed", usage: step.usage ?? { input_tokens: 1000, cached_input_tokens: 200, output_tokens: 50, reasoning_output_tokens: 10 } });
+    const total = step.rollout ? writeRollout(step.rollout) : null;
+    out({ type: "turn.completed", usage: step.usage ?? total ?? { input_tokens: 1000, cached_input_tokens: 200, output_tokens: 50, reasoning_output_tokens: 10 } });
   }
   if (step.sleepMs && step.sleepAfterTurn) await sleep(step.sleepMs);
 }

@@ -337,8 +337,8 @@ lines it could not read, file counts it could not make). Print the notes. A non-
 message names and run it again.
 
 `SUMMARY.md` states the conductor's own cost as the record has it — modeled by `run.mjs` on a
-headless run, "not measured" on the interactive route. Do not add a figure for it; see the
-telemetry contract below.
+headless run, and read from the conductor's codex session file by `end-run.mjs` on the interactive
+route. Do not add a figure for it; see the telemetry contract below.
 
 This first `SUMMARY.md` is provisional. The run is finished only once Gate 4 is accepted and the
 command has run again with `--status=accepted` (see Gate 4).
@@ -640,12 +640,13 @@ Event shape:
 }
 ```
 
-**Your own loop cost is recorded for you only on the `run.mjs` route.** There, the driver records the
-`codex exec --json` event stream as it arrives and derives the conductor's token usage from it, writing those events with
-`provenance: "modeled"` — modeled from token counts at the pinned rates, because this runtime
-reports no wallet figures. On the interactive skill route nothing reads that stream, so the
-conductor's cost goes unmeasured, and Phase 9's `SUMMARY.md` says so. Never invent token counts or cost for your own work: a guessed figure
-sitting beside measured ones is worse than no figure.
+**Your own loop cost is recorded for you, on both routes.** On the `run.mjs` route the driver records the
+`codex exec --json` event stream as it arrives and derives the conductor's token usage from it. On the
+interactive route the run's end step (`end-run.mjs`) reads your token usage from codex's session file
+for this session. Either way the figure is `provenance: "modeled"` — token counts at the dated price
+list's rates, because this runtime reports no wallet figures — and lands in `driver-usage.json` and the
+cost report. Never invent token counts or cost for your own work: a guessed figure sitting beside
+measured ones is worse than no figure.
 
 **But a phase that made no model call must still leave a row.** Two cases produce one:
 

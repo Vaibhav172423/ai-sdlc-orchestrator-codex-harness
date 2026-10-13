@@ -7,8 +7,8 @@ Each run's files land in its own folder, `.sdlc/runs/<run-id>/`. Project-level s
 Render the report for one run:
 
 ```bash
-node tools/report.mjs .sdlc/runs/<run-id>              # terminal
-node tools/report.mjs .sdlc/runs/<run-id> --markdown   # pasteable
+node plugin/scripts/report.mjs .sdlc/runs/<run-id>              # terminal
+node plugin/scripts/report.mjs .sdlc/runs/<run-id> --markdown   # pasteable
 ```
 
 ## The report, section by section
@@ -23,7 +23,7 @@ node tools/report.mjs .sdlc/runs/<run-id> --markdown   # pasteable
 
 ### Header
 
-Run id, policy, the model and effort pin, sandbox and approval policy, start time, duration, and the run's outcome and exit code when `run.mjs` recorded them.
+Run id, policy, the model and effort pin, sandbox and approval policy, start time, duration, the run window in UTC, and the run's outcome and exit code when `run.mjs` recorded them. The window comes from `driver-manifest.json`, else `run.json`, else `driver-usage.json`. When the driver signed in with an OpenAI API key, a `Check` line tells you to compare the driver's tokens with the OpenAI usage dashboard for that window.
 
 The run id and policy come from `driver-manifest.json` first, then `manifest.json` (either spelling: `run_id` or `pass`, `policy` or `policy_name`), then the first `telemetry.jsonl` event. No cost figure comes from either manifest.
 
@@ -31,7 +31,7 @@ The pin matters more than it looks. Cost figures are only comparable between run
 
 ### Dispatched work
 
-One row per SDLC phase, in pipeline order from `discovery` and `change_plan` through `security_review`: calls, tokens in and out, cost. These are packets that went through `execute_with_model`. `SDLC total` adds them up. `Runner overhead` adds up the other phases (`debug`, `refactor`, `final_report`, and anything unrecognised), each listed under it. `Dispatched total` is the two together.
+One row per SDLC phase, in pipeline order from `discovery` and `change_plan` through `security_review`: calls, tokens (fresh input, cached input and output), cost. These are packets that went through `execute_with_model`. `SDLC total` adds them up. `Runner overhead` adds up the other phases (`debug`, `refactor`, `final_report`, and anything unrecognised), each listed under it, and a note under the table says so. `Dispatched total` is the two together.
 
 The `Prov` column is the provenance of that phase's events:
 
@@ -39,20 +39,20 @@ The `Prov` column is the provenance of that phase's events:
 |---|---|
 | `V` | vendor-metered — the vendor reported these tokens |
 | `E` | estimated — counted locally, not vendor-confirmed |
-| `M` | modeled — derived from token counts, not reported money: a dispatched event at the dated price list's rates, a `driver_loop` row at the card in the policy's `driver:` block, which a test holds to the list |
+| `M` | modeled — derived from token counts, not reported money: a dispatched event or a `driver_loop` row at the dated price list's rates |
 | `–` | no model call — the phase was skipped for this intent, or the conductor completed it in-session. The zeros are facts, not estimates; any tokens it did consume were the conductor's and are counted in the driver loop. |
 | `~` | mixed within the phase |
 | `?` | unlabelled — provenance genuinely unknown, which is not the same as `–` |
 
 ### Driver loop — modeled, not measured
 
-The conductor's own token consumption. The report books `driver-usage.json` when the run folder has one, and `driver-cost-modeled.jsonl` otherwise; the `Source` line says which reading that is.
+The conductor's own token consumption. The report books `driver-usage.json` when the run folder has one and nothing was recorded in `driver-events.jsonl` or `driver-session.jsonl` after it was collected, and `driver-cost-modeled.jsonl` otherwise; the `Source` line says which reading that is. A `driver-usage.json` a resumed run spent past is named in a note under the run total.
 
 codex reports each turn's usage as the thread's running total, and `codex exec resume` carries that total into the next invocation, so each turn is priced as the difference from the previous total. A turn that failed or was cut off mid-way is recorded as incomplete: its cost is unknown, not $0. Tokens of a failed turn show up in the next completed turn's running total.
 
 | Line | Meaning |
 |---|---|
-| `Cost source` | The collector's own description of the reading, from `driver-usage.json`, including its `LOWER BOUND`, `INCOMPLETE`, `PROVISIONAL` or `upper bound` qualifiers |
+| `Cost source` | The collector's own description of the reading, from `driver-usage.json`, including its `LOWER BOUND`, `INCOMPLETE`, `PROVISIONAL`, `TIER UNVERIFIED` or `upper bound` qualifiers |
 | `Verification` | `verified` when the exec stream and the session file agree, `UNVERIFIED` otherwise (always so on the interactive route, which has no exec stream), followed by the qualifiers above |
 | `Turns` | Driver turns with a priced usage record |
 | `Incomplete turns` | Turns that started and never reported usage in the exec stream: a failed turn, or one cut off by a signal. When the session file priced them the note says so and the total is unaffected; otherwise the run total becomes a floor. |
@@ -61,9 +61,18 @@ codex reports each turn's usage as the thread's running total, and `codex exec r
 | `Unpriced` | Turns on a model with no price, left out of the figure. The run total becomes a floor. |
 | `Flags` | Per-turn flags from `driver-cost-modeled.jsonl` or `driver-manifest.json`: `baseline_unknown`, `cumulative_reset`, `zero_usage`, `no_thread_id` |
 | `Cross-check` | Whether the `codex exec --json` figure and the session-file figure agree, when both exist |
-| `Modeled cost` | Token counts at the pinned rates |
+| `Price` | The driver's card from `driver-manifest.json` `driver_price`: rates per 1M, the list entry's verified date, and the long-context tier |
+| `Token cross-check` | One line per thread and per invocation: each bucket (input, cached input, output, reasoning) as exec stream / session file, with the difference (session file minus exec stream). A thread line compares the whole thread; an invocation line compares that invocation's share of the running total with the session-file responses inside it. All zeros means the conductor's cost is proven from the session file. |
+| `Modeled cost` | Token counts at the dated price list's rates, on the day each turn or response was spent |
 
 Codex reports token counts but no money at all, so this figure is derived rather than measured, and a driver running on a ChatGPT seat may have cost nothing in money. A run folder with neither file shows `Not measured`.
+
+On the interactive route the run's end step runs inside the conductor's last turn, so that turn is still open and the figure is marked `PROVISIONAL`. Once the session has moved on, collect it again for the exact figure:
+
+```bash
+node plugin/scripts/collect-driver-usage.mjs .sdlc/runs/<run-id>
+node plugin/scripts/report.mjs .sdlc/runs/<run-id> --markdown > .sdlc/runs/<run-id>/report.md
+```
 
 ### Run total
 
@@ -78,7 +87,7 @@ Codex reports token counts but no money at all, so this figure is derived rather
 
 | Qualifier | Meaning |
 |---|---|
-| `at least` | Cost is missing: an incomplete or unpriced driver turn, an unread conductor thread, a window that opens late, a turn still running, a last turn that reported zero usage, or a dispatched call with partial usage |
+| `at least` | Cost is missing: an incomplete or unpriced driver turn, an unread conductor thread, a window that opens late, a turn still running, a last turn that reported zero usage, a driver turn whose summed input crossed a long-context threshold with no per-response sizes (billed at the standard card), a `driver-usage.json` a resumed run spent past, or a dispatched call with partial usage |
 | `at most` | The figure can include cost from outside this run: a resumed thread priced at its whole running total (`baseline_unknown`, or the collector's `upper bound`), or a driver window that covers the whole conductor thread |
 | `about` | Reasons of both kinds apply, or a thread's running total dropped (`cumulative_reset`), so the figure can be off either way |
 
@@ -111,13 +120,16 @@ In each run's folder, `.sdlc/runs/<run-id>/`:
 | `state.json` | The gate that is waiting for an answer, written before the gate is printed. |
 | `provenance.json` | Brownfield: every file the run changed, with its pre-run hash and where its pre-run content is. The input `$mmo-codex:revert` reads. |
 | `backups/` | Brownfield: copies of files that held uncommitted or untracked content when the run first wrote them. The folder holds its own `.gitignore` (`*`), so git never lists it, whatever your project's `.gitignore` says. |
-| `orchestrator.log` | `run.start` and `run.end` (from `run.mjs`, or from `start-run.mjs` and `end-run.mjs` in a session), the conductor's `phase.start`, `phase.end`, `phase.skip`, `gate.open` and `gate.resolved` lines, and the bridge's log of each dispatch. |
+| `orchestrator.log` | `run.start`, `run.cost` (the dispatched, driver and run totals the report books, logged at the run end) and `run.end` (from `run.mjs`, or from `start-run.mjs` and `end-run.mjs` in a session), the conductor's `phase.start`, `phase.end`, `phase.skip`, `gate.open` and `gate.resolved` lines, and the bridge's log of each dispatch. |
 | `run.json` | Session runs: the route (`interactive`), mode, intent, the policy (`policy_source`, `policy_path`, `policy_sha256`) and its driver `pin`, every start of the run with the session's model and effort (`session_model`), and how it ended (`outcome`, `reason`). `start-run.mjs` writes it, `end-run.mjs` closes it. |
 | `skills/` | The playbooks rendered with this run's paths (`pipeline.md`, `brownfield-guide.md`, `discovery.md`, `roles/*.md`). The conductor reads these copies, never the plugin's own `SKILL.md` files. |
 | `driver-events.jsonl` | `run.mjs` runs: one JSON line per record. `invocation_start` and `invocation_end` bracket each `codex exec`, `codex` lines carry each raw event with its arrival time, and `run_end` names the outcome and exit code. Written as events arrive. |
 | `driver-stderr.log` | `run.mjs` runs: what codex wrote to stderr, with a header line per invocation. |
-| `driver-cost-modeled.jsonl` | `run.mjs` runs: one modeled row per conductor turn, `status` `complete` or `incomplete`. |
-| `driver-manifest.json` | `run.mjs` runs: the pins, how the run ended (`outcome`, `exit_code`), incomplete turns, codex warnings, the thread ids, and the modeled driver cost. |
+| `driver-cost-modeled.jsonl` | `run.mjs` runs: one modeled row per conductor turn, `status` `complete` or `incomplete`, priced from the exec stream with `price_basis`, `price_tier` and `price_verified`. |
+| `driver-manifest.json` | `run.mjs` runs: the pins, how the run ended (`outcome`, `exit_code`), incomplete turns, codex warnings, the thread ids, the driver's price record (`driver_price`, `price_list_verified`), and the modeled driver cost. After the run end it holds the booked figure (`driver_cost_usd_modeled`, `driver_cost_source`, `driver_verified`) beside the exec stream's own (`driver_cost_usd_exec_stream`). |
+| `driver-session.jsonl` | One line per `start-run.mjs`, dispatch or collection run in a codex shell: the time and the codex thread (`CODEX_THREAD_ID`). It names the conductor's session file and scopes its window. |
+| `driver-usage.json` | Written at every run end (and by `node plugin/scripts/collect-driver-usage.mjs <run-folder>`): the conductor's modeled cost read from its codex session file, per response at the dated price list's rates; on a `run.mjs` run, the token-for-token cross-check against the exec stream per thread and per invocation. `excluded_threads` names any thread it left out as not the conductor's, such as a nested codex-cli dispatch's. |
+| `report.md` | The cost report in markdown, written at every run end. |
 | `delegation/` | Agent-path runs only. Per delegated packet: the task brief, the worker's usage sidecar, and a receipt. The sidecar is written for failed sessions too, with `status` (`ok`, `timeout` or `error`) and `usage_source`, and its `sdk_version` decides how its input is priced. |
 
 In `.sdlc/`, shared by every run in the project:
@@ -138,8 +150,8 @@ One event per line. The fields that matter when reading by hand:
 | `provenance` | `vendor`, `estimated`, `modeled`, or `none`. Decides which report total the event lands in. `none` marks a phase that made no model call at all. |
 | `input_tokens` / `input_tokens_cached` / `output_tokens` | Token counts. Input is **exclusive** of cached input — see below. |
 | `output_tokens_reasoning` | Reasoning tokens, where the vendor reports them separately. |
-| `cost_usd` | A dispatched event: derived from the dated price list (`plugin/mcp/model-dispatch/src/prices.ts`) on the dispatch's UTC day, or from the policy's `pricing:` block under `pricing_override: true`. A `driver_loop` row: derived from the `pricing:` card in the policy's `driver:` block, which a test holds equal to the list's card for today, with no date or tier. |
-| `price_basis` / `price_tier` / `price_verified` | Dispatched events only. `list` or `custom`; `standard`, `long_context`, or `unverified` (a tiered model whose card no vendor-reported per-request count proves: usage summed over several requests, or an estimated prompt); the date the list entry was last checked. |
+| `cost_usd` | A dispatched event: derived from the dated price list (`plugin/mcp/model-dispatch/src/prices.ts`) on the dispatch's UTC day, or from the policy's `pricing:` block under `pricing_override: true`. A `driver_loop` row: derived from the same list on the UTC day the turn ended, or from the driver block's `pricing:` under `pricing_override: true`. |
+| `price_basis` / `price_tier` / `price_verified` | `list` or `custom`; `standard`, `long_context`, or `unverified` (a tiered model whose card no vendor-reported per-request count proves: usage summed over several requests, or an estimated prompt); the date the list entry was last checked. Dispatched events carry them, and so do the `driver_loop` rows in `driver-cost-modeled.jsonl`, where a turn is `standard` or `long_context` when the session file holds its responses and `unverified` when only the exec stream's sum above 272,000 input tokens is known. |
 | `prompt_tokens` | One request's whole prompt, cached tokens included, on an adapter that reports usage per request (`openai`). Above 272,000 on `gpt-5.6-terra`, every token of that request bills the long-context card. Absent where usage sums several requests (`codex-cli`). |
 | `routing` | The policy name and version, which rule index matched, and why. Makes a routing decision auditable after the fact. |
 | `retry_count` | Which attempt this was. A packet at `retry_count: 2` is the one escalation fires on. |
@@ -163,7 +175,7 @@ Phase 9 runs `write-manifest.mjs`, Gate 4's acceptance runs it again with `--sta
 | `route` | `headless` for a `run.mjs` run, `interactive` otherwise. |
 | `total_cost_usd`, `totals.dispatched_cost_usd` | Dispatched work, summed from `telemetry.jsonl`. |
 | `totals.by_provenance` | The same total split into `vendor`, `estimated`, `modeled`, `none` and `unlabelled`. |
-| `totals.driver_cost_usd_modeled` | The conductor's modeled cost; `null` when nothing measured it. It comes from `driver-usage.json` when the session-file collector wrote one (it books the session file wherever the exec stream disagrees with it), else from `driver-manifest.json`. The cost report reads them in the same order. |
+| `totals.driver_cost_usd_modeled` | The conductor's modeled cost; `null` when nothing measured it. It comes from `driver-usage.json` when the session-file collector wrote one and the run recorded nothing after it (it books the session file wherever the exec stream disagrees with it), else from `driver-manifest.json`. The cost report and the cost cap read them in the same order. |
 | `totals.driver_cost_source`, `totals.driver_usage` | Which of the two files the figure came from and, for `driver-usage.json`, its `cost_source`, `verified`, `cost_complete` and `unpriced`. |
 | `phase_breakdown`, `model_breakdown`, `module_breakdown`, `task_type_breakdown` | The bridge's `buildManifest` rollups. |
 | `artifacts` | `files` and `loc` of the product. Left out, with a note, when the code directory is the repository and no `provenance.json` lists the files the run wrote. |

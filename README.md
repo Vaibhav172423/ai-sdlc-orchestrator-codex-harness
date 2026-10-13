@@ -260,7 +260,7 @@ Add `--dry-run` to see the pinned invocation without spending anything. Then rea
 node tools/report.mjs ./.sdlc
 ```
 
-The report prints `Run total = dispatched + driver` and splits it into a **vendor-metered** total and a **modeled** total. Codex reports no wallet figures at all, so the driver leg's cost can only be derived from token counts at the pinned rates — and a driver running on a seat may have cost nothing in money. That is why the modeled figure never enters the vendor-metered total.
+The report prints `Run total = dispatched + driver` and splits it into a **vendor-metered** total and a **modeled** total. Codex reports no wallet figures at all, so the driver leg's cost can only be derived from token counts at the dated price list's rates — and a driver running on a seat may have cost nothing in money. That is why the modeled figure never enters the vendor-metered total.
 
 Every flag is documented in [docs/running.md](docs/running.md).
 

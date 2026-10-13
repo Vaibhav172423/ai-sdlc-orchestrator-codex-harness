@@ -271,8 +271,10 @@ When the run finishes, show:
 - which model each phase ran on, so the routing is visible rather than asserted
 - where the generated code and the run record were written
 
-The `end_run` command prints a `Cost report:` line with the command that gives the same breakdown
-from the records the run wrote:
+The `end_run` command reads your own token usage from this session's codex session file into
+`driver-usage.json`, writes `report.md` in the run folder, and prints the conductor's figure, the
+run total, and a `Cost report:` line with the command that gives the same breakdown from the
+records the run wrote:
 
 ```bash
 node '<plugin-root>/scripts/report.mjs' '<run folder>' --markdown

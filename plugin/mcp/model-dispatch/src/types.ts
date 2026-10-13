@@ -292,8 +292,10 @@ export interface Policy {
 export interface DriverPin {
   model_name: string;
   reasoning: { effort: string };
-  /** Rates the driver's modeled cost uses. Optional when a `models[]` entry names the same model. */
+  /** Documentation unless `pricing_override` is true; the conductor is priced from the dated list in prices.ts. */
   pricing?: ModelPricing;
+  /** Bill `pricing` instead of the dated list, reported as a custom price. Needs a block. */
+  pricing_override?: boolean;
   pricing_source?: string;
   pricing_last_verified?: string;
 }
