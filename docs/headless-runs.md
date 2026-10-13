@@ -187,7 +187,9 @@ This is the check the headless run exists for. The report prints it under the dr
 ```
 
 Each cell is `exec stream/session file (difference)`, the difference being the session file minus
-the exec stream. The two sources:
+the exec stream. An invocation's status compares the two figures printed on its line. A thread's
+status also counts its invocations, so a thread whose invocations differ in opposite directions
+reads `mismatch` beside a difference of `0`. The two sources:
 
 | Source | Where | What it reports |
 |---|---|---|
@@ -200,11 +202,19 @@ The buckets are codex's own. `input` includes `cached input`, and `reasoning` is
 | Verdict | Meaning | What to do |
 |---|---|---|
 | `equal` on every thread and invocation, every difference `0` | The session-file reader books exactly the tokens codex reported. `Verification` reads `verified`. | Record the result: the interactive figure is proven on this run. |
-| `equal_with_explained_gap` | Equal, and the session file also holds compaction calls or turns that never reported usage on the stream. | Verified. The booked figure includes those calls. |
-| `differs` on an invocation, `mismatch` on its thread | A bucket disagrees. The report books the session file and marks the figure `UNVERIFIED`. | Keep the run folder and the session file, and report the bucket and the difference. |
+| `equal_with_explained_gap` | Equal, and the session file also holds compaction calls or turns that never reported usage on the stream. On an invocation line, the difference is exactly those; the table below says which. | Verified. The booked figure includes those calls. |
+| `differs` on an invocation, `mismatch` on its thread | A bucket disagrees by more than the table below explains. The report books the session file and marks the figure `UNVERIFIED`. | Keep the run folder and the session file, and report the bucket and the difference. |
 | `unmatched` | No session-file turn falls inside that invocation. | As for `mismatch`. |
 | `no_session_file` | No readable session file for the thread. The figure is booked from the exec stream. | Check that `CODEX_HOME` was the same in the shell that ran the run, then collect again (below). |
 | `unexplained_gap`, `reset`, `no_exec_usage` | The totals cannot be matched: a gap with nothing to explain it, a running total that dropped, or a stream with no usage. | Keep the records and report the verdict. |
+
+An invocation line's difference can have two explanations. The report and the collector name the
+one that applies: after the line in the terminal, and under the table in `report.md`.
+
+| Explanation | Sign of the difference | Why |
+|---|---|---|
+| `N compaction call(s) only in the session file` | Positive | codex leaves compaction calls out of its running total; the session file records each one. |
+| `the running total also counts invocation N, which reported no usage` | Negative | The earlier invocation's turns are inside this invocation's running total, and the session file records them under the earlier invocation. |
 
 For the same numbers as JSON:
 

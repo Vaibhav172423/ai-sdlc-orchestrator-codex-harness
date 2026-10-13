@@ -307,9 +307,15 @@ test("headless: two threads are compared separately, each with its own buckets a
     assert.deepEqual(one.difference, u(4000, 3000, 10), "the compaction call is the whole difference");
     assert.deepEqual(one.compaction_tokens, u(4000, 3000, 10));
     assert.deepEqual(two.difference, u(0));
-    assert.deepEqual(cc.invocations.map((i) => [i.thread_id, i.invocation, i.status]), [[T1, 1, "equal"], [T1, 2, "equal"], [T2, 3, "equal"]]);
+    assert.deepEqual(
+      cc.invocations.map((i) => [i.thread_id, i.invocation, i.status]),
+      [[T1, 1, "equal"], [T1, 2, "equal_with_explained_gap"], [T2, 3, "equal"]],
+    );
     assert.deepEqual(cc.invocations[1].exec_delta, u(3000, 900, 70, 20));
     assert.deepEqual(cc.invocations[1].session_turn_tokens, u(7000, 3900, 80, 20));
+    assert.deepEqual(cc.invocations[1].difference, u(4000, 3000, 10), "the row's difference is the compaction call");
+    assert.deepEqual([cc.invocations[1].compaction_requests, cc.invocations[1].compaction_tokens], [1, u(4000, 3000, 10)]);
+    assert.equal(cc.invocations[1].reason, "1 compaction call(s) only in the session file");
   } finally {
     s.done();
   }
@@ -367,7 +373,12 @@ test("headless: a failed middle invocation is priced once, inside the next runni
     assert.equal(rep.cross_check.verdict, "equal");
     assert.equal(rep.cross_check.exec_stream_tokens.input_tokens, 6000);
     assert.equal(rep.tokens.input_tokens, 6000);
-    assert.deepEqual(rep.cross_check.invocations.map((i) => i.status), ["equal", "incomplete", "equal"]);
+    const inv = rep.cross_check.invocations;
+    assert.deepEqual(inv.map((i) => i.status), ["equal", "incomplete", "equal_with_explained_gap"]);
+    assert.deepEqual([inv[2].exec_delta.input_tokens, inv[2].session_turn_tokens.input_tokens, inv[2].difference.input_tokens], [5000, 3000, -2000]);
+    assert.deepEqual([inv[2].carried_invocations, inv[2].carried_tokens], [[2], u(2000)]);
+    assert.equal(inv[2].reason, "the running total also counts invocation 2, which reported no usage");
+    assert.equal(rep.cost_source, "session file + exec stream (equal; 1 invocation(s) also count the turns of an earlier one that reported no usage)");
   } finally {
     s.done();
   }
@@ -384,11 +395,12 @@ test("headless: a disagreeing bucket is reported, and the session file is booked
     const rep = measureDriverUsage({ runDir: s.run, policy: POLICY, codexHome: s.home }).report;
     assert.equal(rep.cross_check.verdict, "mismatch");
     assert.equal(rep.verified, false);
-    assert.equal(rep.cost_source, "session file (exec stream DISAGREES on invocation 2: output_tokens 999 vs 120; unverified)");
+    assert.equal(rep.cost_source, "session file (exec stream DISAGREES on invocation 2: output_tokens 949 vs 70; unverified)");
     assert.equal(rep.source, "session-file");
     const bad = rep.cross_check.invocations[1];
     assert.equal(bad.status, "differs");
-    assert.deepEqual(bad.difference, { ...u(0), output_tokens: 120 - 999 });
+    assert.deepEqual(bad.difference, { ...u(0), output_tokens: 70 - 949 }, "the invocation's own spend, as its row prints it");
+    assert.deepEqual(bad.differing, [{ bucket: "output_tokens", exec: 949, session: 70, unexplained: 70 - 949 }]);
     assert.equal(rep.cross_check.threads[0].verdict, "mismatch");
     assert.equal(rep.cost_usd_modeled, r6(cost(u(1000, 200, 50)) + cost(u(3000, 900, 70))));
   } finally {
@@ -655,14 +667,15 @@ test("headless: the next invocation's start closes a killed one, so a resume in 
     headless(s, r, [{ turn: a, incomplete: true, open: true }, { turn: b }]);
     const rep = measureDriverUsage({ runDir: s.run, policy: POLICY, codexHome: s.home }).report;
     assert.deepEqual(rep.turns.map((t) => t.invocation), [1, 2]);
-    assert.deepEqual(rep.cross_check.invocations.map((i) => [i.status, i.turn_id]), [["incomplete", a.id], ["equal", b.id]]);
+    assert.deepEqual(rep.cross_check.invocations.map((i) => [i.status, i.turn_id]), [["incomplete", a.id], ["equal_with_explained_gap", b.id]]);
+    assert.deepEqual(rep.cross_check.invocations[1].carried_tokens, u(1000));
     assert.equal(rep.cross_check.verdict, "equal");
   } finally {
     s.done();
   }
 });
 
-test("headless: a record past the last compared total in a completed invocation is an unexplained gap", () => {
+test("headless: a record the exec stream never counted, in a completed invocation, is a mismatch on that invocation", () => {
   const s = sandbox();
   try {
     const r = new SyntheticRollout({ threadId: T1 });
@@ -671,8 +684,9 @@ test("headless: a record past the last compared total in a completed invocation 
     r.write(s.home);
     headless(s, r, [{ turn: a }]);
     const rep = measureDriverUsage({ runDir: s.run, policy: POLICY, codexHome: s.home }).report;
-    assert.equal(rep.cross_check.verdict, "unexplained_gap");
+    assert.equal(rep.cross_check.verdict, "mismatch");
     assert.equal(rep.verified, false);
+    assert.deepEqual(rep.cross_check.invocations[0].differing, [{ bucket: "input_tokens", exec: 1000, session: 1700, unexplained: 700 }]);
     assert.deepEqual(rep.cross_check.threads[0].gap, { thread_id: T1, bucket: "input_tokens", difference: 700 });
     assert.equal(rep.tokens.input_tokens, 1700, "still booked from the session file");
   } finally {

@@ -69,6 +69,35 @@ scenario("headless-mismatch", ({ home, run }) => {
   events(run, T1, [{ turn: a }, { turn: b, usage: { ...b.cumulative, output_tokens: 4000 } }]);
 });
 
+scenario("headless-compaction", ({ home, run }) => {
+  const r = new SyntheticRollout({ threadId: T1 });
+  const a = r.turn({ responses: [{ usage: u(40000, 30000, 2000) }] });
+  const b = r.turn({ responses: [{ usage: u(30000, 25000, 1000) }, { usage: u(8000, 0, 600), compaction: true }, { usage: u(30000, 25000, 2000) }] });
+  r.write(home);
+  events(run, T1, [{ turn: a }, { turn: b }]);
+});
+
+// The exec stream reports invocation 2's running total 500 input tokens low; invocation 3's total is right again.
+scenario("headless-skew-cancels", ({ home, run }) => {
+  const r = new SyntheticRollout({ threadId: T1 });
+  const a = r.turn({ responses: [{ usage: u(1000, 200, 50) }] });
+  const b = r.turn({ responses: [{ usage: u(3000, 900, 70) }] });
+  const c = r.turn({ responses: [{ usage: u(5000, 2000, 90) }] });
+  r.write(home);
+  events(run, T1, [{ turn: a }, { turn: b, usage: { ...b.cumulative, input_tokens: b.cumulative.input_tokens - 500 } }, { turn: c }]);
+});
+
+// The same 500 missing from invocation 2 on, so invocation 3's own share is right.
+scenario("headless-skew-carries", ({ home, run }) => {
+  const r = new SyntheticRollout({ threadId: T1 });
+  const a = r.turn({ responses: [{ usage: u(1000, 200, 50) }] });
+  const b = r.turn({ responses: [{ usage: u(3000, 900, 70) }] });
+  const c = r.turn({ responses: [{ usage: u(5000, 2000, 90) }] });
+  r.write(home);
+  const low = (t) => ({ ...t.cumulative, input_tokens: t.cumulative.input_tokens - 500 });
+  events(run, T1, [{ turn: a }, { turn: b, usage: low(b) }, { turn: c, usage: low(c) }]);
+});
+
 scenario("headless-no-session-resume", ({ run }) => {
   const r = new SyntheticRollout({ threadId: T1 });
   r.turn({ responses: [{ usage: u(40000, 30000, 2000) }] });

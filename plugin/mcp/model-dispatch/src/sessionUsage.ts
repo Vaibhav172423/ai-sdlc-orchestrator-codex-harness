@@ -1053,22 +1053,34 @@ export function execThreadTotals(invs: ExecInvocation[], sessionBaseline: Usage 
   return out;
 }
 
-/** Every `difference` below is the session file minus the exec stream, per bucket. */
+/**
+ * Every `difference` below is the session file minus the exec stream, per
+ * bucket. An invocation's status compares the pair it prints, `exec_delta`
+ * against `session_turn_tokens`; the running totals are kept for reference.
+ */
 export interface InvocationCheck {
   invocation: number | null;
   thread_id: string;
   turn_id: string | null;
-  status: "equal" | "differs" | "incomplete" | "unmatched" | "no_session_file";
+  status: "equal" | "equal_with_explained_gap" | "differs" | "incomplete" | "unmatched" | "no_session_file";
   /** turn.completed usage: the thread's running total when the invocation ended. */
   exec_cumulative: Usage | null;
   /** The session file's token_count total at the end of the matching turn. */
   session_total: Usage | null;
-  difference: Usage | null;
   /** This invocation's own spend in the exec stream: its running total minus the one before. */
   exec_delta: Usage | null;
   /** Σ token_usage_record over the session-file turns that ran in this invocation. */
   session_turn_tokens: Usage | null;
-  differing?: { bucket: UsageBucket; exec: number; session: number }[];
+  /** session_turn_tokens minus exec_delta. */
+  difference: Usage | null;
+  /** Compaction calls in this invocation's turns: codex leaves them out of its running total. */
+  compaction_requests: number;
+  compaction_tokens: Usage;
+  /** Earlier invocations that reported no usage, whose turns this invocation's running total also counts. */
+  carried_invocations: (number | null)[];
+  carried_tokens: Usage;
+  /** `exec` and `session` are the row's figures; `unexplained` is the part of their difference nothing above explains. */
+  differing?: { bucket: UsageBucket; exec: number; session: number; unexplained: number }[];
   reason?: string;
 }
 
@@ -1156,11 +1168,11 @@ function lastTokenCountAtOrBefore(rollout: Rollout, t: number): TokenCountTotal 
 }
 
 /**
- * Exact per-bucket comparison of each invocation's turn.completed total with
- * the session file's token_count total at the end of the matching turn. The
- * booked session-file sum may exceed the exec stream only by compaction calls
- * (absent from token_count) and the turns of invocations that never reached
- * turn.completed. `spans` null maps invocations to turns by order.
+ * Exact per-bucket comparison of each invocation's exec-stream spend with the
+ * session-file responses of its turns. The two may differ only by compaction
+ * calls (absent from the running total) and by the turns of earlier
+ * invocations that never reached turn.completed, which the next running
+ * total counts. `spans` null maps invocations to turns by order.
  */
 function checkThread(
   threadId: string,
@@ -1172,10 +1184,11 @@ function checkThread(
   const windowIds = new Set(windowTurns.map((t) => t.turn_id));
   const windowRecords = rollout.records.filter((r) => r.turn_id && windowIds.has(r.turn_id));
   const session = sumUsage(windowRecords.map((r) => r.usage));
-  const tokensOf = (turns: RolloutTurn[]) => {
+  const recordsOf = (turns: RolloutTurn[]) => {
     const ids = new Set(turns.map((t) => t.turn_id));
-    return sumUsage(windowRecords.filter((r) => ids.has(r.turn_id as string)).map((r) => r.usage));
+    return windowRecords.filter((r) => ids.has(r.turn_id as string));
   };
+  const tokensOf = (records: UsageRecord[]) => sumUsage(records.map((r) => r.usage));
 
   const firstStart = windowTurns.length ? ms(windowTurns[0].started_at) : NaN;
   const before = Number.isNaN(firstStart) ? null : lastTokenCountAtOrBefore(rollout, firstStart - 1);
@@ -1192,30 +1205,42 @@ function checkThread(
 
   const checks: InvocationCheck[] = [];
   const execRequests: Usage[][] = [];
-  const incompleteTurnIds = new Set<string>();
+  const compactionRecords: UsageRecord[] = [];
+  // Invocations with no turn.completed since the last one that had it.
+  let pending: { invocation: number | null; records: UsageRecord[] }[] = [];
   let lastMatched: TokenCountTotal | null = null;
   for (let k = 0; k < invs.length; k++) {
     const inv = invs[k];
     const turns = turnsOf(k);
     const matched = turns.at(-1) ?? null;
-    const ids = new Set(turns.map((t) => t.turn_id));
-    execRequests.push(windowRecords.filter((r) => ids.has(r.turn_id as string) && !r.compaction).map((r) => r.usage));
+    const own = recordsOf(turns);
+    const ownCompaction = own.filter((r) => r.compaction);
+    execRequests.push(own.filter((r) => !r.compaction).map((r) => r.usage));
     const cumulative = inv.cumulative;
-    const base = {
+    const base: Omit<InvocationCheck, "status"> = {
       invocation: inv.invocation ?? k + 1,
       thread_id: threadId,
       turn_id: matched?.turn_id ?? null,
       exec_cumulative: cumulative,
       session_total: null,
-      difference: null,
       exec_delta: exec.per_invocation[k]?.delta ?? null,
-      session_turn_tokens: tokensOf(turns),
+      session_turn_tokens: tokensOf(own),
+      difference: null,
+      compaction_requests: ownCompaction.length,
+      compaction_tokens: tokensOf(ownCompaction),
+      carried_invocations: [],
+      carried_tokens: zeroUsage(),
     };
     if (!cumulative) {
-      for (const t of turns) incompleteTurnIds.add(t.turn_id);
+      pending.push({ invocation: base.invocation, records: own });
       checks.push({ ...base, status: "incomplete" });
       continue;
     }
+    const carried = pending.flatMap((p) => p.records);
+    base.carried_invocations = pending.map((p) => p.invocation);
+    base.carried_tokens = tokensOf(carried.filter((r) => !r.compaction));
+    pending = [];
+    compactionRecords.push(...ownCompaction, ...carried.filter((r) => r.compaction));
     if (!matched) {
       checks.push({ ...base, status: "unmatched", reason: "no session-file turn starts inside the invocation" });
       continue;
@@ -1227,25 +1252,33 @@ function checkThread(
       continue;
     }
     lastMatched = tc;
-    const differing = USAGE_BUCKETS.filter((b) => cumulative[b] !== tc.total[b]).map((b) => ({
+    const execDelta = base.exec_delta ?? zeroUsage();
+    const sessionTurns = base.session_turn_tokens ?? zeroUsage();
+    const expected = addInto(minus(sessionTurns, base.compaction_tokens), base.carried_tokens);
+    const differing = USAGE_BUCKETS.filter((b) => execDelta[b] !== expected[b]).map((b) => ({
       bucket: b,
-      exec: cumulative[b],
-      session: tc.total[b],
+      exec: execDelta[b],
+      session: sessionTurns[b],
+      unexplained: expected[b] - execDelta[b],
     }));
-    const compared = { ...base, session_total: tc.total, difference: minus(tc.total, cumulative) };
-    checks.push(differing.length ? { ...compared, status: "differs", differing } : { ...compared, status: "equal" });
+    const compared = { ...base, session_total: tc.total, difference: minus(sessionTurns, execDelta) };
+    const explained = explainedParts(compared);
+    if (differing.length) {
+      const what = differing.map((d) => `${d.bucket} ${signedCount(d.unexplained)}`).join(", ");
+      const beyond = explained.length ? `, beyond ${explained.join(" and ")}` : "";
+      checks.push({ ...compared, status: "differs", differing, reason: `${what} unexplained${beyond}` });
+    } else if (explained.length) {
+      checks.push({ ...compared, status: "equal_with_explained_gap", reason: explained.join("; ") });
+    } else {
+      checks.push({ ...compared, status: "equal" });
+    }
   }
 
   const lastAt = lastMatched ? ms(lastMatched.ts) : -Infinity;
-  const covered = (r: UsageRecord) => {
-    const at = ms(r.ts);
-    return !Number.isNaN(at) && at <= lastAt;
-  };
-  const compactionRecords = windowRecords.filter((r) => r.compaction && covered(r));
-  // Anything else past the last compared total stays in the gap, unexplained.
-  const incompleteRecords = windowRecords.filter((r) => !covered(r) && incompleteTurnIds.has(r.turn_id as string));
-  const compaction = sumUsage(compactionRecords.map((r) => r.usage));
-  const incomplete = sumUsage(incompleteRecords.map((r) => r.usage));
+  // Turns of invocations after the last turn.completed: only the session file holds them.
+  const incompleteRecords = pending.flatMap((p) => p.records);
+  const compaction = tokensOf(compactionRecords);
+  const incomplete = tokensOf(incompleteRecords);
 
   let reset = false;
   let prev: Usage | null = null;
@@ -1256,16 +1289,16 @@ function checkThread(
     prev = tc.total;
   }
 
-  const tokenCountDelta = lastMatched ? minus(lastMatched.total, t0) : zeroUsage();
+  // Anything else in the window that no invocation's spend accounts for is the gap.
   const explained = minus(minus(session, compaction), incomplete);
-  const off = USAGE_BUCKETS.find((b) => explained[b] !== tokenCountDelta[b]);
-  const gap = off ? { thread_id: threadId, bucket: off, difference: explained[off] - tokenCountDelta[off] } : null;
+  const off = USAGE_BUCKETS.find((b) => explained[b] !== exec.delta[b]);
+  const gap = off ? { thread_id: threadId, bucket: off, difference: explained[off] - exec.delta[off] } : null;
 
   let verdict: CrossCheckVerdict;
   if (checks.some((c) => c.status === "differs" || c.status === "unmatched")) verdict = "mismatch";
   else if (reset) verdict = "reset";
   else if (gap) verdict = "unexplained_gap";
-  else if (!checks.some((c) => c.status === "equal")) verdict = "no_exec_usage";
+  else if (!checks.some((c) => c.status === "equal" || c.status === "equal_with_explained_gap")) verdict = "no_exec_usage";
   else if (compactionRecords.length > 0 || incompleteRecords.length > 0) verdict = "equal_with_explained_gap";
   else verdict = "equal";
 
@@ -1289,6 +1322,19 @@ function checkThread(
     exec,
     execRequests,
   };
+}
+
+const signedCount = (n: number) => `${n > 0 ? "+" : ""}${n}`;
+
+/** What, besides the exec stream, an invocation's session-file responses hold. */
+function explainedParts(c: Pick<InvocationCheck, "compaction_requests" | "compaction_tokens" | "carried_invocations" | "carried_tokens">): string[] {
+  const parts: string[] = [];
+  if (!isZero(c.compaction_tokens)) parts.push(`${c.compaction_requests} compaction call(s) only in the session file`);
+  if (!isZero(c.carried_tokens)) {
+    const which = c.carried_invocations.map((n) => n ?? "?").join(", ");
+    parts.push(`the running total also counts invocation ${which}, which reported no usage`);
+  }
+  return parts;
 }
 
 /** A thread with no readable session file: the exec stream alone, nothing to compare. */
@@ -1316,9 +1362,13 @@ function execOnlyCheck(threadId: string, exec: ExecThreadTotals): { thread: Thre
       status: "no_session_file",
       exec_cumulative: inv.cumulative,
       session_total: null,
-      difference: null,
       exec_delta: delta,
       session_turn_tokens: null,
+      difference: null,
+      compaction_requests: 0,
+      compaction_tokens: zeroUsage(),
+      carried_invocations: [],
+      carried_tokens: zeroUsage(),
     })),
   };
 }
@@ -1344,8 +1394,11 @@ function uncheckedThread(threadId: string, session: Usage): ThreadCrossCheck {
 
 function crossCheckLabel(cc: CrossCheck): string {
   switch (cc.verdict) {
-    case "equal":
-      return "session file + exec stream (every invocation equal)";
+    case "equal": {
+      const carried = cc.invocations.filter((i) => i.status === "equal_with_explained_gap").length;
+      if (!carried) return "session file + exec stream (every invocation equal)";
+      return `session file + exec stream (equal; ${carried} invocation(s) also count the turns of an earlier one that reported no usage)`;
+    }
     case "equal_with_explained_gap":
       return (
         `session file + exec stream (equal; ${cc.compaction_requests} compaction call(s) and ` +

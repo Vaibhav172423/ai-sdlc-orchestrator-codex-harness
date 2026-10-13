@@ -2,7 +2,7 @@
   "schema_version": 1,
   "route": "headless",
   "source": "session-file",
-  "cost_source": "session file (exec stream DISAGREES on invocation 2: output_tokens 4000 vs 5000; unverified)",
+  "cost_source": "session file (exec stream DISAGREES on invocation 2: output_tokens 2000 vs 3000; unverified)",
   "verified": false,
   "provenance": "modeled",
   "thread_ids": [
@@ -161,7 +161,11 @@
         },
         "unreported_invocations": 0,
         "token_count_reset": false,
-        "gap": null
+        "gap": {
+          "thread_id": "019a0000-0000-7000-8000-0000000000a1",
+          "bucket": "output_tokens",
+          "difference": 1000
+        }
       }
     ],
     "invocations": [
@@ -183,13 +187,6 @@
           "output_tokens": 2000,
           "reasoning_output_tokens": 0
         },
-        "difference": {
-          "input_tokens": 0,
-          "cached_input_tokens": 0,
-          "cache_write_input_tokens": 0,
-          "output_tokens": 0,
-          "reasoning_output_tokens": 0
-        },
         "exec_delta": {
           "input_tokens": 40000,
           "cached_input_tokens": 30000,
@@ -202,6 +199,29 @@
           "cached_input_tokens": 30000,
           "cache_write_input_tokens": 0,
           "output_tokens": 2000,
+          "reasoning_output_tokens": 0
+        },
+        "difference": {
+          "input_tokens": 0,
+          "cached_input_tokens": 0,
+          "cache_write_input_tokens": 0,
+          "output_tokens": 0,
+          "reasoning_output_tokens": 0
+        },
+        "compaction_requests": 0,
+        "compaction_tokens": {
+          "input_tokens": 0,
+          "cached_input_tokens": 0,
+          "cache_write_input_tokens": 0,
+          "output_tokens": 0,
+          "reasoning_output_tokens": 0
+        },
+        "carried_invocations": [],
+        "carried_tokens": {
+          "input_tokens": 0,
+          "cached_input_tokens": 0,
+          "cache_write_input_tokens": 0,
+          "output_tokens": 0,
           "reasoning_output_tokens": 0
         },
         "status": "equal"
@@ -224,13 +244,6 @@
           "output_tokens": 5000,
           "reasoning_output_tokens": 0
         },
-        "difference": {
-          "input_tokens": 0,
-          "cached_input_tokens": 0,
-          "cache_write_input_tokens": 0,
-          "output_tokens": 1000,
-          "reasoning_output_tokens": 0
-        },
         "exec_delta": {
           "input_tokens": 60000,
           "cached_input_tokens": 50000,
@@ -245,14 +258,39 @@
           "output_tokens": 3000,
           "reasoning_output_tokens": 0
         },
+        "difference": {
+          "input_tokens": 0,
+          "cached_input_tokens": 0,
+          "cache_write_input_tokens": 0,
+          "output_tokens": 1000,
+          "reasoning_output_tokens": 0
+        },
+        "compaction_requests": 0,
+        "compaction_tokens": {
+          "input_tokens": 0,
+          "cached_input_tokens": 0,
+          "cache_write_input_tokens": 0,
+          "output_tokens": 0,
+          "reasoning_output_tokens": 0
+        },
+        "carried_invocations": [],
+        "carried_tokens": {
+          "input_tokens": 0,
+          "cached_input_tokens": 0,
+          "cache_write_input_tokens": 0,
+          "output_tokens": 0,
+          "reasoning_output_tokens": 0
+        },
         "status": "differs",
         "differing": [
           {
             "bucket": "output_tokens",
-            "exec": 4000,
-            "session": 5000
+            "exec": 2000,
+            "session": 3000,
+            "unexplained": 1000
           }
-        ]
+        ],
+        "reason": "output_tokens +1000 unexplained"
       }
     ],
     "session_tokens": {
@@ -293,7 +331,11 @@
     "unreported_invocations": 0,
     "missing_invocations": 0,
     "token_count_reset": false,
-    "gap": null,
+    "gap": {
+      "thread_id": "019a0000-0000-7000-8000-0000000000a1",
+      "bucket": "output_tokens",
+      "difference": 1000
+    },
     "missing_threads": [],
     "unchecked_threads": []
   },

@@ -194,7 +194,8 @@ export function crossCheckLines(report) {
   const lines = [`token cross-check: ${cc.verdict}${cc.verified ? ", verified" : ", UNVERIFIED"} (exec stream/session file, difference)`];
   for (const t of cc.threads ?? []) lines.push(`  thread ${t.thread_id}: ${t.verdict}; ${cell(t.exec_stream_tokens, t.session_tokens)}`);
   for (const i of cc.invocations ?? []) {
-    lines.push(`  invocation ${i.invocation} (${i.thread_id}): ${i.status}; ${cell(i.exec_delta, i.session_turn_tokens)}`);
+    const note = i.reason ? ` — ${i.reason}` : "";
+    lines.push(`  invocation ${i.invocation} (${i.thread_id}): ${i.status}; ${cell(i.exec_delta, i.session_turn_tokens)}${note}`);
   }
   return lines;
 }

@@ -22,13 +22,15 @@ function report(dir, args = []) {
   return { status, stdout: out.join("\n"), stderr: err.join("\n") };
 }
 const sum = (name) => summarize(readRun(at(name)));
+const ALL = ["headless-equal", "headless-killed-last", "headless-mismatch", "headless-compaction", "headless-skew-cancels",
+  "headless-skew-carries", "headless-no-session-killed", "headless-no-session-resume", "interactive-lower-bound-unread",
+  "interactive-unpriced"];
 
 const dirs = [];
 after(() => { for (const d of dirs) rmSync(d, { recursive: true, force: true }); });
 
 test("every fixture is in the DriverUsageReport shape", () => {
-  for (const name of ["headless-equal", "headless-killed-last", "headless-mismatch", "headless-no-session-killed",
-    "headless-no-session-resume", "interactive-lower-bound-unread", "interactive-unpriced"]) {
+  for (const name of ALL) {
     const u = JSON.parse(readFileSync(join(at(name), "driver-usage.json"), "utf8"));
     for (const key of ["source", "cost_source", "verified", "threads", "window", "turns", "tokens", "cost_usd_modeled", "cost_complete", "unpriced", "cross_check"]) {
       assert.ok(key in u, `${name} has ${key}`);
@@ -74,7 +76,7 @@ test("a cross-check mismatch is labelled UNVERIFIED in the driver section and un
   for (const args of [[], ["--markdown"]]) {
     const out = report(at("headless-mismatch"), args).stdout;
     assert.match(out, /Verification\W+UNVERIFIED/);
-    assert.match(out, /Cross-check\W+UNVERIFIED: the exec stream disagrees on invocation 2: output_tokens 4000 vs 5000 in the session file \(exec stream \$0\.1040\)/);
+    assert.match(out, /Cross-check\W+UNVERIFIED: the exec stream disagrees on invocation 2: output_tokens 2000 vs 3000 in the session file \(exec stream \$0\.1040\)/);
     assert.match(out, /The driver figure is UNVERIFIED: the exec stream disagrees on invocation 2/);
   }
   assert.equal(sum("headless-mismatch").driver.verification.verified, false);
@@ -176,4 +178,58 @@ test("an unchecked cross-check says which threads had nothing to compare and is 
   }
   const two = withCrossCheck("headless-equal", (cc) => ({ ...cc, verdict: "unchecked", verified: false, unchecked_threads: ["a", "b"] }));
   assert.match(report(two).stdout, /UNVERIFIED: 2 threads were booked from the session file/);
+});
+
+/** The token cross-check table's rows as {scope, status, bucket, exec, session, difference}. */
+function checkRows(md) {
+  const at = md.indexOf("### Token cross-check");
+  if (at < 0) return [];
+  return md.slice(at).split("\n").filter((l) => /^\| (thread|invocation) /.test(l)).map((l) => {
+    const [scope, status, bucket, exec, session, difference] = l.split("|").slice(1, -1).map((c) => c.trim());
+    return { scope, status, bucket, exec, session, difference };
+  });
+}
+
+test("no invocation row of the token cross-check reads equal beside a difference, or differs beside zeros", () => {
+  for (const name of ALL) {
+    const byScope = new Map();
+    for (const r of checkRows(report(at(name), ["--markdown"]).stdout)) {
+      if (r.scope.startsWith("invocation")) byScope.set(r.scope, [...(byScope.get(r.scope) ?? []), r]);
+    }
+    for (const [scope, rows] of byScope) {
+      const zero = rows.every((r) => r.difference === "0" || r.difference === "?");
+      if (rows[0].status === "equal") assert.ok(zero, `${name}: ${scope} reads equal beside ${rows.map((r) => r.difference)}`);
+      if (rows[0].status === "differs" || rows[0].status === "equal_with_explained_gap") {
+        assert.ok(!zero, `${name}: ${scope} reads ${rows[0].status} beside all zeros`);
+      }
+    }
+  }
+});
+
+test("a compaction call is an explained gap on its own invocation row, named under the table", () => {
+  const md = report(at("headless-compaction"), ["--markdown"]).stdout;
+  assert.ok(md.includes("| invocation 1 | equal | input | 40000 | 40000 | 0 |"), md);
+  assert.ok(md.includes("| invocation 2 | equal_with_explained_gap | input | 60000 | 68000 | +8000 |"), md);
+  assert.ok(md.includes("| invocation 2 | equal_with_explained_gap | output | 3000 | 3600 | +600 |"), md);
+  assert.ok(md.includes("- Invocation 2 (equal_with_explained_gap): 1 compaction call(s) only in the session file."), md);
+  const out = report(at("headless-compaction")).stdout;
+  assert.match(out, /invocation 2 — equal_with_explained_gap: input 60000\/68000 \(\+8000\) .* — 1 compaction call\(s\) only in the session file/);
+  assert.match(out, /Verification\s+verified$/m);
+});
+
+test("a difference that cancels out in a later invocation is a mismatch on both rows, though the thread total agrees", () => {
+  const md = report(at("headless-skew-cancels"), ["--markdown"]).stdout;
+  assert.ok(md.includes("| invocation 2 | differs | input | 2500 | 3000 | +500 |"), md);
+  assert.ok(md.includes("| invocation 3 | differs | input | 5500 | 5000 | -500 |"), md);
+  assert.ok(md.includes("| thread `019a0000-0000-7000-8000-0000000000a1` | mismatch | input | 9000 | 9000 | 0 |"), md);
+  assert.match(md, /Cross-check: UNVERIFIED: the exec stream disagrees on invocation 2: input_tokens 2500 vs 3000 in the session file/);
+  assert.match(md, /its status also counts the invocation rows under it/);
+  assert.equal(sum("headless-skew-cancels").driver.verification.verified, false);
+});
+
+test("a difference that carries forward differs only on the invocation where it starts", () => {
+  const md = report(at("headless-skew-carries"), ["--markdown"]).stdout;
+  assert.ok(md.includes("| invocation 2 | differs | input | 2500 | 3000 | +500 |"), md);
+  assert.ok(md.includes("| invocation 3 | equal | input | 5000 | 5000 | 0 |"), md);
+  assert.ok(md.includes("| thread `019a0000-0000-7000-8000-0000000000a1` | mismatch | input | 8500 | 9000 | +500 |"), md);
 });

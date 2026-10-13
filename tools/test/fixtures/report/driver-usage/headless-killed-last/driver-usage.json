@@ -183,13 +183,6 @@
           "output_tokens": 2000,
           "reasoning_output_tokens": 500
         },
-        "difference": {
-          "input_tokens": 0,
-          "cached_input_tokens": 0,
-          "cache_write_input_tokens": 0,
-          "output_tokens": 0,
-          "reasoning_output_tokens": 0
-        },
         "exec_delta": {
           "input_tokens": 40000,
           "cached_input_tokens": 30000,
@@ -204,6 +197,29 @@
           "output_tokens": 2000,
           "reasoning_output_tokens": 500
         },
+        "difference": {
+          "input_tokens": 0,
+          "cached_input_tokens": 0,
+          "cache_write_input_tokens": 0,
+          "output_tokens": 0,
+          "reasoning_output_tokens": 0
+        },
+        "compaction_requests": 0,
+        "compaction_tokens": {
+          "input_tokens": 0,
+          "cached_input_tokens": 0,
+          "cache_write_input_tokens": 0,
+          "output_tokens": 0,
+          "reasoning_output_tokens": 0
+        },
+        "carried_invocations": [],
+        "carried_tokens": {
+          "input_tokens": 0,
+          "cached_input_tokens": 0,
+          "cache_write_input_tokens": 0,
+          "output_tokens": 0,
+          "reasoning_output_tokens": 0
+        },
         "status": "equal"
       },
       {
@@ -212,13 +228,29 @@
         "turn_id": "turn-0002-019a0000",
         "exec_cumulative": null,
         "session_total": null,
-        "difference": null,
         "exec_delta": null,
         "session_turn_tokens": {
           "input_tokens": 102000,
           "cached_input_tokens": 90000,
           "cache_write_input_tokens": 0,
           "output_tokens": 4000,
+          "reasoning_output_tokens": 0
+        },
+        "difference": null,
+        "compaction_requests": 0,
+        "compaction_tokens": {
+          "input_tokens": 0,
+          "cached_input_tokens": 0,
+          "cache_write_input_tokens": 0,
+          "output_tokens": 0,
+          "reasoning_output_tokens": 0
+        },
+        "carried_invocations": [],
+        "carried_tokens": {
+          "input_tokens": 0,
+          "cached_input_tokens": 0,
+          "cache_write_input_tokens": 0,
+          "output_tokens": 0,
           "reasoning_output_tokens": 0
         },
         "status": "incomplete"

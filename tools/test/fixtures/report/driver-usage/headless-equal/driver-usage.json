@@ -183,13 +183,6 @@
           "output_tokens": 2000,
           "reasoning_output_tokens": 500
         },
-        "difference": {
-          "input_tokens": 0,
-          "cached_input_tokens": 0,
-          "cache_write_input_tokens": 0,
-          "output_tokens": 0,
-          "reasoning_output_tokens": 0
-        },
         "exec_delta": {
           "input_tokens": 40000,
           "cached_input_tokens": 30000,
@@ -203,6 +196,29 @@
           "cache_write_input_tokens": 0,
           "output_tokens": 2000,
           "reasoning_output_tokens": 500
+        },
+        "difference": {
+          "input_tokens": 0,
+          "cached_input_tokens": 0,
+          "cache_write_input_tokens": 0,
+          "output_tokens": 0,
+          "reasoning_output_tokens": 0
+        },
+        "compaction_requests": 0,
+        "compaction_tokens": {
+          "input_tokens": 0,
+          "cached_input_tokens": 0,
+          "cache_write_input_tokens": 0,
+          "output_tokens": 0,
+          "reasoning_output_tokens": 0
+        },
+        "carried_invocations": [],
+        "carried_tokens": {
+          "input_tokens": 0,
+          "cached_input_tokens": 0,
+          "cache_write_input_tokens": 0,
+          "output_tokens": 0,
+          "reasoning_output_tokens": 0
         },
         "status": "equal"
       },
@@ -224,13 +240,6 @@
           "output_tokens": 5000,
           "reasoning_output_tokens": 1300
         },
-        "difference": {
-          "input_tokens": 0,
-          "cached_input_tokens": 0,
-          "cache_write_input_tokens": 0,
-          "output_tokens": 0,
-          "reasoning_output_tokens": 0
-        },
         "exec_delta": {
           "input_tokens": 60000,
           "cached_input_tokens": 50000,
@@ -244,6 +253,29 @@
           "cache_write_input_tokens": 0,
           "output_tokens": 3000,
           "reasoning_output_tokens": 800
+        },
+        "difference": {
+          "input_tokens": 0,
+          "cached_input_tokens": 0,
+          "cache_write_input_tokens": 0,
+          "output_tokens": 0,
+          "reasoning_output_tokens": 0
+        },
+        "compaction_requests": 0,
+        "compaction_tokens": {
+          "input_tokens": 0,
+          "cached_input_tokens": 0,
+          "cache_write_input_tokens": 0,
+          "output_tokens": 0,
+          "reasoning_output_tokens": 0
+        },
+        "carried_invocations": [],
+        "carried_tokens": {
+          "input_tokens": 0,
+          "cached_input_tokens": 0,
+          "cache_write_input_tokens": 0,
+          "output_tokens": 0,
+          "reasoning_output_tokens": 0
         },
         "status": "equal"
       }

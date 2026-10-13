@@ -333,7 +333,7 @@ function bucketRows(exec, session) {
  * The cross-check as token counts: each thread's exec-stream total against
  * what the session file books for it, and each invocation's exec-stream
  * share against the session-file responses inside it. Difference is session
- * file minus exec stream.
+ * file minus exec stream; `note` says what explains an invocation's.
  */
 function tokenCheck(cc) {
   if (!cc || typeof cc !== "object" || !Array.isArray(cc.threads)) return null;
@@ -349,6 +349,7 @@ function tokenCheck(cc) {
       invocation: i.invocation ?? null,
       thread_id: str(i.thread_id) ?? null,
       status: str(i.status) ?? null,
+      note: str(i.reason) ?? null,
       buckets: bucketRows(i.exec_delta, i.session_turn_tokens),
     })),
   };
@@ -750,8 +751,11 @@ function crossCheckDetail(cc) {
   // Earlier sessionUsage.ts output names this field trailing_turns.
   const incompleteTurns = num(cc.incomplete_turns ?? cc.trailing_turns);
   const unchecked = strings(cc.unchecked_threads).length;
+  const carried = Array.isArray(cc.invocations) ? cc.invocations.filter((i) => i?.status === "equal_with_explained_gap").length : 0;
   return {
-    equal: "every invocation's exec-stream total equals the session file",
+    equal: carried
+      ? `equal; ${plural(carried, "invocation")} also ${carried === 1 ? "counts" : "count"} the turns of an earlier one that reported no usage`
+      : "every invocation's exec-stream total equals the session file",
     equal_with_explained_gap: `equal; the session file also holds ${plural(num(cc.compaction_requests), "compaction call")} and ${plural(incompleteTurns, "incomplete turn")} the exec stream never reported`,
     no_exec_usage: "the exec stream reported no usage to compare",
     unchecked: `${unchecked > 1 ? `${unchecked} threads were` : unchecked === 1 ? "1 thread was" : "a thread was"} booked from the session file with no exec-stream invocation to compare`,
@@ -953,7 +957,9 @@ function renderText(r) {
       p();
       p(`  Token cross-check: exec stream / session file (session minus exec)`);
       for (const t of dr.token_check.threads) p(`    thread ${t.thread_id} — ${t.verdict}: ${checkCells(t.buckets)}`);
-      for (const i of dr.token_check.invocations) p(`    invocation ${i.invocation} — ${i.status}: ${checkCells(i.buckets)}`);
+      for (const i of dr.token_check.invocations) {
+        p(`    invocation ${i.invocation} — ${i.status}: ${checkCells(i.buckets)}${i.note ? ` — ${i.note}` : ""}`);
+      }
     }
     p();
     for (const l of driverCostNote(id.driver_auth)) p(`  ${l}`);
@@ -1118,7 +1124,10 @@ function renderMarkdown(r) {
       for (const t of dr.token_check.threads) rows(`thread \`${t.thread_id}\``, t.verdict, t.buckets);
       for (const i of dr.token_check.invocations) rows(`invocation ${i.invocation}`, i.status, i.buckets);
       p();
-      p(`_Difference is the session file minus the exec stream. A thread row compares the whole thread; an invocation row compares that invocation's share of the running total with the session-file responses inside it._`);
+      const notes = dr.token_check.invocations.filter((i) => i.note);
+      for (const i of notes) p(`- Invocation ${i.invocation} (${i.status}): ${i.note}.`);
+      if (notes.length) p();
+      p(`_Difference is the session file minus the exec stream. A thread row compares the whole thread, and its status also counts the invocation rows under it. An invocation row compares that invocation's share of the running total with the session-file responses inside it, and its status compares those same two figures._`);
       p();
     }
     for (const l of driverCostNote(id.driver_auth, { markdown: true })) p(`> ${l}`);
