@@ -114,6 +114,38 @@ test("headless: a run that ended aborted does not resume its contract, and nothi
   } finally { p.done(); }
 });
 
+test("headless: a signal after the close-out and the final SUMMARY.md leaves a brownfield run completed", async () => {
+  const p = repo();
+  try {
+    p.scenario("b9", [
+      {
+        freeze: { allowlist: ["src/**"] },
+        gates: [{ gate: 0, decision: "auto-approved" }, { gate: 4, decision: "auto-approved" }],
+        close: true,
+        summary: true,
+        sleepMs: 8000,
+        sleepAfterTurn: true,
+      },
+    ]);
+    const signals = new EventEmitter();
+    const running = p.run(["--run-id=b9", ...BROWNFIELD], { signals });
+    const events = join(p.runDir("b9"), "driver-events.jsonl");
+    const turnDone = () => readLines(events).some((l) => l.kind === "codex" && l.event.type === "turn.completed");
+    for (let i = 0; i < 200 && !turnDone(); i++) await new Promise((r) => setTimeout(r, 25));
+    assert.ok(turnDone(), "the conductor finished the run and codex has not exited yet");
+    signals.emit("SIGINT");
+    const r = await running;
+    assert.equal(r.code, 0, r.err);
+    const runEnd = readLines(events).at(-1);
+    assert.equal(runEnd.outcome, "completed");
+    assert.match(runEnd.reason, /SIGINT arrived after the run finished/);
+    assert.equal(readJson(join(p.runDir("b9"), "manifest.json")).status, "auto-approved");
+    assert.equal(readJson(join(p.runDir("b9"), "driver-manifest.json")).outcome, "completed");
+    assert.equal(p.lock("b9").end_outcome, "completed");
+    assert.doesNotMatch(r.out, /Continue:/);
+  } finally { p.done(); }
+});
+
 test("headless: a fresh brownfield run in a project another run holds is refused before spending", async () => {
   const p = repo();
   try {

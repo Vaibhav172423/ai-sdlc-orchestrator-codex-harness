@@ -512,6 +512,39 @@ test("SIGTERM mid-turn: codex's group is signalled, the record is written, exit 
   }
 });
 
+test("a signal after the conductor finished the run leaves it completed, exit 0, with its accepted status kept", async () => {
+  const h = harness();
+  try {
+    withScenario(h, "r1", [{ ...COMPLETE, sleepMs: 6000, sleepAfterTurn: true }]);
+    const signals = new EventEmitter();
+    const running = h.run(args(h, "r1"), { signals });
+    assert.ok(
+      await waitFor(() => h.records("r1").some((r) => r.kind === "codex" && r.event.type === "turn.completed")),
+      "the conductor wrote its completion evidence and codex has not exited yet",
+    );
+    signals.emit("SIGTERM");
+    const { code, out } = await running;
+    assert.equal(code, 0);
+    assert.ok(h.log().some((l) => l.signal === "SIGTERM"), "codex still received the forwarded signal");
+    const end = h.records("r1").find((r) => r.kind === "invocation_end");
+    assert.equal(end.ended_by, "driver_signal");
+    const runEnd = h.records("r1").at(-1);
+    assert.deepEqual([runEnd.outcome, runEnd.exit_code], ["completed", 0]);
+    assert.match(runEnd.reason, /SIGTERM arrived after the run finished/);
+    assert.equal(h.manifest("r1").outcome, "completed");
+    const manifest = JSON.parse(readFileSync(join(h.runDirOf("r1"), "manifest.json"), "utf-8"));
+    assert.equal(manifest.status, "auto-approved", "the run end does not overwrite Phase 9's accepted status");
+    assert.doesNotMatch(out, /Continue:/);
+
+    const again = await h.run(["--project-root", h.root, "--resume=r1"]);
+    assert.equal(again.code, 2);
+    assert.match(again.err, /already completed/);
+    assert.equal(h.calls().length, 1, "nothing more is spent");
+  } finally {
+    h.cleanup();
+  }
+});
+
 test("a codex that ignores SIGTERM is killed after the grace period", async () => {
   const h = harness();
   try {

@@ -333,7 +333,7 @@ exit code says how:
 | 2 | — | A usage error, or a refusal before anything was spent |
 | 3 | `max_turns` | `--max-turns` invocations ran out before the run finished |
 | 4 | `aborted`, `halted`, `refused`, `stopped`, `cost_cap` | A stop on purpose: an aborted gate, a preflight halt, a refused write, the conductor's `stop.json`, or the cost cap |
-| 128+n | `interrupted` | The driver received signal n: 130 for Ctrl-C, 143 for `kill`, 129 when its terminal closes |
+| 128+n | `interrupted` | The driver received signal n before the run finished: 130 for Ctrl-C, 143 for `kill`, 129 when its terminal closes. A signal that arrives after Gate 4 was accepted and the final `SUMMARY.md` written leaves the run `completed`, exit 0 |
 
 The cost cap is checked before every `codex exec` and after each one, before a waiting gate is put to
 you: a run over its cap stops at exit 4 without asking.
