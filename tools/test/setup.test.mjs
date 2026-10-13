@@ -194,6 +194,31 @@ test("the closing banner shows a runnable driver invocation, not a Claude one", 
   assert.doesNotMatch(r.stdout, /--output-dir/, "run.mjs refuses an --output-dir of the shared .sdlc folder");
 });
 
+/** The banner's lines from `mkdir` to the run.mjs command, continuations joined, as argv with `~` and $HOME expanded. */
+function bannerCommands(stdout, home) {
+  const words = (line) => line.trim().split(/\s+/).map((w) => w.replace(/"/g, "").replace(/^~(?=\/)|\$HOME/g, home));
+  const text = stdout.replace(/\\\n\s*/g, " ");
+  const mkdir = text.split("\n").find((l) => /^\s*mkdir -p /.test(l));
+  const run = text.split("\n").find((l) => /^\s*node plugin\/codex\/run\.mjs /.test(l));
+  return { mkdir: mkdir && words(mkdir), run: run && words(run) };
+}
+
+test("the closing banner's headless command runs as printed from the clone root", () => {
+  inSandbox((sb) => {
+    const r = runWizard(sb, { OPENAI_API_KEY: "sk-test-not-real" });
+    const { mkdir, run } = bannerCommands(r.stdout, sb.home);
+    assert.ok(run, `no run.mjs command in the banner:\n${r.stdout}`);
+    const projectRoot = run.find((w) => w.startsWith("--project-root="))?.slice("--project-root=".length);
+    assert.ok(projectRoot && resolve(REPO_ROOT, projectRoot) !== REPO_ROOT, "the clone is not the project a run writes into");
+    assert.deepEqual(mkdir, ["mkdir", "-p", projectRoot], "the banner creates the project folder it names");
+    mkdirSync(projectRoot, { recursive: true });
+    assert.match(r.stdout, /add --gates=auto-approve for an unattended run/);
+    const unattended = [...run.slice(1), "--gates=auto-approve", "--dry-run"];
+    const dry = spawnSync(process.execPath, unattended, { cwd: REPO_ROOT, encoding: "utf8", env: sb.env });
+    assert.equal(dry.status, 0, dry.stderr);
+  });
+});
+
 test("the setup tests never reach a real codex", () => {
   inSandbox((sb) => {
     const r = spawnSync("codex", ["--version"], { encoding: "utf8", env: sb.env });
