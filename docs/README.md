@@ -40,7 +40,7 @@ Reasoning-forward. Understand why the pieces are shaped the way they are.
 | Doc | For |
 |---|---|
 | [Architecture](architecture.md) | Who calls what, and why the driver calls the bridge rather than the model. Adapters, routing, the write contract, telemetry, install routes. |
-| [Methodology](methodology.md) | How tokens and costs are derived; why modeled and metered figures are reported separately and never summed. |
+| [Methodology](methodology.md) | How tokens and costs are derived; why modeled figures stay out of the vendor-metered total. |
 
 ## For maintainers
 

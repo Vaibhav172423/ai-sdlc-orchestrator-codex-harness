@@ -134,7 +134,7 @@ export function renderRunSummary(manifest, { runDir } = {}) {
   const driverCost = Number.isFinite(t.driver_cost_usd_modeled) ? usd(t.driver_cost_usd_modeled) : "not measured";
   L.push(`| Conductor (driver) loop — modeled | ${driverCost} |`, "");
   L.push(driverLine(m), "");
-  L.push("This summary does not add the two lines into a run total.", "");
+  L.push("This summary does not add the two lines; the cost report (`scripts/report.mjs` in the plugin) prints the run total.", "");
 
   const phases = Object.entries(m.phase_breakdown ?? {});
   L.push("## By phase", "");

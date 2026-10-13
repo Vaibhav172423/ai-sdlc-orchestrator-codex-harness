@@ -133,9 +133,10 @@ The observed run above cost **$0.5287**, vendor-metered, on `gpt-plus-flash`. It
 one small brief, not a guarantee — cost scales with how much code the brief implies and how many
 times a phase has to be revised.
 
-The report shows dispatched work and the driver loop as separate totals. The driver figure is
-modeled rather than measured and is deliberately kept out of the vendor total;
-[methodology.md](methodology.md) explains why.
+The report shows dispatched work and the driver loop as separate totals, then adds them into
+`Run total = dispatched + driver`, with its vendor-metered and modeled parts on their own lines.
+The driver figure is modeled rather than measured and is deliberately kept out of the
+vendor-metered total; [methodology.md](methodology.md) explains why.
 
 ## What next
 

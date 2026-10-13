@@ -278,10 +278,10 @@ Brownfield adds `discovery.md`, `intent_brief.md`, and `provenance.json`.
 node tools/report.mjs .sdlc/runs/<run-id> --markdown
 ```
 
-The report separates dispatched work (vendor-metered) from the driver loop (modeled, and kept out
-of the vendor total), flags any packet that hit its output cap, and prints the pins the run used.
-[methodology.md](methodology.md) explains why those are separate numbers and how far to trust
-each one.
+The report lists dispatched work by phase and the driver loop (modeled), adds them into
+`Run total = dispatched + driver`, keeps modeled figures out of the vendor-metered total, flags any
+packet that hit its output cap, and prints the pins the run used. [methodology.md](methodology.md)
+explains why those totals are kept apart and how far to trust each one.
 
 ## Running again
 

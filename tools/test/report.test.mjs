@@ -1,16 +1,9 @@
 /**
- * Guards the post-run cost report.
- *
- * The load-bearing property is arithmetic honesty. Two failure modes matter
- * more than formatting:
- *
- *   1. The phase rows not summing to the stated total. A reader who checks
- *      the addition and finds it wrong stops trusting every other number.
- *   2. The modeled driver cost leaking into the vendor total. Codex reports
- *      no wallet figures, so the driver leg's cost is derived, not measured —
- *      and on a seat-backed driver it may correspond to no money at all.
- *      Merging the two produces a figure that is neither the API bill nor
- *      the seat usage, which is the specific dishonesty D4 exists to prevent.
+ * Guards the post-run cost report. The load-bearing property is arithmetic
+ * honesty: the rows add up to the stated totals, and a modeled figure (the
+ * driver loop, a seat dispatch) never lands in the vendor-metered total.
+ * The run total adds the two on its own labelled line; report-totals.test.mjs
+ * covers it.
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
@@ -21,7 +14,7 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
-const REPORT = join(REPO_ROOT, "tools", "report.mjs");
+const REPORT = join(REPO_ROOT, "plugin", "scripts", "report.mjs");
 
 function runReport(dir, extra = []) {
   return spawnSync("node", [REPORT, dir, ...extra], { encoding: "utf8", timeout: 30_000 });
@@ -74,7 +67,7 @@ test("the modeled driver cost is NOT added into the vendor total", () => {
     const out = runReport(dir).stdout;
     assert.match(out, /Vendor-metered total\s+\$0\.0500/, "vendor total must exclude the modeled figure");
     assert.match(out, /Modeled cost\s+\$0\.9900/, "the modeled figure still has to be reported");
-    assert.ok(!/Vendor-metered total\s+\$1\.04/.test(out), "the two must never be summed together");
+    assert.ok(!/Vendor-metered total\s+\$1\.04/.test(out), "the driver figure must not reach the vendor-metered total");
   } finally { cleanup(dir); }
 });
 

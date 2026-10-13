@@ -48,9 +48,9 @@ Do not add `Co-Authored-By:` trailers for AI assistants. The committer identity 
 
 ## Code style
 
-The tooling scripts under `tools/` (`setup.mjs`, `report.mjs`, `logfmt.mjs`, and the tests beside them in `tools/test/`) are plain ES modules. No TypeScript there, no build step; keep them that way so someone can read and modify them without a compiler.
+The tooling scripts under `tools/` (`setup.mjs`, the `report.mjs` wrapper, and the tests beside them in `tools/test/`) are plain ES modules. No TypeScript there, no build step; keep them that way so someone can read and modify them without a compiler.
 
-The same goes for `plugin/scripts/` (`verify-setup.mjs`, `probe-agent-worker.mjs`), and there the reason is stronger than preference: those two have to run on a machine that installed the harness by cloning it, and therefore has no `tools/` directory, no `node_modules/`, and no build output. Anything they import has to be either a Node builtin or something they can find inside the plugin.  Their tests still live in `tools/test/`, where `npm test` picks them up — a test file may import from `plugin/scripts/`, but not the other way round.
+The same goes for `plugin/scripts/` (`probe-agent-worker.mjs`, `report.mjs` and its `lib/actors.mjs`), and there the reason is stronger than preference: they have to run from an installed plugin, whose cache is a copy of `./plugin` with no `tools/` directory, no `node_modules/`, and no build output. Anything they import has to be either a Node builtin or something they can find inside the plugin.  Their tests still live in `tools/test/`, where `npm test` picks them up — a test file may import from `plugin/scripts/`, but not the other way round.
 
 The MCP server (`plugin/mcp/model-dispatch/`) is TypeScript with a build step. Follow the existing conventions in that directory.
 

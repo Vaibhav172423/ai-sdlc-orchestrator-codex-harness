@@ -266,12 +266,16 @@ preflight halt, a refused write, the cost cap. Run it before the report in step 
 
 When the run finishes, show:
 - tokens per phase, split into cached input, fresh input, and output
-- cost per phase and the run total, with any modeled figure kept visibly apart from the metered one
+- cost per phase and the `Run total = dispatched + driver` line, with its vendor-metered and
+  modeled parts on their own lines
 - which model each phase ran on, so the routing is visible rather than asserted
 - where the generated code and the run record were written
 
-The `end_run` command prints a `Cost report:` line. When it gives a command, run it to get the
-same breakdown from the telemetry the run wrote. When it says this install has none, build the
-breakdown from `telemetry.jsonl` in the run folder.
+The `end_run` command prints a `Cost report:` line with the command that gives the same breakdown
+from the records the run wrote:
+
+```bash
+node '<plugin-root>/scripts/report.mjs' '<run folder>' --markdown
+```
 
 Then stop. Do not propose follow-up runs.

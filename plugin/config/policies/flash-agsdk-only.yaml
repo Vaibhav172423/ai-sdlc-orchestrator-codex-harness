@@ -5,9 +5,9 @@
 # run on the GPT model pinned in `driver:` below, inside `codex exec`, not on
 # Flash. Only the dispatched `execute_with_model` calls this policy governs
 # route to Flash, so a run needs ADC and a codex login, and no OPENAI_API_KEY.
-# The driver turns are reported as modeled driver-loop cost, kept in a
-# separate section and never summed with the dispatched total — see
-# docs/methodology.md.
+# The driver turns are reported as modeled driver-loop cost in their own
+# section; the report's run total adds them to the dispatched total and keeps
+# them out of the vendor-metered total — see docs/methodology.md.
 version: 1
 name: flash-agsdk-only
 

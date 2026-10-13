@@ -140,7 +140,8 @@ When the run ends, record it with the `end_run` command the start script printed
 After the run:
 
 ```bash
-node tools/report.mjs .sdlc/runs/<run-id> --markdown
+node '<plugin-root>/scripts/report.mjs' '<output_dir>' --markdown
 ```
 
-It keeps any modeled figure apart from the metered total rather than summing them into one number.
+It prints `Run total = dispatched + driver` and splits that total into its vendor-metered and
+modeled parts, so a modeled figure never reaches the vendor-metered total.

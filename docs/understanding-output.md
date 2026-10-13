@@ -13,15 +13,25 @@ node tools/report.mjs .sdlc/runs/<run-id> --markdown   # pasteable
 
 ## The report, section by section
 
+| You pass | The report shows |
+|---|---|
+| a run folder (`.sdlc/runs/<run-id>`) | that run |
+| a project's `.sdlc` folder, or the project root | the run under `.sdlc/runs/` that started last, with a `Selected` line saying so |
+| a `.sdlc` folder from before `runs/` existed, which still holds its own `telemetry.jsonl`, or its project root | those files when they are newer than every run under `runs/`, otherwise the latest run; the `Selected` line says which, and that the older files are not shown |
+| `--markdown` | the same report as tables you can paste |
+| `--json` | the same figures as one JSON object |
+
 ### Header
 
-Run id, policy, the model and effort pin, sandbox and approval policy, start time, duration.
+Run id, policy, the model and effort pin, sandbox and approval policy, start time, duration, and the run's outcome and exit code when `run.mjs` recorded them.
+
+The run id and policy come from `driver-manifest.json` first, then `manifest.json` (either spelling: `run_id` or `pass`, `policy` or `policy_name`), then the first `telemetry.jsonl` event. No cost figure comes from either manifest.
 
 The pin matters more than it looks. Cost figures are only comparable between runs that used the same model at the same reasoning effort, so the report states which, and a run whose pin was rejected mid-flight says so under the table rather than presenting the numbers as if nothing happened.
 
-### Dispatched work — vendor-metered
+### Dispatched work
 
-One row per phase, in pipeline order: calls, tokens in and out, cost. These are packets that went through `execute_with_model` and came back with vendor-reported token counts.
+One row per SDLC phase, in pipeline order from `discovery` and `change_plan` through `security_review`: calls, tokens in and out, cost. These are packets that went through `execute_with_model`. `SDLC total` adds them up. `Runner overhead` adds up the other phases (`debug`, `refactor`, `final_report`, and anything unrecognised), each listed under it. `Dispatched total` is the two together.
 
 The `Prov` column is the provenance of that phase's events:
 
@@ -36,11 +46,45 @@ The `Prov` column is the provenance of that phase's events:
 
 ### Driver loop — modeled, not measured
 
-The conductor's own token consumption, one row per `codex exec` turn.
+The conductor's own token consumption. The report books `driver-usage.json` when the run folder has one, and `driver-cost-modeled.jsonl` otherwise; the `Source` line says which reading that is.
 
 codex reports each turn's usage as the thread's running total, and `codex exec resume` carries that total into the next invocation, so each turn is priced as the difference from the previous total. A turn that failed or was cut off mid-way is recorded as incomplete: its cost is unknown, not $0. Tokens of a failed turn show up in the next completed turn's running total.
 
-This is a separate section, not a line in the table above, and the two totals are never added together. Codex reports token counts but no money at all, so this figure is derived rather than measured — and a driver running on a ChatGPT seat may have cost nothing in money. A combined number would be neither metered nor modeled. [methodology.md](methodology.md) is the long form.
+| Line | Meaning |
+|---|---|
+| `Cost source` | The collector's own description of the reading, from `driver-usage.json`, including its `LOWER BOUND`, `INCOMPLETE`, `PROVISIONAL` or `upper bound` qualifiers |
+| `Verification` | `verified` when the exec stream and the session file agree, `UNVERIFIED` otherwise (always so on the interactive route, which has no exec stream), followed by the qualifiers above |
+| `Turns` | Driver turns with a priced usage record |
+| `Incomplete turns` | Turns that started and never reported usage in the exec stream: a failed turn, or one cut off by a signal. When the session file priced them the note says so and the total is unaffected; otherwise the run total becomes a floor. |
+| `Tokens (in / out)` | Fresh input and output, every turn the reading counted, unpriced ones included |
+| `Cached input` | Cached input, kept out of the input figure |
+| `Unpriced` | Turns on a model with no price, left out of the figure. The run total becomes a floor. |
+| `Flags` | Per-turn flags from `driver-cost-modeled.jsonl` or `driver-manifest.json`: `baseline_unknown`, `cumulative_reset`, `zero_usage`, `no_thread_id` |
+| `Cross-check` | Whether the `codex exec --json` figure and the session-file figure agree, when both exist |
+| `Modeled cost` | Token counts at the pinned rates |
+
+Codex reports token counts but no money at all, so this figure is derived rather than measured, and a driver running on a ChatGPT seat may have cost nothing in money. A run folder with neither file shows `Not measured`.
+
+### Run total
+
+| Line | What it adds up |
+|---|---|
+| `Dispatched total` | Every `telemetry.jsonl` event |
+| `Driver loop — modeled` | The driver figure above |
+| `Run total = dispatched + driver` | The two together, with a qualifier when the figure is not exact (table below) |
+| `Vendor-metered total` | Events labelled `vendor` or `estimated`, with the estimated share on its own line. An event with `adapter_provenance: modeled` is left out. |
+| `Modeled (seat) total` | Dispatched events labelled `modeled` or carrying `adapter_provenance: modeled`, plus the driver loop. Named `Modeled total` when the driver signed in with an API key, since OpenAI then bills those tokens. |
+| `Unlabelled provenance` | Events with no provenance label, shown only when there are any |
+
+| Qualifier | Meaning |
+|---|---|
+| `at least` | Cost is missing: an incomplete or unpriced driver turn, an unread conductor thread, a window that opens late, a turn still running, a last turn that reported zero usage, or a dispatched call with partial usage |
+| `at most` | The figure can include cost from outside this run: a resumed thread priced at its whole running total (`baseline_unknown`, or the collector's `upper bound`), or a driver window that covers the whole conductor thread |
+| `about` | Reasons of both kinds apply, or a thread's running total dropped (`cumulative_reset`), so the figure can be off either way |
+
+The notes under the run total name each reason. When the cross-check ran and failed, a further note says the driver figure is `UNVERIFIED`.
+
+The vendor-metered, modeled and unlabelled lines add up to the run total. When the driver loop was not measured, the run total reads `not measured`, and the report says the dispatched figure alone is not the run's cost. [methodology.md](methodology.md) explains why modeled figures stay out of the vendor-metered total.
 
 ### Packets that hit the output cap
 
@@ -52,7 +96,7 @@ Only appears on runs that used the agent door. Names every delegated packet, its
 
 ### Footer
 
-The provenance key, a per-provenance count of dispatched events, and a note if the fairness pin was rejected during the run.
+The provenance key, a per-provenance count of dispatched events, and a note for each of these when it applies: the fairness pin was rejected during the run, the run stopped at the cost cap, codex printed warnings, or the policy names in `driver-manifest.json`, `manifest.json` and `telemetry.jsonl` disagree.
 
 ## The raw files
 

@@ -260,7 +260,7 @@ Add `--dry-run` to see the pinned invocation without spending anything. Then rea
 node tools/report.mjs ./.sdlc
 ```
 
-The report separates **vendor-metered** spend from the **modeled** driver-loop cost, and never sums them. Codex reports no wallet figures at all, so the driver leg's cost can only be derived from token counts at the pinned rates — and a driver running on a seat may have cost nothing in money. Presenting one combined number would be presenting a figure that is neither.
+The report prints `Run total = dispatched + driver` and splits it into a **vendor-metered** total and a **modeled** total. Codex reports no wallet figures at all, so the driver leg's cost can only be derived from token counts at the pinned rates — and a driver running on a seat may have cost nothing in money. That is why the modeled figure never enters the vendor-metered total.
 
 Every flag is documented in [docs/running.md](docs/running.md).
 
@@ -275,7 +275,7 @@ Every artifact lands under `./.sdlc/`. Generated source lands under `./src/`.
 | `provenance.json` | Every file the run touched, with pre-run hash — the input `$mmo-codex:revert` reads. |
 | `local/guard-decisions.jsonl` | One line per hooked call while a brownfield contract binds, allow or deny; outside a run, one line per refusal, and only in a project that already has `.sdlc/`. A denied call leaves no trace in the Codex event stream, so this file is the only record of it. |
 | `delegation/` | Only on runs that used the agent path. Three files per delegated packet: task brief, worker usage sidecar, receipt. |
-| Cost report | `node tools/report.mjs <output-dir>` — per-phase table, delegation table if any, separated totals, methodology footer. |
+| Cost report | `node plugin/scripts/report.mjs <run-folder>` — per-phase table, delegation table if any, the run total with its vendor-metered and modeled parts, methodology footer. |
 
 How the numbers are derived is in [docs/methodology.md](docs/methodology.md).
 
@@ -353,7 +353,7 @@ node tools/setup.mjs
 - [docs/troubleshooting.md](docs/troubleshooting.md) — symptom → cause → fix, keyed by the message on screen
 - [docs/understanding-output.md](docs/understanding-output.md) — reading the cost report and the raw files a run leaves behind
 - [docs/architecture.md](docs/architecture.md) — who calls what, adapters, routing, the write contract, telemetry, install routes
-- [docs/methodology.md](docs/methodology.md) — how tokens and costs are recorded, and why modeled and metered are never summed
+- [docs/methodology.md](docs/methodology.md) — how tokens and costs are recorded, and why modeled figures stay out of the vendor-metered total
 - [docs/verification/p1-codex-runtime.md](docs/verification/p1-codex-runtime.md) — the Codex runtime capability checks this port is built on, with the pinned model, effort, sandbox and approval values, and the findings that shaped the architecture
 - [CONTRIBUTING.md](CONTRIBUTING.md) — branching model, style rules, how to submit
 - [examples/quick-demo/](examples/quick-demo/) — smallest brief, one endpoint, minutes to run

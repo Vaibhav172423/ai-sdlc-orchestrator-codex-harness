@@ -150,7 +150,8 @@ records the model that actually runs. The rates are the same.
 
 `gpt-seat-plus-flash` bills judgment work against your ChatGPT seat instead of an API key. Codex
 reports token counts but no money, so cost for that tier is derived from tokens and labelled
-`modeled`. Reports keep modeled figures separate from metered ones and never sum the two.
+`modeled`. The report keeps modeled figures out of the vendor-metered total and shows them as a
+modeled total of their own; only `Run total = dispatched + driver` adds the two.
 
 The `opus-*` files under `plugin/config/policies/` are replay fixtures, not selectable policies.
 

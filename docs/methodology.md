@@ -47,32 +47,43 @@ The final default is `vendor`, so the burden falls on the adapter that is *not* 
 adapter author who forgets the field gets events labelled as metered — wrong in the noisy
 direction rather than the silent one, and visible in every report.
 
-## Why modeled figures are never added to metered ones
+## Why modeled figures stay out of the vendor-metered total
 
 This is the point of the whole scheme.
 
-Two files come out of a run, and `tools/report.mjs` keeps them apart:
+Two kinds of file come out of a run, and the report (`plugin/scripts/report.mjs`) reads them separately:
 
 | File | What it holds |
 |---|---|
 | `telemetry.jsonl` | Every dispatched model call, metered through the bridge |
-| `driver-cost-modeled.jsonl` | The conductor's own token usage, priced from `codex exec --json` turn counts |
+| `driver-cost-modeled.jsonl`, or `driver-usage.json` when present | The conductor's own token usage, priced at the pin |
 
 Codex reports no wallet figures whatsoever, so the driver leg's cost can only ever be modeled.
 And a driver running on a ChatGPT seat may have cost **nothing in actual money** while still
-showing a modeled figure. Adding the two together would produce a number that is neither the API
-bill nor the seat usage — a total that answers no question anyone has.
+showing a modeled figure. A seat-backed judgment dispatch (`gpt-seat-plus-flash`) is modeled for
+the same reason.
 
-So the report prints them as separate sections:
+So the report keeps one total for figures a vendor bills per token and one for figures computed
+from token counts, and gives the run total with both parts shown:
 
 ```
-## Dispatched work — vendor-metered
-## Driver loop — modeled, not measured
+Dispatched total                         $0.1608
+Driver loop — modeled           at least $0.3220
+Run total = dispatched + driver at least $0.4828
+
+Vendor-metered total                     $0.0073
+Modeled (seat) total            at least $0.4755
 ```
 
-with the modeled figure labelled and **excluded from the vendor total**. When someone asks what
-a run cost, the answer is the vendor total; the modeled line tells you what the driver leg would
-have cost at API rates, which is a different question.
+The vendor-metered total holds only `vendor` and `estimated` events from metered adapters: it is
+what the API vendors bill. The modeled total holds `modeled` dispatches, the `estimated` floors of
+a seat adapter (`adapter_provenance: "modeled"`), and the driver loop: it is what that work would
+cost at API rates, which on a seat is not money anyone paid. The run total answers "what did this
+run cost at API rates", and the split beneath it says how much of that is a bill. `at least` marks
+a total that is missing cost (an incomplete or unpriced driver turn, or part of a dispatched call's
+usage), `at most` one that can include cost from before the run (a resumed thread priced at its
+whole running total), and `about` one with reasons of both kinds.
+[understanding-output.md](understanding-output.md#run-total) lists every reason.
 
 ## Where the numbers come from
 
@@ -224,12 +235,12 @@ changes who gets billed, not how the tokens are counted.
 
 ## What a report tells you
 
-`node tools/report.mjs <output-dir> [--markdown]` prints the policy, the model pin and its
-effort setting, the sandbox and approval pins, duration, then the sections above. Its provenance
-key is:
+`node plugin/scripts/report.mjs <run-folder> [--markdown | --json]` prints the policy, the model
+pin and its effort setting, the sandbox and approval pins, duration, then the sections above. Its
+provenance key is:
 
 ```
-V vendor-metered · E estimated · M modeled · ~ mixed · ? unlabelled
+V vendor-metered · E estimated · M modeled · – no model call · ~ mixed · ? unlabelled
 ```
 
 A `~` on a row means events of more than one provenance were rolled into it — treat that row's

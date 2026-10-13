@@ -8,7 +8,7 @@
   },
   "scripts": {
     "setup": "node tools/setup.mjs",
-    "report": "node tools/report.mjs",
+    "report": "node plugin/scripts/report.mjs",
     "test": "node --test tools/test/*.test.mjs && node tools/test-mcp.mjs"
   },
   "license": "MIT",
