@@ -82,9 +82,9 @@ test("--output-dir is greenfield-only: brownfield and unspecified modes keep the
   );
 });
 
-test("generated code defaults to <root>/src for greenfield and to the repo root for brownfield", () => {
+test("generated code defaults to <root>/src for greenfield and to the repo root for brownfield or no mode", () => {
   assert.equal(resolveCodeDir({ projectRoot: "/p", mode: "greenfield" }), join("/p", "src"));
-  assert.equal(resolveCodeDir({ projectRoot: "/p" }), join("/p", "src"));
+  assert.equal(resolveCodeDir({ projectRoot: "/p" }), "/p", "a run with no mode is handled as brownfield");
   assert.equal(resolveCodeDir({ projectRoot: "/p", mode: "brownfield" }), "/p");
   assert.equal(resolveCodeDir({ projectRoot: "/p", codeDir: "app" }), join("/p", "app"));
   assert.equal(resolveCodeDir({ projectRoot: "/p", codeDir: "." }), "/p");

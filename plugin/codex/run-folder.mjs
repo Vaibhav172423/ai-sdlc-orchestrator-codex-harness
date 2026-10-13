@@ -92,11 +92,12 @@ export function resolveRunDir({ projectRoot, runId, outputDir, mode }) {
 
 /**
  * Generated code: `--code-dir` against the project root, else `<root>/src`
- * (greenfield) or `<root>` (brownfield). It must stay inside the project,
- * where the sandbox lets the conductor write, and out of `.sdlc`.
+ * (greenfield) or `<root>` (brownfield, and a run with no mode, which the
+ * driver handles as brownfield). It must stay inside the project, where the
+ * sandbox lets the conductor write, and out of `.sdlc`.
  */
 export function resolveCodeDir({ projectRoot, codeDir, mode }) {
-  if (!codeDir) return mode === "brownfield" ? projectRoot : join(projectRoot, "src");
+  if (!codeDir) return mode === "greenfield" ? join(projectRoot, "src") : projectRoot;
   const p = resolve(projectRoot, codeDir);
   if (p !== projectRoot && !inside(projectRoot, p)) {
     throw new UsageError(

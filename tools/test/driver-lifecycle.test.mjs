@@ -666,6 +666,19 @@ test("a non-git folder needs --mode=greenfield; brownfield needs git and gets no
   }
 });
 
+test("a run with no --mode is handled as brownfield, and its code goes to the repo root", async () => {
+  const h = harness();
+  try {
+    const r = await h.run(["--project-root", h.root, "--run-id=r1", "--gates=auto-approve", "--dry-run"], { isGitRepo: () => true });
+    assert.equal(r.code, 0, r.err);
+    const plan = JSON.parse(r.out);
+    assert.equal(plan.code_dir, h.root);
+    assert.ok(!plan.argv.includes("--skip-git-repo-check"));
+  } finally {
+    h.cleanup();
+  }
+});
+
 test("a modeled row lands as soon as its turn completes, and the regenerated file has no duplicates", async () => {
   const h = harness();
   try {

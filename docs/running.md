@@ -170,9 +170,9 @@ shaped correctly. Drop the flag to run for real.
 | `--project-root=<path>` | current directory | The repo the run works against. |
 | `--output-dir=<path>` | `<project-root>/.sdlc/runs/<run-id>` | Greenfield only: a different run folder inside the project. It may not be the project root, a folder inside `.sdlc` other than the run's own, or a folder that overlaps the code directory. Pass it again on `--resume`. |
 | `--policy=<name>` | `.sdlc/project.json` default, else `gpt-plus-flash` | Routing policy for this run. A per-run override; it does not rewrite the project default. A `routing-policy.yaml` at the project root beats it — see [Which policy a run uses](#which-policy-a-run-uses). |
-| `--code-dir=<path>` | `<project-root>/src` (greenfield), `<project-root>` (brownfield) | Where generated code goes. It must stay inside the project and outside `.sdlc`. |
+| `--code-dir=<path>` | `<project-root>/src` (greenfield), `<project-root>` (brownfield, or no `--mode`) | Where generated code goes. It must stay inside the project and outside `.sdlc`. |
 | `--gates=<mode>` | `prompt` | `prompt`, `auto-approve`, or `auto-abort`. See below. `prompt` needs a terminal. |
-| `--mode=<mode>` | inferred | `greenfield` or `brownfield`. Omit to let the conductor work it out from the brief and the repo. A folder that is not a git repository needs `--mode=greenfield`. |
+| `--mode=<mode>` | inferred | `greenfield` or `brownfield`. Omit to let the conductor work it out from the brief and the repo; the driver then handles the run as brownfield: it needs git, and the code goes to the project root. A folder that is not a git repository needs `--mode=greenfield`. |
 | `--intent=<id>` | — | Brownfield job type: `docs`, `bugfix`, `feature-extend`, `feature-new`, `refactor`, `test`, `deps`. Rejected with `--mode=greenfield`, which has no intents. |
 | `--seed=<text>` | — | The job in the user's own words; answers the interview's first question. |
 | `--max-turns=<n>` | 12 | How many `codex exec` invocations one driver process may use. A single turn hits the session context ceiling partway through a real project, so the driver resumes until the run ends. A gate answer's invocation does not count. |
