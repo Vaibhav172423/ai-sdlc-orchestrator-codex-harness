@@ -59,7 +59,7 @@ import {
 } from "./run-record.mjs";
 import { endWriteContract, finalizeRun, regenerateDriverFiles } from "./run-finalize.mjs";
 import { hookArgs } from "./hook-wiring.mjs";
-import { abandonCommand, ContractRefusal, reopenRun } from "../scripts/write-contract.mjs";
+import { abandonCommand, ContractRefusal, finalEndRefusal, reopenRun } from "../scripts/write-contract.mjs";
 import { liveLock, readContract, readLock } from "../scripts/lib/contract-lock.mjs";
 import { renderPrompt, renderSkills } from "./render.mjs";
 import { listDriverPriceFn } from "../mcp/model-dispatch/dist/driverPricing.js";
@@ -1328,7 +1328,10 @@ async function runDriver(args, deps) {
     say(`  run folder:  ${runDir}`);
     if (reportPath) say(`  report:      ${reportPath}`);
     say(`  Cost report: ${reportCommand(runDir)}`);
-    if (outcome !== "completed") say(`  Continue:    ${continueCommand()}`);
+    if (outcome !== "completed") {
+      const final = runMode === "greenfield" ? null : finalEndRefusal({ projectRoot, runId });
+      say(`  Continue:    ${final ? `none: ${final}` : continueCommand()}`);
+    }
     return exitCode;
   } catch (err) {
     // The run cannot finish its own end, so its write contract is ended here: a live one would hold every session.

@@ -263,7 +263,8 @@ the dashboard's figure holds other work too.
 
 The `Continue:` command is `node ~/mmo-codex/plugin/codex/run.mjs --resume="$RUN" --project-root="$PWD"`.
 The run keeps its policy, mode, intent and gate mode, and appends to the same record. A completed
-run does not resume.
+run does not resume, and neither does a brownfield run whose write contract ended `aborted`: its
+`Continue:` line says so instead of printing a command.
 
 ## What to send back
 

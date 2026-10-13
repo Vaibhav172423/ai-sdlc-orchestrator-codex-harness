@@ -114,6 +114,22 @@ test("headless: a run that ended aborted does not resume its contract, and nothi
   } finally { p.done(); }
 });
 
+test("headless: an aborted brownfield run's Continue line says it does not resume instead of printing a command", async () => {
+  const p = repo();
+  try {
+    p.scenario("b7", [{ freeze: { allowlist: ["src/**"] }, gates: [{ gate: 0, decision: "auto-approved" }, { gate: 1, decision: "aborted" }] }]);
+    const r = await p.run(["--run-id=b7", ...BROWNFIELD]);
+    assert.equal(r.code, 4, r.err);
+    assert.match(r.out, /^ {2}Continue: {4}none: run b7 ended aborted, so it does not resume\. A further change is a new run with its own Gate 0\.$/m);
+    assert.doesNotMatch(r.out, /--resume=b7/);
+
+    p.scenario("b8", [{ gates: [{ gate: 0, decision: "aborted" }] }]);
+    const early = await p.run(["--run-id=b8", ...BROWNFIELD]);
+    assert.equal(early.code, 4, early.err);
+    assert.match(early.out, /^ {2}Continue: {4}node '[^']*run\.mjs' --resume=b8 /m, "a run aborted before its freeze has no lock and resumes");
+  } finally { p.done(); }
+});
+
 test("headless: a signal after the close-out and the final SUMMARY.md leaves a brownfield run completed", async () => {
   const p = repo();
   try {
@@ -277,6 +293,24 @@ test("session: end-run switches the contract off, start-run --resume puts it bac
     assert.equal(r.code, 2);
     assert.match(r.err, /run s1 ended aborted, so it does not resume/);
     assert.equal(readFileSync(join(p.runDir("s1"), "run.json"), "utf-8"), before, "nothing is written");
+  } finally { p.done(); }
+});
+
+test("session: end-run names no resume command for a run whose contract ended aborted, and one for a stopped run", async () => {
+  const p = repo();
+  try {
+    for (const [id, outcome] of [["s7", "aborted"], ["s8", "stopped"]]) {
+      let r = await session(startMain, p.root, ["--mode=brownfield", `--run-id=${id}`, "--intent=bugfix"]);
+      assert.equal(r.code, 0, r.err);
+      freezeContract({ projectRoot: p.root, runId: id, allowlist: ["src/**"] });
+      r = await session(endMain, p.root, [`--run-dir=${p.runDir(id)}`, `--outcome=${outcome}`, "--reason=the person chose to"]);
+      assert.equal(r.code, 0, r.err);
+      if (outcome === "aborted") {
+        assert.match(r.out, /^ {2}Continue: {4}none: run s7 ended aborted, so it does not resume\. A further change is a new run with its own Gate 0\.$/m);
+      } else {
+        assert.match(r.out, /^ {2}Continue: {4}node '[^']*start-run\.mjs' --resume=s8 /m);
+      }
+    }
   } finally { p.done(); }
 });
 

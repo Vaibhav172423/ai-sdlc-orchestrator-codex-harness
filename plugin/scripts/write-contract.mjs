@@ -206,6 +206,16 @@ export function endRun({ projectRoot, runId, outcome, reason = null, now } = {})
   return result;
 }
 
+const finalEndMessage = (runId, outcome) =>
+  `run ${runId} ended ${outcome}, so it does not resume. A further change is a new run with its own Gate 0.`;
+
+/** Why `--resume` of this run would be refused for good, from its lock's end, or null when nothing final ended it. */
+export function finalEndRefusal({ projectRoot, runId } = {}) {
+  if (!isRunId(runId)) return null;
+  const lock = readLock(resolve(String(projectRoot ?? process.cwd())), runId);
+  return lock?.ended_at && FINAL_OUTCOMES.has(lock.end_outcome) ? finalEndMessage(runId, lock.end_outcome) : null;
+}
+
 /**
  * For `--resume`: puts a stopped run's frozen contract back and makes its lock live again. Every resume of a frozen
  * run, one still live included, is stamped in the lock's `reopened_at`, so the guard check that follows counts only
@@ -223,9 +233,7 @@ export function reopenRun({ projectRoot, runId, now } = {}) {
     writeWhole(lockPath(root, runId), jsonBytes({ ...lock, reopened_at: reopenedAt }));
     return { run_id: runId, reopened: false, live: true };
   }
-  if (FINAL_OUTCOMES.has(lock.end_outcome)) {
-    refuse(`run ${runId} ended ${lock.end_outcome}, so it does not resume. A further change is a new run with its own Gate 0.`);
-  }
+  if (FINAL_OUTCOMES.has(lock.end_outcome)) refuse(finalEndMessage(runId, lock.end_outcome));
   const other = liveLocks(root).find((l) => l.run_id !== runId);
   if (other) refuse(`run ${other.run_id} is live and holds this project's write contract, so run ${runId} cannot resume.`);
   const current = readContract(root);

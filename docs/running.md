@@ -347,8 +347,9 @@ the session hits its context ceiling, with exit 0 and no error. The driver resum
 session until the run ends or `--max-turns` (default 12) is reached. Nothing to do; a run that
 takes several turns is the normal case, not a fault.
 
-**After a stop, by hand.** Continue any run that did not complete with its run id. The driver
-prints the exact command as `Continue:` when it stops:
+**After a stop, by hand.** Continue a run that did not complete with its run id. The driver
+prints the exact command as `Continue:` when it stops. A brownfield run whose write contract ended
+`completed` or `aborted` does not resume, and its `Continue:` line says so instead:
 
 ```bash
 node plugin/codex/run.mjs --resume=pass1 --project-root=.

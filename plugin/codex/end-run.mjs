@@ -37,6 +37,7 @@ import {
   writeRunJson,
 } from "./interactive-run.mjs";
 import { isMain } from "../scripts/lib/is-main.mjs";
+import { finalEndRefusal } from "../scripts/write-contract.mjs";
 import { configureSinks, log } from "../scripts/lib/log.mjs";
 
 export const END_FLAGS = Object.freeze({ value: ["run-dir", "outcome", "reason"], boolean: [] });
@@ -161,7 +162,9 @@ export async function main(argv = [], deps = {}) {
   else stdout.write(`  Cost report: none in this install; the run's telemetry is ${join(runDir, "telemetry.jsonl")}\n`);
   if (run.outcome !== "completed") {
     const start = join(dirname(fileURLToPath(import.meta.url)), "start-run.mjs");
-    stdout.write(`  Continue:    node ${shellQuote(start)} --resume=${run.run_id} --project-root=${shellQuote(run.project_root)}\n`);
+    const final = run.mode === "greenfield" ? null : finalEndRefusal({ projectRoot: run.project_root, runId: run.run_id });
+    const next = final ? `none: ${final}` : `node ${shellQuote(start)} --resume=${run.run_id} --project-root=${shellQuote(run.project_root)}`;
+    stdout.write(`  Continue:    ${next}\n`);
   }
   return code;
 }
