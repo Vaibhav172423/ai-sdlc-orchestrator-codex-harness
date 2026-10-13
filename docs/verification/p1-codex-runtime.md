@@ -607,10 +607,18 @@ the rule protects is unchanged, and each part was verified against the real hook
 
 | Case | Decision |
 | --- | --- |
-| `cp .env.test .env`, greenfield, no `.env` present | allow |
+| `cp .env.test <project root, absolute>/.env`, or an `apply_patch` Add File of `.env`, greenfield, no `.env` present | allow |
+| `cp .env.test .env` with a relative target, greenfield, no `.env` present | **deny** — see the note below |
 | same, but `.env` already exists | **deny** — a real `.env` is never overwritten |
 | `.env.production`, `.env.local` | **deny** — variants stay blocked |
 | `cp .env.test .env` under an active brownfield contract | **deny** |
+
+**Superseded (2026-10-13).** On 2026-09-02 the relative `cp .env.test .env` was allowed. The hook
+now gives the allowance only where it knows the folder the file lands in: a shell target written
+as a literal absolute path, or an `apply_patch` Add File, whose paths Codex resolves against the
+payload's `cwd`. A relative shell path may land elsewhere, because the shell tool's `workdir` is
+not in the hook payload. `plugin/skills/pipeline/SKILL.md` phase 7 now copies to the absolute
+path: `if [ -f .env.test ] && [ ! -f .env ]; then cp .env.test <that folder, absolute>/.env; fi`.
 
 Brownfield never reaches this branch at all (it has a contract), and its own phase 7 refuses the
 copy outright, so the path that guards a user's real secrets is untouched. What is now permitted
