@@ -10,10 +10,13 @@ There are two ways to reach it, and they are not interchangeable.
 # Shape 1 — from a shell, no session at all
 
 This is what "headless" means here. The driver spawns its own `codex exec` conductor, feeds it the
-pipeline, and exits when the run finishes:
+pipeline, and exits when the run finishes. It is also how the cost figures are checked: the run's
+end compares codex's own per-turn token counts with the session-file reading every interactive run
+is priced from (`docs/headless-runs.md` in the repository). `<plugin-root>` is this plugin's own
+folder, as Shape 2 below explains; from a clone it is `plugin`.
 
 ```bash
-node plugin/codex/run.mjs \
+node '<plugin-root>/codex/run.mjs' \
   --brief=<path-to-brief.md> \
   --project-root=<path> \
   --gates=prompt|auto-approve|auto-abort \
@@ -39,7 +42,7 @@ node plugin/codex/run.mjs \
 | `--gates=<mode>` | Gate behavior. `prompt` (default) asks the person at the terminal at each gate, and relays the conductor's other questions the same way; it is refused when stdin is not a terminal. `auto-approve` accepts every gate — the one CI usually wants for a known-good replay. `auto-abort` stops at the first gate instead of answering it, so a run that drifts into needing a human never silently proceeds. |
 | `--mode=<mode>` | `greenfield` or `brownfield`. Omit to let the conductor infer it from the brief and the repo. A folder that is not a git repository needs `--mode=greenfield`. |
 | `--intent=<id>` | Brownfield job type: `docs`, `bugfix`, `feature-extend`, `feature-new`, `refactor`, `test`, or `deps`. Answers the "which job type?" question up front. Rejected alongside `--mode=greenfield`, which has no intents. |
-| `--seed=<text>` | The job in the user's own words. Becomes the answer to the interview's first question, so only the remaining ones get asked. |
+| `--seed=<text>` | The job in the user's own words. Becomes the answer to the interview's first question, so only the remaining ones get asked: at the terminal under `--gates=prompt`, and not at all under an unattended mode, where the brief is drafted from the seed. |
 | `--max-turns=<n>` | How many `codex exec` invocations one driver process may use (default 12). One turn is not enough for a real project — the session hits its context ceiling partway through — so the driver resumes the same session until the run ends. A gate answer's invocation does not count. |
 | `--run-id=<id>` | Run identifier and run folder name. Defaults to `YYYYMMDD-HHMMSS-<intent or mode>-<6 hex>`. A run id that already has a record is refused; continue it with `--resume`. |
 | `--resume=<id>` | Continue a stopped run: its run id, or the codex thread id it recorded. The run keeps its policy, mode and intent; `--brief` is not needed. A completed run is not resumed. Resuming a run that stopped on purpose continues past that stop under the `--gates` you pass. The driver prints the exact command as `Continue:` when it stops. |
@@ -52,7 +55,7 @@ to answer the guide's "which job type?" question, and stdin is closed. Pass the 
 ideally a `--seed`) so the run never reaches that question:
 
 ```bash
-node plugin/codex/run.mjs --brief=intent-brief.md --project-root=. \
+node '<plugin-root>/codex/run.mjs' --brief=intent-brief.md --project-root=. \
   --mode=brownfield --intent=bugfix --seed='login returns 500 on empty password' \
   --gates=auto-approve
 ```

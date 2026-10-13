@@ -3,9 +3,9 @@
 # instead of a metered OPENAI_API_KEY. Same model, same effort pin, same rules.
 #
 # WHAT YOU GIVE UP. Codex reports token counts but no cost figure at all, so
-# every judgment-tier cost here is MODELED from tokens at the rates below,
-# not metered. Telemetry labels those events `provenance: "modeled"` and the
-# run report keeps them out of the vendor total. The numbers are useful; they
+# every judgment-tier cost here is MODELED from tokens at the dated price
+# list's rates (src/prices.ts), not metered. Telemetry labels those events
+# `provenance: "modeled"` and the run report keeps them out of the vendor total. The numbers are useful; they
 # are not a bill, and they should not be published as one.
 #
 # WHEN TO USE WHICH. Use gpt-plus-flash for anything whose cost figures get
@@ -22,7 +22,8 @@
 version: 1
 name: gpt-seat-plus-flash
 
-# The conductor `codex exec` runs as: run.mjs pins -m and the effort from here.
+# The conductor's pin: run.mjs passes -m and the effort from here to codex exec,
+# and start-run.mjs starts no run in a codex session on another model or effort.
 # Its modeled cost is priced from the dated price list (src/prices.ts); the
 # pricing block below documents that rate, and a test holds it to the list.
 # Not a models[] entry, because it is never dispatched and preflight would

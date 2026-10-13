@@ -118,6 +118,7 @@ record the project's policy, which Gate 0 reads:
 
 ```bash
 cp -R ~/mmo-codex/plugin/examples/brownfield-bugfix ~/mmo-runs/login-bug && cd ~/mmo-runs/login-bug
+printf 'node_modules/\n.sdlc/\n' > .gitignore
 git init -q && git add -A && git commit -qm 'fixture'
 node ~/mmo-codex/plugin/scripts/setup-policy.mjs --policy=gpt-plus-flash --project-root="$PWD"
 RUN="login-$(date +%Y%m%d-%H%M%S)"

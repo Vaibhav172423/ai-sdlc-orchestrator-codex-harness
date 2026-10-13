@@ -64,7 +64,8 @@ Parse the JSON — one entry per policy in `plugin/config/policies/`. Malformed 
 **Only offer the selectable ones.** Four policies are meant to be chosen here:
 
 - **`gpt-plus-flash`** — the default and the one of record. Judgment work goes to the vendor API,
-  mechanical work to Gemini Flash. Every figure on the cost report is vendor-metered.
+  mechanical work to Gemini Flash. Every dispatched figure on the cost report is vendor-metered;
+  the conductor's own line is modeled from its token counts.
 - **`gpt-plus-flash-38`** — `gpt-plus-flash` with the mechanical tier on `gemini-3.8-flash`. Google
   deprecated `gemini-3.7-flash` on 2026-10-08 and serves it from 3.8, so this policy names the model
   that actually runs. Same credentials, same rates, vendor-metered.

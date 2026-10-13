@@ -22,10 +22,10 @@ happens before this skill can exist. From there on, this covers everything: brid
 environment check, credential probe, mechanical-tier door, policy pick, and the hand-over banner.
 
 A clone-route install has a wizard that does the same work from a plain shell, before any session
-exists:
+exists. Run it from the clone's root; it takes no flags:
 
 ```bash
-node tools/setup.mjs --project-root=<path>
+node tools/setup.mjs
 ```
 
 Use that when there is no session to run a skill in. Everything below is the in-session equivalent.

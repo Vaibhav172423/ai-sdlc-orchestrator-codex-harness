@@ -350,9 +350,10 @@ lines it could not read, file counts it could not make). Print the notes. A non-
 `manifest.json` was not written, and a `SUMMARY.md` it left behind does not count: fix what its
 message names and run it again.
 
-`SUMMARY.md` states the conductor's own cost as the record has it — modeled by `run.mjs` on a
-headless run, and read from the conductor's codex session file by `end-run.mjs` on the interactive
-route. Do not add a figure for it; see the telemetry contract below.
+`SUMMARY.md` states the conductor's own cost as the record has it. The run's end reads it from
+the conductor's codex session file on both routes (`end-run.mjs` in a session, `run.mjs` on a
+headless run, which also checks it against its exec stream) and, for a completed run, renders
+`SUMMARY.md` again with that figure. Do not add a figure for it; see the telemetry contract below.
 
 This first `SUMMARY.md` is provisional. The run is finished only once Gate 4 is accepted and the
 command has run again with `--status=accepted` (see Gate 4).

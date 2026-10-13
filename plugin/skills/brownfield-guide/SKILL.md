@@ -128,8 +128,9 @@ which is not a crashed or unbuilt server. The bridge prints the two ways out whe
 relay them rather than debugging the server:
 
 - start codex with `codex -s danger-full-access`, or
-- run the pipeline headlessly, where the driver spawns the bridge outside codex:
-  `node '{{PLUGIN_ROOT}}/codex/run.mjs' --brief=<file> --project-root='{{PROJECT_ROOT}}'`
+- run the pipeline headlessly from a shell, where the driver spawns the bridge outside codex:
+  `node '{{PLUGIN_ROOT}}/codex/run.mjs' --brief=<intent brief file> --project-root='{{PROJECT_ROOT}}' --mode=brownfield --intent=<intent>`
+  (it asks at the terminal at each gate)
 
 If any pre-check step fails, **do not proceed to Gate 0.** Print the reported remediation and
 offer inline choices (fix now / switch policy / abort). Switching policy restarts the run, as
@@ -223,11 +224,12 @@ template from the pipeline playbook, `{{OUTPUT_DIR}}/skills/pipeline.md` (search
 
 - **Stack** — top-detected from `baseline.stacks`. Ask if it's right; accept overrides.
 - **Test command** — `baseline.test_command_proposed`. Accept an override.
-- **Policy** — read `payload.project.default_policy` from the session-hydrate output already
+- **Policy** — read `project.default_policy` from the session-hydrate output already
   captured in step 1 of this command. This is what setup wrote to `.sdlc/project.json`. If
   it is null, setup was not completed for this project — abort Gate 0 and tell the user to
-  run setup first (see [SETUP.md](/SETUP.md) §5b — the one setup step that opens a browser
-  for the policy console). Do not silently default and do not launch the console from here.
+  run `$mmo-codex:setup` first, or, from a shell,
+  `node '{{PLUGIN_ROOT}}/scripts/setup-policy.mjs' --policy=<name> --project-root='{{PROJECT_ROOT}}'`.
+  Do not silently default and do not launch the policy console from here.
   Otherwise show `{{POLICY}}`, the policy this run dispatches with. It was resolved when the run
   started and every dispatch command in the playbook already carries it, so it cannot change
   mid-run. If the user names another on-disk policy, restart the run with it: in a session, end
@@ -386,7 +388,7 @@ Do not propose a follow-up run.
 `$mmo-codex:pass` is the flag-driven twin of every brownfield entry point for scripted / CI invocations:
 
 ```bash
-node plugin/codex/run.mjs \
+node '{{PLUGIN_ROOT}}/codex/run.mjs' \
   --brief=<intent-brief.md> --project-root=<path> \
   --mode=brownfield \
   --intent=<docs|bugfix|feature-extend|feature-new|refactor|test|deps> \

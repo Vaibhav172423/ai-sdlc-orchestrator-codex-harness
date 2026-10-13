@@ -18,8 +18,8 @@ priced and recorded. Content you write yourself is invisible to that record.
 
 ## How you dispatch — read this before your first call
 
-You cannot call the dispatch bridge as a tool. It is registered as an MCP server, but a model in
-this runtime has no per-tool binding for it. Dispatch instead by running this command:
+You cannot call the dispatch bridge as a tool. It is an MCP server, and a model in this runtime
+has no per-tool binding for one. Dispatch instead by running this command:
 
 ```
 node '{{PLUGIN_ROOT}}/codex/dispatch.mjs' \

@@ -13,7 +13,8 @@
 version: 1
 name: gpt-plus-flash
 
-# The conductor `codex exec` runs as: run.mjs pins -m and the effort from here.
+# The conductor's pin: run.mjs passes -m and the effort from here to codex exec,
+# and start-run.mjs starts no run in a codex session on another model or effort.
 # Its modeled cost is priced from the dated price list (src/prices.ts); the
 # pricing block below documents that rate, and a test holds it to the list.
 # Not a models[] entry, because it is never dispatched and preflight would

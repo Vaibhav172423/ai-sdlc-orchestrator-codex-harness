@@ -1,12 +1,13 @@
 # gpt-plus-flash with the mechanical tier on Gemini 3.8 Flash. Routing, select
-# slots, judgment tier and cost cap are identical; only the Gemini model_name
-# and its rates differ. Google deprecated gemini-3.7-flash on 2026-10-08 and
+# slots, judgment tier, cost cap and rates are identical; only the Gemini
+# model_name differs. Google deprecated gemini-3.7-flash on 2026-10-08 and
 # routes requests for it to gemini-3.8-flash, so this policy names the model
 # that actually runs. Selectable alongside the other gpt-* policies.
 version: 1
 name: gpt-plus-flash-38
 
-# The conductor `codex exec` runs as: run.mjs pins -m and the effort from here.
+# The conductor's pin: run.mjs passes -m and the effort from here to codex exec,
+# and start-run.mjs starts no run in a codex session on another model or effort.
 # Its modeled cost is priced from the dated price list (src/prices.ts); the
 # pricing block below documents that rate, and a test holds it to the list.
 # Not a models[] entry, because it is never dispatched and preflight would

@@ -154,7 +154,8 @@ Brownfield works on a repository you already have. The plugin ships a small one 
 
 ```bash
 cp -R "$(ls -d ~/.codex/plugins/cache/tilicho-ai-labs/mmo-codex/*/ | tail -1)examples/brownfield-bugfix" ~/login-bug
-cd ~/login-bug && git init -q && git add -A && git commit -qm 'fixture'
+cd ~/login-bug && printf 'node_modules/\n.sdlc/\n' > .gitignore
+git init -q && git add -A && git commit -qm 'fixture'
 codex -s danger-full-access -m gpt-5.6-terra -c model_reasoning_effort="high"
 ```
 
