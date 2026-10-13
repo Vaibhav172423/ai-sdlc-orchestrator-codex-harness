@@ -109,7 +109,7 @@ export interface TelemetryEvent {
   /** Output-cap doubling attempts share a task_id. attempt_number is 1-indexed. */
   attempt_number?: number;
   ceiling_used?: number;
-  retry_reason?: "output_cap" | "validation" | "escalation";
+  retry_reason?: RetryReason;
   artifact_path?: string;
   error?: string;
   /** `list` (the dated price list) or `custom` (the policy block under pricing_override). */
@@ -120,7 +120,26 @@ export interface TelemetryEvent {
   price_verified?: string | null;
   /** One request's whole prompt, cached tokens included. Set only where one event is one request. */
   prompt_tokens?: number;
+  /** `false`: the tokens are a lower bound, because the call's real usage never arrived. */
+  usage_complete?: false;
+  /** The HTTP status a vendor answered a failed call with. */
+  error_status?: number;
+  /** The Node/undici code of a failed connection (ECONNRESET, ENOTFOUND, ...). */
+  error_code?: string;
+  /** The nested `codex exec` thread a codex-cli dispatch ran in. */
+  codex_thread_id?: string;
+  /**
+   * The adapter's usual source, set only when it is not `vendor`. `modeled`
+   * marks a seat adapter (codex-cli): its `estimated` rows are seat floors,
+   * not metered spend.
+   */
+  adapter_provenance?: CostProvenance;
 }
+
+export type CostProvenance = "vendor" | "estimated" | "modeled";
+
+/** `transient`: the previous attempt failed with no answer, a 408, 409, 429 or 5xx, and the same request was sent again. */
+export type RetryReason = "output_cap" | "transient" | "validation" | "escalation";
 
 export type PriceBasis = "list" | "custom";
 export type PriceTierLabel = "standard" | "long_context" | "unverified";
@@ -145,6 +164,16 @@ export interface AttemptRecord {
   price_tier?: PriceTierLabel;
   price_verified?: string | null;
   prompt_tokens?: number;
+  /** Where this attempt's cost came from; unset means the adapter's usual source. */
+  cost_provenance?: CostProvenance;
+  usage_complete?: false;
+  error_status?: number;
+  error_code?: string;
+  /** From a google.rpc.RetryInfo in the vendor's error body. */
+  retry_after_ms?: number;
+  codex_thread_id?: string;
+  /** Why this attempt was made; unset on a later attempt means an output-cap doubling. */
+  retry_reason?: RetryReason;
 }
 
 export interface ModelPricing {
@@ -187,8 +216,9 @@ export interface ModelConfig {
    */
   region?: string;
   /**
-   * Deadline for an agent-worker delegation. Read only by adapters that spawn
-   * a worker; ignored by completion adapters.
+   * Deadline for one dispatch: an agent-worker delegation, a codex-cli call,
+   * or a completion adapter's whole output-cap doubling chain. It has to stay
+   * below the driver client's per-call timeout (driverClient.ts).
    */
   worker_timeout_sec?: number;
 }
@@ -204,6 +234,13 @@ export interface RunContext {
   work_dir?: string;
   /** Delegation evidence lands beside this path. */
   telemetry_path?: string;
+  /**
+   * Called with each attempt as soon as it returns, so a dispatch the client
+   * stops waiting for still has its finished, billed attempts on record.
+   */
+  onAttempt?: (attempt: AttemptRecord) => void;
+  /** Aborted when the client stops waiting: adapters stop their requests and kill their children. */
+  signal?: AbortSignal;
 }
 
 export type RuleMatcher = {
@@ -279,18 +316,11 @@ export interface ExecutionResult {
   };
   cost_usd: number;
   /**
-   * Where THIS result's cost came from, when it differs from the adapter's
-   * usual source. `ModelAdapter.costProvenance` describes an adapter's normal
-   * case; this overrides it per call.
-   *
-   * It exists because an adapter that normally reports real vendor usage can
-   * still fail to get it on a given call — a response with no `usage` block,
-   * a failure path priced from `estimateTokens`. Without a per-result field,
-   * those counts get stamped `vendor` from the adapter's static declaration,
-   * which publishes a calculation as a bill. That is precisely what the
-   * provenance taxonomy exists to prevent.
+   * Summary for readers of the MCP result: `estimated` when any attempt was.
+   * Telemetry is stamped from each attempt's own `cost_provenance`, and falls
+   * back to this only when no attempt carries one.
    */
-  cost_provenance?: "vendor" | "estimated" | "modeled";
+  cost_provenance?: CostProvenance;
   latency_ms: number;
   cache_hit: boolean;
   success: boolean;

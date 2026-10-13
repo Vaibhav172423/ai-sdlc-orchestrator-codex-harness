@@ -427,7 +427,10 @@ test("runDispatch writes the full result to --out and returns only a summary", a
       close: async () => {},
     });
 
-    const out = await runDispatch({ packet: packetPath, out: outPath, policy: "gpt-plus-flash" }, { connect });
+    const out = await runDispatch(
+      { packet: packetPath, out: outPath, policy: "gpt-plus-flash", telemetry: join(dir, "telemetry.jsonl") },
+      { connect },
+    );
 
     assert.equal(calls.length, 1);
     assert.equal(calls[0].name, "execute_with_model");
@@ -478,7 +481,7 @@ test("runDispatch reports ok:true for a successful execute_with_model regardless
       callTool: async () => ({ result: { success: true } }),
       close: async () => {},
     });
-    const out = await runDispatch({ packet: packetPath, out: join(dir, "o.json") }, { connect });
+    const out = await runDispatch({ packet: packetPath, out: join(dir, "o.json"), telemetry: join(dir, "t.jsonl") }, { connect });
     assert.equal(out.ok, true);
   } finally { cleanup(dir); }
 });
@@ -499,7 +502,7 @@ test("runDispatch requires --out — results never go to stdout", async () => {
 
 test("runDispatch gives a readable error for an unreadable packet file", async () => {
   await assert.rejects(
-    () => runDispatch({ packet: "/nonexistent/packet.json", out: "/tmp/o.json" }, { connect: async () => ({}) }),
+    () => runDispatch({ packet: "/nonexistent/packet.json", out: "/tmp/o.json", telemetry: "/tmp/t.jsonl" }, { connect: async () => ({}) }),
     /could not read the packet/,
   );
 });
@@ -515,7 +518,7 @@ test("runDispatch always closes the bridge, even when the tool call throws", asy
       close: async () => { closed = true; },
     });
     await assert.rejects(
-      () => runDispatch({ packet: packetPath, out: join(dir, "o.json") }, { connect }),
+      () => runDispatch({ packet: packetPath, out: join(dir, "o.json"), telemetry: join(dir, "t.jsonl") }, { connect }),
       /vendor exploded/,
     );
     assert.equal(closed, true, "a leaked bridge subprocess would outlive the run");

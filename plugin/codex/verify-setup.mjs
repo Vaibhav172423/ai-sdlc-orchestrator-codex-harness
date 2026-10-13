@@ -892,6 +892,22 @@ export function evaluate({
           "The commonest cause is an environment built against an interpreter that has since " +
           "been upgraded or removed.",
       });
+    } else if (agentWorker.pinnedVersion && agentWorker.sdkVersion !== agentWorker.pinnedVersion) {
+      problems.push({
+        id: "agent-worker-sdk-version",
+        severity: "warning",
+        message:
+          `The agent worker's Python environment has google-antigravity ${agentWorker.sdkVersion ?? "(version unreadable)"}; ` +
+          `the plugin pins ${agentWorker.pinnedVersion}. The SDK changed what its usage totals mean between ` +
+          "releases, so delegations on an unchecked version are billed on the larger reading and logged as " +
+          "agsdk.usage_semantics_unverified.",
+        fix: agentWorker.pythonOverride
+          ? `GEMINI_WORKER_PYTHON points the worker at ${agentWorker.pythonOverride}, which --fix does not touch. ` +
+            `Install the pin there (${agentWorker.pythonOverride} -m pip install google-antigravity==${agentWorker.pinnedVersion}), ` +
+            "or unset GEMINI_WORKER_PYTHON and re-run this check with --fix."
+          : "Re-run this check with --fix, which rebuilds the environment from requirements.txt. Editing " +
+            "requirements.txt does not change an environment that is already built.",
+      });
     }
   }
 
@@ -917,9 +933,33 @@ function observeAgentWorker(pluginRoot, env) {
   if (!existsSync(python)) return { hasVenv: false, sdkImportable: false, detail: null };
 
   const probe = spawnSync(python, ["-c", "import google.antigravity"], { encoding: "utf8" });
-  if (probe.status === 0) return { hasVenv: true, sdkImportable: true, detail: null };
-  const stderr = (probe.stderr || "").trim().split("\n").filter(Boolean).pop() ?? null;
-  return { hasVenv: true, sdkImportable: false, detail: stderr };
+  if (probe.status !== 0) {
+    const stderr = (probe.stderr || "").trim().split("\n").filter(Boolean).pop() ?? null;
+    return { hasVenv: true, sdkImportable: false, detail: stderr };
+  }
+  const version = spawnSync(
+    python,
+    ["-c", "import importlib.metadata as m; print(m.version('google-antigravity'))"],
+    { encoding: "utf8" },
+  );
+  let requirements = "";
+  try {
+    requirements = readFileSync(workerPaths(pluginRoot).requirements, "utf8");
+  } catch { /* no pin to compare against */ }
+  return {
+    hasVenv: true,
+    sdkImportable: true,
+    detail: null,
+    sdkVersion: version.status === 0 ? String(version.stdout).trim() || null : null,
+    pinnedVersion: pinnedSdkVersion(requirements),
+    pythonOverride: override || null,
+  };
+}
+
+/** The exact `google-antigravity==X` pin in requirements.txt, or null. */
+export function pinnedSdkVersion(requirementsText) {
+  const m = /^google-antigravity==(\S+)/m.exec(String(requirementsText ?? ""));
+  return m ? m[1] : null;
 }
 
 /**
@@ -1184,8 +1224,12 @@ if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
     state = evaluate(observed);
   }
 
+  // A rebuilt .venv cannot change the SDK version of an interpreter GEMINI_WORKER_PYTHON names.
   const needsWorker = state.problems.some(
-    (p) => p.id === "agent-worker-python" || p.id === "agent-worker-sdk"
+    (p) =>
+      p.id === "agent-worker-python" ||
+      p.id === "agent-worker-sdk" ||
+      (p.id === "agent-worker-sdk-version" && !observed.agentWorker?.pythonOverride)
   );
   if (needsWorker && repairing) {
     log("  The agent worker needs a Python environment. Repairing:");

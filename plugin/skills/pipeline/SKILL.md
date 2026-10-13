@@ -217,7 +217,7 @@ Set `budget.maxOutputTokens` per phase type. The adapter automatically doubles t
 - **Docs, ADR, README:** `3000`. Same doubling behavior.
 - **Debug packets:** inherit from the packet they refine.
 
-Every attempt emits its own TelemetryEvent with `attempt_number`, `ceiling_used`, and (on retries) `retry_reason: "output_cap"` — all sharing the packet's `task_id`. The report collapses them into one row per packet.
+Every attempt emits its own TelemetryEvent with `attempt_number`, `ceiling_used`, and (on retries) `retry_reason: "output_cap"` or, for an OpenAI request sent again after a transient failure, `"transient"` — all sharing the packet's `task_id`. The report collapses them into one row per packet.
 
 ### Phase 5 — execute_packets
 

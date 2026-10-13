@@ -128,7 +128,7 @@ test("OpenAI: a vendor error's estimated attempt is labelled unverified, not lon
       },
     },
   };
-  const out = await new OpenAIAdapter(OPENAI_CONFIG, { client, clock: TODAY }).execute(LONG_PACKET);
+  const out = await new OpenAIAdapter(OPENAI_CONFIG, { client, clock: TODAY, retryDelayMs: () => 0 }).execute(LONG_PACKET);
   assert.equal(out.success, false);
   assert.equal(out.attempts[0].price_tier, "unverified");
 });

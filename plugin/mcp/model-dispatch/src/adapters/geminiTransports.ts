@@ -212,6 +212,8 @@ export interface GenerateArgs {
   generationConfig: Record<string, unknown>;
   /** Server-side cache resource name from createCache; omit on cache miss. */
   cachedContentName?: string;
+  /** Cancels the request; sent as the SDK's own config.abortSignal. */
+  abortSignal?: AbortSignal;
 }
 
 export interface GenerateOutcome {
@@ -298,6 +300,7 @@ abstract class GenAiTransport implements GeminiTransport {
       config: {
         ...(args.generationConfig as Record<string, unknown>),
         ...(args.cachedContentName ? { cachedContent: args.cachedContentName } : {}),
+        ...(args.abortSignal ? { abortSignal: args.abortSignal } : {}),
       },
     });
     const finishReason = resp.candidates?.[0]?.finishReason

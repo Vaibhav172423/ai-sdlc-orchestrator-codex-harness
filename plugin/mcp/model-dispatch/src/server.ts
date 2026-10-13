@@ -27,8 +27,11 @@ import {
   unreachableModelIds,
 } from "./routing.js";
 import { assessModels, assessPricing, parseAuthMode, type AuthMode } from "./preflight.js";
-import { withEffectivePrices, type RateCard } from "./prices.js";
+import { effectivePricing, withEffectivePrices, type RateCard } from "./prices.js";
 import { appendEvent, normalizeDirectTierEvent } from "./telemetry.js";
+import { DispatchRecorder, type PlaceholderPricer } from "./dispatchRecorder.js";
+import { computeCostUsd } from "./pricing.js";
+import { priceFields } from "./adapters/dispatchPricer.js";
 import { assertUnderCostCap, CostCapExceededError, driverCapWarning, type RecordedSpend } from "./costCap.js";
 import { createAdapter } from "./adapters/index.js";
 import {
@@ -39,7 +42,7 @@ import {
   resolveGcpProject,
   resolveGcpLocation,
 } from "./adapters/geminiTransports.js";
-import type { TaskPacket, TelemetryEvent, Policy, SelectOverrides, ModelConfig } from "./types.js";
+import type { ExecutionResult, TaskPacket, TelemetryEvent, Policy, SelectOverrides, ModelConfig } from "./types.js";
 import { log, setLevel, configureSinks, type Level } from "./log.js";
 
 /**
@@ -260,6 +263,33 @@ function endpointRates(): (model: ModelConfig, rates: RateCard) => RateCard {
   };
 }
 
+/** The abandoned attempt's prompt estimate, at the dated price and endpoint it would have billed. */
+function placeholderPricer(model: ModelConfig): PlaceholderPricer {
+  return (inputTokens) => {
+    const priced = effectivePricing(model, new Date(), { requestInputTokens: inputTokens, estimated: true });
+    if (priced.unpriced) return { cost_usd: 0 };
+    const card = endpointRates()(model, priced.pricing);
+    return { cost_usd: computeCostUsd({ input: inputTokens, input_cached: 0, output: 0 }, card), ...priceFields(priced) };
+  };
+}
+
+// Dispatches still running. The client can stop waiting (a cancelled call,
+// stdin closed by dispatch.mjs, then SIGTERM two seconds later), and each of
+// these records what it can and stops its adapter before the process goes.
+const inFlight = new Set<(reason: string) => void>();
+
+function abandonInFlight(reason: string): void {
+  for (const abandon of [...inFlight]) abandon(reason);
+}
+
+process.stdin.once("end", () => abandonInFlight("the client closed the connection"));
+for (const [signal, signo] of [["SIGTERM", 15], ["SIGINT", 2], ["SIGHUP", 1]] as const) {
+  process.once(signal, () => {
+    abandonInFlight(`the server received ${signal}`);
+    process.exit(128 + signo);
+  });
+}
+
 const server = new Server(
   { name: SERVER_NAME, version: SERVER_VERSION },
   { capabilities: { tools: {} } }
@@ -374,7 +404,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
   ],
 }));
 
-server.setRequestHandler(CallToolRequestSchema, async (req) => {
+server.setRequestHandler(CallToolRequestSchema, async (req, extra) => {
   const { name, arguments: args } = req.params;
   const a0 = args as any;
 
@@ -453,12 +483,56 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
           cache_context: a.cache_context,
           work_dir: a.work_dir ?? a.project_root,
         });
-        // Passed on every dispatch; completion adapters ignore it.
-        const result = await adapter.execute(packet, a.cache_context, {
-          project_root: a.project_root,
-          work_dir: a.work_dir ?? a.project_root,
-          telemetry_path: a.telemetry_path,
-        });
+        if (!a.telemetry_path) {
+          // Not refused: a hand-run MCP call may have no run. Its spend reaches no report and no cost cap.
+          log("warn", "telemetry.missing", { packet_id: packet.id, model_id: decision.modelId });
+        }
+        const model = getModel(policy, decision.modelId);
+        const recorder = new DispatchRecorder(
+          {
+            packet,
+            decision,
+            policy,
+            modelName: model.model_name,
+            adapterProvenance: adapter.costProvenance,
+          },
+          a.telemetry_path,
+          dispatchStarted,
+          placeholderPricer(model),
+        );
+        const stop = new AbortController();
+        const abandon = (reason: string) => {
+          inFlight.delete(abandon);
+          const ev = recorder.abandon(reason);
+          if (ev) {
+            log("warn", "dispatch.abandoned", {
+              packet_id: packet.id,
+              model_id: decision.modelId,
+              reason,
+              attempt_number: ev.attempt_number,
+              booked_usd: ev.cost_usd,
+            });
+          }
+          stop.abort();
+        };
+        const onCancel = () => abandon("the client cancelled the call");
+        inFlight.add(abandon);
+        extra.signal.addEventListener("abort", onCancel, { once: true });
+
+        let result: ExecutionResult;
+        try {
+          // Passed on every dispatch; completion adapters ignore the paths.
+          result = await adapter.execute(packet, a.cache_context, {
+            project_root: a.project_root,
+            work_dir: a.work_dir ?? a.project_root,
+            telemetry_path: a.telemetry_path,
+            onAttempt: (att) => recorder.record(att),
+            signal: stop.signal,
+          });
+        } finally {
+          inFlight.delete(abandon);
+          extra.signal.removeEventListener("abort", onCancel);
+        }
         for (const att of result.attempts ?? []) {
           log("debug", "dispatch.attempt", {
             packet_id: packet.id,
@@ -490,78 +564,9 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
           });
         }
 
-        // One TelemetryEvent per attempt, all sharing the packet's task_id.
-        const attempts = result.attempts ?? [
-          {
-            attempt_number: 1,
-            ceiling_used: packet.budget.maxOutputTokens,
-            hit_output_cap: false,
-            tokens: result.tokens,
-            cost_usd: result.cost_usd,
-            latency_ms: result.latency_ms,
-            success: result.success,
-            error: result.error,
-          },
-        ];
-        const modelName = getModel(policy, decision.modelId).model_name;
-        const baseEvent = {
-          ts: new Date().toISOString(),
-          pass: packet.pass_id,
-          phase: packet.phase,
-          task_type: packet.task_type,
-          task_id: packet.id,
-          module: packet.module,
-          model: modelName,
-          // Read from the adapter rather than assumed: most report real
-          // vendor-metered usage, but the codex-cli path can only derive
-          // cost from token counts (the CLI reports no money), and saying
-          // "vendor" over a calculation is the one thing the provenance
-          // field exists to prevent.
-          // The result's own label wins where it set one: an adapter that
-          // normally meters can still have had to estimate this particular
-          // call (no `usage` block came back, or it priced a failure from
-          // estimateTokens). Falling straight through to the adapter's static
-          // declaration would stamp those `vendor`.
-          provenance: result.cost_provenance ?? adapter.costProvenance ?? ("vendor" as const),
-          routed_by: "orchestrator" as const,
-          // Leaf id; the only field that distinguishes two leaves that share
-          // a vendor model name (e.g. flash-completion vs flash-agsdk-worker).
-          model_id: decision.modelId,
-          routing: {
-            policy_name: policy.name,
-            policy_version: policy.version,
-            rule_index: decision.ruleIndex,
-            rule_reason: decision.reason,
-            // Undefined unless the rule went through a slot; JSON.stringify
-            // drops undefined keys, so unslotted policies produce identical
-            // events to before slots existed.
-            select: decision.selection,
-          },
-          retry_count: packet.retry_count ?? 0,
-        };
-        const events: TelemetryEvent[] = attempts.map((att) => ({
-          ...baseEvent,
-          input_tokens: att.tokens.input,
-          input_tokens_cached: att.tokens.input_cached,
-          output_tokens: att.tokens.output,
-          // Already counted in output_tokens and billed at the output rate;
-          // surfaced only so a reader can see how much of a delegation's
-          // output was thinking. Undefined on adapters that don't report it.
-          output_tokens_reasoning: att.tokens.output_reasoning,
-          cost_usd: att.cost_usd,
-          latency_ms: att.latency_ms,
-          success: att.success,
-          attempt_number: att.attempt_number,
-          ceiling_used: att.ceiling_used,
-          retry_reason: att.attempt_number > 1 ? "output_cap" : undefined,
-          error: att.error,
-          price_basis: att.price_basis,
-          price_tier: att.price_tier,
-          price_verified: att.price_verified,
-          prompt_tokens: att.prompt_tokens,
-        }));
+        recorder.finish(result);
+        const events = recorder.events;
         if (a.telemetry_path) {
-          for (const ev of events) appendEvent(a.telemetry_path, ev);
           log("debug", "telemetry.append", { telemetry_path: a.telemetry_path, events_written: events.length });
         }
         return {

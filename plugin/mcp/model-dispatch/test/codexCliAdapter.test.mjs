@@ -11,9 +11,18 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
 import { PassThrough } from "node:stream";
-import { writeFileSync } from "node:fs";
+import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 import { CodexCliAdapter, parseCodexStream } from "../dist/adapters/CodexCliAdapter.js";
+
+// Real `codex exec --json` streams from codex-cli 0.160.1 against a localhost
+// mock: `reconnect-only` dropped the first response stream and recovered;
+// `drop` also carries the model-metadata warning item codex emits for a model
+// it has no metadata for.
+const FIXTURES = new URL("./fixtures/codex-0.160.1/", import.meta.url);
+const fixture = (name) => readFileSync(new URL(name, FIXTURES), "utf8");
 
 const BASE_CONFIG = {
   id: "gpt",
@@ -196,12 +205,16 @@ test("an empty final message is reported rather than passed off as a result", as
   assert.match(out.error, /empty final message/);
 });
 
-test("a hanging codex process is killed at the timeout", async () => {
+test("a hanging codex process is killed at the timeout and booked as an estimated lower bound", async () => {
   const spawnFn = fakeSpawn(() => ({ hang: true }));
   const adapter = new CodexCliAdapter(BASE_CONFIG, { spawnFn, timeoutSec: 0.05 });
   const out = await adapter.execute(PACKET);
   assert.equal(out.success, false);
   assert.match(out.error, /timeout/);
+  assert.ok(out.cost_usd > 0);
+  assert.equal(out.cost_provenance, "estimated", "a prompt-length guess is not modeled from real tokens");
+  assert.equal(out.attempts[0].cost_provenance, "estimated");
+  assert.equal(out.attempts[0].usage_complete, false);
 });
 
 test("a missing codex binary is reported, not thrown", async () => {
@@ -215,6 +228,8 @@ test("a missing codex binary is reported, not thrown", async () => {
   };
   const out = await new CodexCliAdapter(BASE_CONFIG, { spawnFn }).execute(PACKET);
   assert.equal(out.success, false);
+  assert.equal(out.cost_usd, 0, "codex never started, so nothing was sent");
+  assert.equal(out.attempts[0].cost_provenance, undefined);
 });
 
 test("the binary can be overridden for a non-global install", () => {
@@ -223,4 +238,108 @@ test("the binary can be overridden for a non-global install", () => {
   return adapter.execute(PACKET).then(() => {
     assert.equal(spawnFn.calls[0].cmd, "/opt/codex");
   });
+});
+
+// ── terminal events decide (codex 0.160 semantics) ───────────────────
+
+test("parseCodexStream collects warnings, reads the thread id, and clears the error once the turn completes", () => {
+  const stream = parseCodexStream(fixture("drop.jsonl"));
+  assert.equal(stream.completed, true);
+  assert.equal(stream.error, null);
+  assert.equal(stream.threadId, "01a1340e-168b-7322-a276-d1a40c7d59d8");
+  assert.equal(stream.warnings.length, 2);
+  assert.match(stream.warnings[0], /Model metadata/);
+  assert.match(stream.warnings[1], /Reconnecting\.\.\. 1\/5/);
+  assert.equal(stream.usage.cache_write_input_tokens, 0);
+});
+
+test("a Reconnecting error followed by turn.completed succeeds and bills the turn", async () => {
+  const spawnFn = fakeSpawn(() => ({ stdout: fixture("reconnect-only.jsonl"), lastMessage: JSON.stringify({ ok: true }), code: 0 }));
+  const out = await new CodexCliAdapter(BASE_CONFIG, { spawnFn }).execute(PACKET);
+  assert.equal(out.success, true);
+  assert.equal(out.terminal_reason, "success");
+  assert.deepEqual(out.result, { ok: true });
+  assert.deepEqual(
+    { input: out.tokens.input, input_cached: out.tokens.input_cached, output: out.tokens.output },
+    { input: 2100, input_cached: 900, output: 70 },
+  );
+  assert.equal(out.cost_usd, 0.00522);
+  assert.equal(out.cost_provenance, undefined, "real turn usage stays modeled, the adapter's own label");
+  assert.equal(out.attempts[0].codex_thread_id, "01a1340e-168b-7322-a276-d1a40c7d59d8");
+});
+
+test("a model-metadata warning item before the turn does not fail a good turn", async () => {
+  const spawnFn = fakeSpawn(() => ({ stdout: fixture("drop.jsonl"), lastMessage: JSON.stringify({ ok: true }), code: 0 }));
+  const out = await new CodexCliAdapter(BASE_CONFIG, { spawnFn }).execute(PACKET);
+  assert.equal(out.success, true);
+  assert.equal(out.cost_usd, 0.00522);
+});
+
+test("error events followed by turn.failed fail with the turn.failed message", async () => {
+  const stdout = [
+    '{"type":"thread.started","thread_id":"t-1"}',
+    '{"type":"turn.started"}',
+    '{"type":"error","message":"Reconnecting... 1/5 (stream disconnected)"}',
+    '{"type":"turn.failed","error":{"message":"stream disconnected: retries exhausted"}}',
+  ].join("\n");
+  const out = await new CodexCliAdapter(BASE_CONFIG, { spawnFn: fakeSpawn(() => ({ stdout, lastMessage: "", code: 1 })) }).execute(PACKET);
+  assert.equal(out.success, false);
+  assert.equal(out.terminal_reason, "vendor_error");
+  assert.match(out.error, /retries exhausted/);
+  assert.equal(out.cost_provenance, "estimated");
+  assert.equal(out.attempts[0].codex_thread_id, "t-1");
+});
+
+test("a lone error line with no turn.completed fails with that message", async () => {
+  const stdout = '{"type":"error","message":"unexpected status 401 Unauthorized"}';
+  const out = await new CodexCliAdapter(BASE_CONFIG, { spawnFn: fakeSpawn(() => ({ stdout, lastMessage: "{}", code: 1 })) }).execute(PACKET);
+  assert.equal(out.success, false);
+  assert.match(out.error, /401/);
+});
+
+test("a non-zero exit with no turn at all is a failure, not a success read off a stale file", async () => {
+  const out = await new CodexCliAdapter(BASE_CONFIG, { spawnFn: fakeSpawn(() => ({ stdout: "", lastMessage: "{}", code: 2 })) }).execute(PACKET);
+  assert.equal(out.success, false);
+  assert.match(out.error, /exited 2/);
+});
+
+test("a completed turn with an empty final message bills the turn's real usage, modeled", async () => {
+  const spawnFn = fakeSpawn(() => ({ stdout: usageLine({ input_tokens: 5, cached_input_tokens: 0, output_tokens: 3 }), lastMessage: "", code: 0 }));
+  const out = await new CodexCliAdapter(BASE_CONFIG, { spawnFn }).execute(PACKET);
+  assert.equal(out.success, false);
+  assert.equal(out.tokens.input, 5);
+  assert.equal(out.tokens.output, 3);
+  assert.equal(out.cost_provenance, undefined);
+  assert.equal(out.attempts[0].usage_complete, undefined);
+});
+
+test("a completed turn that reported no usage is labelled estimated", async () => {
+  const spawnFn = fakeSpawn(() => ({ stdout: '{"type":"turn.completed"}', lastMessage: JSON.stringify({ ok: true }), code: 0 }));
+  const out = await new CodexCliAdapter(BASE_CONFIG, { spawnFn }).execute(PACKET);
+  assert.equal(out.success, true);
+  assert.ok(out.cost_usd > 0);
+  assert.equal(out.cost_provenance, "estimated");
+  assert.equal(out.attempts[0].cost_provenance, "estimated");
+});
+
+test("a real child process replaying the reconnect capture succeeds through the spawn path", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "codex-cli-stub-"));
+  try {
+    const stub = join(dir, "codex");
+    writeFileSync(
+      stub,
+      `#!/usr/bin/env node
+const fs = require("fs");
+const args = process.argv.slice(2);
+fs.writeFileSync(args[args.indexOf("--output-last-message") + 1], '{"ok":true}');
+process.stdout.write(fs.readFileSync(${JSON.stringify(new URL("reconnect-only.jsonl", FIXTURES).pathname)}, "utf8"));
+`,
+    );
+    chmodSync(stub, 0o755);
+    const out = await new CodexCliAdapter(BASE_CONFIG, { codexBin: stub }).execute(PACKET);
+    assert.equal(out.success, true);
+    assert.equal(out.cost_usd, 0.00522);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });

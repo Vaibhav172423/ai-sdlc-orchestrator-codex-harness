@@ -15,28 +15,33 @@ harness records is stamped with one of three values:
 
 | Provenance | Meaning | Produced by |
 |---|---|---|
-| `vendor` | A metered figure the vendor's own API returned for that call. Real usage, real money. | The OpenAI adapter and the Gemini Flash adapter — everything `gpt-plus-flash` dispatches |
-| `modeled` | Computed from token counts against a pricing table, because the vendor reported tokens but no money. | The `codex-cli` adapter (`gpt-seat-plus-flash`), and the conductor's own driver loop |
-| `estimated` | Token counts the vendor did not report, derived from the text with `estimateTokens`. | Any metered adapter on a call that came back with no `usage` block, and every priced failure path |
+| `vendor` | A metered figure the vendor's own API returned for that call. Real usage, real money. | The OpenAI adapter, the Gemini Flash adapter and the agent worker — everything `gpt-plus-flash` dispatches — on a call that reported usage, and a failed call the vendor's billing rule makes $0 |
+| `modeled` | Computed from token counts against a pricing table, because the vendor reported tokens but no money. | The `codex-cli` adapter (`gpt-seat-plus-flash`) when codex reported the turn's usage, and the conductor's own driver loop |
+| `estimated` | Token counts the vendor did not report, derived from the text with `estimateTokens`. | A call that came back with no `usage` block, and a failed or abandoned call that may still have been billed (see [Failed and abandoned calls](#failed-and-abandoned-calls)) |
 
-The stamp is applied centrally, in `plugin/mcp/model-dispatch/src/server.ts`:
+Every attempt of a dispatch carries its own label, and the bridge stamps each telemetry event from
+it, in `plugin/mcp/model-dispatch/src/dispatchEvents.ts`:
 
 ```ts
-provenance: result.cost_provenance ?? adapter.costProvenance ?? ("vendor" as const),
+att.cost_provenance ?? result.cost_provenance ?? adapter.costProvenance ?? "vendor"
 ```
 
-Three levels, and the order matters.
+Four levels, and the order matters. The result's label is consulted only when no attempt of that
+result carries one.
 
 `ModelAdapter.costProvenance` describes an adapter's *normal* case. An adapter that can only ever
 calculate declares it once — `CodexCliAdapter` has `readonly costProvenance = "modeled"`.
 
-`ExecutionResult.cost_provenance` describes *one call*, and takes precedence. It exists because an
-adapter that normally meters can still fail to get usage for a given call: the response arrives
-with no `usage` block, or the call fails and is priced from the prompt. Those tokens come from
-`estimateTokens`, and consulting only the adapter's static declaration would stamp them `vendor` —
-publishing a guess as a measured bill, the one outcome this taxonomy exists to prevent. Both
-`OpenAIAdapter` and `GeminiFlashAdapter` track whether any attempt had to estimate and label the
-result accordingly.
+`AttemptRecord.cost_provenance` describes *one attempt*, and takes precedence. An adapter that
+normally meters can still fail to get usage for an attempt: the response arrives with no `usage`
+block, or the call fails and is priced from the prompt. Those tokens come from `estimateTokens`,
+and consulting only the adapter's static declaration would stamp them `vendor` — publishing a
+guess as a measured bill, the one outcome this taxonomy exists to prevent. Labelling the attempt
+rather than the packet keeps a measured first attempt `vendor` when a later output-cap doubling
+had to be estimated.
+
+`ExecutionResult.cost_provenance` summarises the call for readers of the MCP result: `estimated`
+when any attempt was.
 
 The final default is `vendor`, so the burden falls on the adapter that is *not* metered. A new
 adapter author who forgets the field gets events labelled as metered — wrong in the noisy
@@ -110,20 +115,58 @@ const inputCachedCost = (tokens.input_cached / 1_000_000) * pricing.input_cached
 const outputCost      = (tokens.output       / 1_000_000) * pricing.output;
 ```
 
+### Failed and abandoned calls
+
+Each attempt reaches `telemetry.jsonl` as it returns, so a call the client stops waiting for keeps
+the attempts that finished. Every dispatch is bounded by a deadline that stays below the driver
+client's 900-second call timeout:
+
+| Leaf `adapter:` | Deadline |
+|---|---|
+| `openai`, `mcp:model-dispatch` (Gemini completion), `codex-cli` | The leaf's `worker_timeout_sec`, 840 s when unset. No shipped policy sets it on these leaves, so 840 s applies, and it covers the whole output-cap doubling chain. |
+| `antigravity-worker` (agent door) | The leaf's `worker_timeout_sec`, 540 s in every shipped policy and when unset, plus a 30-second kill grace. |
+
+| What happened | Booked as |
+|---|---|
+| Gemini answered with an error status (4xx, 5xx) | $0, `vendor`. Google bills only a request it answered with 200 ([Vertex AI](https://cloud.google.com/vertex-ai/generative-ai/pricing), [Gemini API](https://ai.google.dev/gemini-api/docs/billing)). |
+| OpenAI answered with an error status | The prompt as input, `estimated`. OpenAI publishes no statement that an answered error is free. |
+| A request never left this machine (`ENOTFOUND`, `ECONNREFUSED`, `ENETUNREACH`, `EHOSTUNREACH`, `ENETDOWN`, `EAI_AGAIN`) | $0 |
+| A Gemini or OpenAI connection failed with no answer, or the dispatch deadline cut it off | The prompt as input, `estimated`, `usage_complete: false`: the request may have been served. |
+| `codex-cli` reported warnings or a reconnect (`Reconnecting... 1/5`) and then `turn.completed` | A success, billed on the turn's usage, `modeled`. |
+| A `codex-cli` turn completed but wrote no answer | The turn's usage, `modeled`. |
+| A `codex-cli` turn failed, or was killed at its deadline (with its whole process group, so the native binary behind the npm wrapper stops too) | The prompt as input, `estimated`, `usage_complete: false`, `adapter_provenance: "modeled"`. |
+| `codex` never started | $0 |
+| An agent session failed or timed out and its sidecar recorded usage | That usage, `vendor`. |
+| An agent session ran but no usage survived (killed at its deadline) | The brief as input, `estimated`, `usage_complete: false`. |
+| The agent worker failed before its session started | $0 |
+| The client stopped waiting for an attempt still in flight | The packet's prompt as input, `estimated`, `usage_complete: false`, with an `error` that starts `abandoned`. |
+
+`usage_complete: false` marks a lower bound: the call spent at least that much.
+
+`adapter_provenance: "modeled"` marks every event from a seat adapter (`codex-cli`). Its `estimated`
+rows are seat floors priced at the pinned rates, not metered spend, so they belong with the modeled
+figures rather than the vendor-metered total.
+
+An OpenAI request that got no answer, or an answer of 408, 409, 429 or 5xx, is sent again up to
+twice, after the vendor's `retry-after` when it asks for under a minute, else after about 0.5 s and
+then 1 s. Each request is its own attempt, billed by the table above for its own outcome, and a
+resent one carries `retry_reason: "transient"`. The OpenAI SDK's own retries are off: a request it
+resent would be billed with no attempt on record.
+
 ## The cached-token convention — read this before writing an adapter
 
 `computeCostUsd` expects the fresh and cached input counts to be **disjoint** and adds them.
 `tokens.input` is the fresh-priced count; `tokens.input_cached` is the discounted cache-read
 count.
 
-Every vendor this harness talks to reports the opposite convention: `input_tokens` is
-**inclusive** of the cached subset. So every caller must subtract before pricing:
+Most vendor fields this harness reads report the opposite convention: `input_tokens` is
+**inclusive** of the cached subset. So those callers must subtract before pricing:
 
 ```js
 input = input_tokens - cached_input_tokens
 ```
 
-Four places in this repo do that, and any new adapter must too:
+These places do that, and any new adapter must check which convention its vendor uses:
 
 | Site | Vendor field it corrects |
 |---|---|
@@ -131,6 +174,7 @@ Four places in this repo do that, and any new adapter must too:
 | `adapters/OpenAIAdapter.ts` | `cached_tokens` within `input_tokens` |
 | `adapters/CodexCliAdapter.ts` | `cached_input_tokens` within `input_tokens` |
 | `adapters/GeminiFlashAdapter.ts` | `cachedContentTokenCount` within `promptTokenCount` |
+| `delegation/workerProcess.ts` | `cached_content_token_count` within `prompt_token_count`, on Antigravity SDK versions that count it inside (0.1.9). 0.1.16 counts it on top, so nothing is subtracted. |
 
 Getting this wrong does not fail loudly — it silently multiplies the bill, because the cached
 tokens get charged twice and at the wrong rate. It happened here before it was caught: a run
@@ -165,7 +209,13 @@ evidence differs:
    `cachedContentTokenCount`) and prices from those, so its events are `vendor`.
 2. **The agent worker** — `AntigravityWorkerAdapter`, delegating to a local Python worker.
    Delegations are recorded as `worker-delegation-*.json` files and reported under
-   `## Delegated to an agent worker`.
+   `## Delegated to an agent worker`. The worker's usage sidecar records the
+   `google-antigravity` version, and that version decides how its input is read
+   (`AGY_USAGE_SEMANTICS` in `delegation/workerProcess.ts`): 0.1.9 counts cached input inside
+   `prompt_token_count`, 0.1.16 on top of it. A version not listed there bills the larger
+   reading and logs `agsdk.usage_semantics_unverified`, so it can over-report but not
+   under-report. The worker pins `google-antigravity==0.1.16`. Agent-door costs recorded on
+   0.1.16 before this reading was ported are low by the whole fresh input.
 
 The model path itself has two backends, chosen by `selectGeminiBackend`: an API key
 (`GEMINI_API_KEY`) or Vertex AI with application-default credentials, which bills a Google Cloud

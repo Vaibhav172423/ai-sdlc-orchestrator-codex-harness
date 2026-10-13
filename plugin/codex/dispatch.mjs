@@ -17,8 +17,8 @@
  *
  * Usage:
  *   node dispatch.mjs --packet=<packet.json> --out=<result.json> \
- *                     [--policy=<name>] [--policy-path=<file>] [--project-root=<path>] \
- *                     [--telemetry=<path>] [--work-dir=<path>]
+ *                     --telemetry=<path> [--policy=<name>] [--policy-path=<file>] \
+ *                     [--project-root=<path>] [--work-dir=<path>]
  *   node dispatch.mjs --log-phase=<state> --task-type=skipped|in_session \
                      --telemetry=<path> --out=<receipt.json> \
                      [--module=<name>] [--reason=<text>] [--policy=<name>]
@@ -91,6 +91,20 @@ export function buildExecuteArgs({ packet, policy, policyPath, projectRoot, tele
   return args;
 }
 
+/**
+ * A paid call with no telemetry line is spend no report or cost cap can see,
+ * so a dispatch refuses before it reads the packet or starts the bridge.
+ */
+export function requireTelemetryPath(args, what) {
+  if (typeof args.telemetry !== "string" || args.telemetry.trim() === "") {
+    throw new Error(
+      `dispatch: --telemetry=<path> is required for ${what}: a paid call with no telemetry line is spend ` +
+        "no report or cost cap can see. Pass the run's file, --telemetry='<output-dir>/telemetry.jsonl'.",
+    );
+  }
+  return args.telemetry;
+}
+
 /** Builds the `preflight_dispatch` argument object. */
 export function buildPreflightArgs({ authMode, policy, policyPath, projectRoot }) {
   const args = { auth_mode: authMode };
@@ -159,7 +173,7 @@ function writeResult(outPath, payload) {
  */
 export function buildLogEventArgs({ phase, taskType, module, reason, policyName, telemetryPath }) {
   if (!phase) throw new Error("dispatch: --log-phase=<state> is required for --log-phase.");
-  if (!telemetryPath) {
+  if (typeof telemetryPath !== "string" || telemetryPath.trim() === "") {
     throw new Error("dispatch: --telemetry=<path> is required for --log-phase — an unwritten event is not a record.");
   }
   const kind = taskType ?? "skipped";
@@ -240,6 +254,7 @@ export async function runDispatch(args, { connect, env = process.env } = {}) {
       projectRoot,
     });
   } else {
+    requireTelemetryPath(args, "--packet");
     if (!args.packet) throw new Error("dispatch: --packet=<path> is required.");
     let packet;
     try {
@@ -272,7 +287,13 @@ export async function runDispatch(args, { connect, env = process.env } = {}) {
     // now" signal in the whole run, and a caller that only checked the exit
     // code would read it as a pass — so the exit code carries the verdict
     // too, not just the payload.
-    const verdict = toolName === "preflight_dispatch" ? result?.ok === true : true;
+    // A model call that returned success:false wrote its result file; the exit code says it failed.
+    const verdict =
+      toolName === "preflight_dispatch"
+        ? result?.ok === true
+        : toolName === "execute_with_model"
+          ? result?.result?.success === true
+          : true;
     return { ok: verdict, toolName, result, summary: summarize(toolName, result, args) };
   } finally {
     await bridge.close();
@@ -284,8 +305,15 @@ if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
   const args = parseArgs(process.argv.slice(2));
   const { connectBridge } = await import(BRIDGE_CLIENT);
   try {
-    const { ok, summary } = await runDispatch(args, { connect: connectBridge });
+    const { ok, summary, toolName, result } = await runDispatch(args, { connect: connectBridge });
     console.log(summary);
+    if (!ok && toolName === "execute_with_model") {
+      const why = String(result?.result?.error ?? "no error recorded").split("\n")[0];
+      console.error(
+        `dispatch: the model call failed (terminal_reason=${result?.result?.terminal_reason ?? "?"}): ${why}. ` +
+          `The full result is in ${args.out}.`,
+      );
+    }
     process.exit(ok ? 0 : 1);
   } catch (err) {
     // stderr, not stdout — the conductor reads stdout for the summary line.

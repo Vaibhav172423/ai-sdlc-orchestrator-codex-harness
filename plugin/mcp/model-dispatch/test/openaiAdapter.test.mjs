@@ -29,6 +29,9 @@ const PACKET = {
   pass_id: "test-pass",
 };
 
+/** Failure tests skip the backoff between the adapter's transient retries. */
+const NO_WAIT = { retryDelayMs: () => 0 };
+
 /** A fake `openai` client whose `.responses.create` is driven by `behavior`. */
 function fakeClient(behavior) {
   const calls = [];
@@ -161,13 +164,15 @@ test("classifies a thrown vendor error as a vendor_error ExecutionResult, not a 
   const client = fakeClient(() => {
     throw Object.assign(new Error("rate limit exceeded"), { status: 429 });
   });
-  const adapter = new OpenAIAdapter(BASE_CONFIG, { client });
+  const adapter = new OpenAIAdapter(BASE_CONFIG, { client, ...NO_WAIT });
   const out = await adapter.execute(PACKET);
 
   assert.equal(out.success, false);
   assert.equal(out.terminal_reason, "vendor_error");
   assert.match(out.error, /rate limit exceeded/);
   assert.equal(out.result, null);
+  assert.equal(client.calls.length, 3, "a 429 is retried twice, as the SDK would");
+  assert.equal(out.attempts.length, 3, "each request is its own attempt");
 });
 
 test("output_text that isn't valid JSON falls back to a raw wrapper, not an error", async () => {
@@ -252,11 +257,137 @@ test("a vendor error prices the attempt but labels it estimated", async () => {
   const client = fakeClient(() => {
     throw Object.assign(new Error("500 upstream"), { status: 500 });
   });
-  const out = await new OpenAIAdapter(BASE_CONFIG, { client }).execute(PACKET);
+  const out = await new OpenAIAdapter(BASE_CONFIG, { client, ...NO_WAIT }).execute(PACKET);
   assert.equal(out.success, false);
   assert.equal(out.terminal_reason, "vendor_error");
   assert.equal(
     out.cost_provenance, "estimated",
     "a failure priced from the prompt was never a vendor measurement",
   );
+});
+
+test("each attempt carries its own label: an estimated first attempt does not relabel a measured second", async () => {
+  let call = 0;
+  const client = fakeClient((req) => {
+    call += 1;
+    if (call === 1) {
+      return {
+        status: "incomplete",
+        output_text: "",
+        incomplete_details: { reason: "max_output_tokens" },
+        usage: { input_tokens: 10, input_tokens_details: { cached_tokens: 0 } },
+      };
+    }
+    return {
+      status: "completed",
+      output_text: JSON.stringify({ ok: true }),
+      incomplete_details: null,
+      usage: { input_tokens: 10, input_tokens_details: { cached_tokens: 0 }, output_tokens: 5, output_tokens_details: { reasoning_tokens: 0 } },
+    };
+  });
+  const out = await new OpenAIAdapter(BASE_CONFIG, { client }).execute({ ...PACKET, budget: { maxInputTokens: 8000, maxOutputTokens: 500 } });
+  assert.equal(out.attempts.length, 2);
+  assert.equal(out.attempts[0].cost_provenance, "estimated");
+  assert.equal(out.attempts[1].cost_provenance, undefined);
+  assert.equal(out.cost_provenance, "estimated", "the result still summarises that one attempt estimated");
+});
+
+// ── failure billing ──────────────────────────────────────────────────
+//
+// A request that never left this machine is billed $0. An error OpenAI
+// answered keeps the prompt estimate, because OpenAI publishes no statement
+// that a 4xx or 5xx is free.
+
+const connectionError = (code, name = "APIConnectionError") =>
+  Object.assign(new Error("Connection error."), { name, cause: Object.assign(new Error("fetch failed"), { code }) });
+
+test("an answered error keeps the estimate and records its status", async () => {
+  const client = fakeClient(() => {
+    throw Object.assign(new Error("429 rate limit exceeded"), { status: 429 });
+  });
+  const out = await new OpenAIAdapter(BASE_CONFIG, { client, ...NO_WAIT }).execute(PACKET);
+  assert.equal(out.attempts[0].error_status, 429);
+  assert.ok(out.cost_usd > 0);
+  assert.equal(out.attempts[0].cost_provenance, "estimated");
+  assert.equal(out.attempts[0].usage_complete, undefined, "an answered error booked as a stand-in is not a floor");
+});
+
+test("a request that never reached OpenAI is billed nothing", async () => {
+  for (const code of ["ENOTFOUND", "ECONNREFUSED", "EAI_AGAIN"]) {
+    const client = fakeClient(() => {
+      throw connectionError(code);
+    });
+    const out = await new OpenAIAdapter(BASE_CONFIG, { client, ...NO_WAIT }).execute(PACKET);
+    assert.equal(out.success, false);
+    assert.equal(out.cost_usd, 0, code);
+    assert.equal(out.attempts[0].error_code, code);
+    assert.equal(out.attempts[0].cost_provenance, undefined, `${code}: a $0 nothing-was-sent is not an estimate`);
+    assert.equal(out.cost_provenance, undefined);
+  }
+});
+
+test("a connection reset or a timeout with no answer is priced as an estimate", async () => {
+  for (const err of [connectionError("ECONNRESET"), Object.assign(new Error("Request timed out."), { name: "APIConnectionTimeoutError" })]) {
+    const client = fakeClient(() => {
+      throw err;
+    });
+    const out = await new OpenAIAdapter(BASE_CONFIG, { client, ...NO_WAIT }).execute(PACKET);
+    assert.ok(out.cost_usd > 0, err.name);
+    assert.equal(out.attempts[0].cost_provenance, "estimated");
+    assert.equal(out.attempts[0].usage_complete, false, `${err.name}: the prompt alone is a floor`);
+  }
+});
+
+test("the failure estimate counts the instructions block as well as the user prompt", async () => {
+  const adapter = new OpenAIAdapter(BASE_CONFIG, {
+    client: fakeClient(() => {
+      throw Object.assign(new Error("500"), { status: 500 });
+    }),
+    ...NO_WAIT,
+  });
+  const bare = (await adapter.execute(PACKET)).tokens.input;
+  adapter.setSystemCache("x".repeat(3800));
+  const withSystem = (await adapter.execute(PACKET)).tokens.input;
+  assert.ok(withSystem >= bare + 1000, `${withSystem} should include the ~1000-token instructions block`);
+});
+
+test("each attempt reaches onAttempt as it returns, and the abort signal reaches the request", async () => {
+  let call = 0;
+  const opts = [];
+  const client = {
+    responses: {
+      create: async (req, o) => {
+        call += 1;
+        opts.push(o);
+        return call === 1
+          ? { status: "incomplete", output_text: "", incomplete_details: { reason: "max_output_tokens" }, usage: { input_tokens: 10, input_tokens_details: { cached_tokens: 0 }, output_tokens: 500, output_tokens_details: { reasoning_tokens: 0 } } }
+          : { status: "completed", output_text: "{}", incomplete_details: null, usage: { input_tokens: 10, input_tokens_details: { cached_tokens: 0 }, output_tokens: 5, output_tokens_details: { reasoning_tokens: 0 } } };
+      },
+    },
+  };
+  const seen = [];
+  const stop = new AbortController();
+  const out = await new OpenAIAdapter(BASE_CONFIG, { client }).execute(
+    { ...PACKET, budget: { maxInputTokens: 8000, maxOutputTokens: 500 } },
+    undefined,
+    { onAttempt: (a) => seen.push(a), signal: stop.signal },
+  );
+  assert.deepEqual(seen, out.attempts);
+  assert.equal(seen[0], out.attempts[0]);
+  assert.ok(opts[0].signal instanceof AbortSignal, "every request carries the dispatch's signal");
+});
+
+test("aborting the dispatch aborts the request in flight", async () => {
+  const stop = new AbortController();
+  const client = {
+    responses: {
+      create: (_req, o) =>
+        new Promise((_, reject) => o.signal.addEventListener("abort", () => reject(new Error("Request was aborted.")), { once: true })),
+    },
+  };
+  setTimeout(() => stop.abort(), 20);
+  const out = await new OpenAIAdapter(BASE_CONFIG, { client }).execute(PACKET, undefined, { signal: stop.signal });
+  assert.equal(out.success, false);
+  assert.match(out.error, /aborted/);
+  assert.doesNotMatch(out.error, /deadline/, "the caller's abort is not the deadline");
 });

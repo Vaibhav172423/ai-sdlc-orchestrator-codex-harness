@@ -73,7 +73,7 @@ In each run's folder, `.sdlc/runs/<run-id>/`:
 | `driver-stderr.log` | `run.mjs` runs: what codex wrote to stderr, with a header line per invocation. |
 | `driver-cost-modeled.jsonl` | `run.mjs` runs: one modeled row per conductor turn, `status` `complete` or `incomplete`. |
 | `driver-manifest.json` | `run.mjs` runs: the pins, how the run ended (`outcome`, `exit_code`), incomplete turns, codex warnings, the thread ids, and the modeled driver cost. |
-| `delegation/` | Agent-path runs only. Per delegated packet: the task brief, the worker's usage sidecar, and a receipt. |
+| `delegation/` | Agent-path runs only. Per delegated packet: the task brief, the worker's usage sidecar, and a receipt. The sidecar is written for failed sessions too, with `status` (`ok`, `timeout` or `error`) and `usage_source`, and its `sdk_version` decides how its input is priced. |
 
 In `.sdlc/`, shared by every run in the project:
 
@@ -98,6 +98,11 @@ One event per line. The fields that matter when reading by hand:
 | `prompt_tokens` | One request's whole prompt, cached tokens included, on an adapter that reports usage per request (`openai`). Above 272,000 on `gpt-5.6-terra`, every token of that request bills the long-context card. Absent where usage sums several requests (`codex-cli`). |
 | `routing` | The policy name and version, which rule index matched, and why. Makes a routing decision auditable after the fact. |
 | `retry_count` | Which attempt this was. A packet at `retry_count: 2` is the one escalation fires on. |
+| `attempt_number` / `retry_reason` | One event per request a dispatch made, numbered from 1. `output_cap`: the previous attempt hit its output ceiling and this one doubled it. `transient`: the previous OpenAI request got no answer or a 408, 409, 429 or 5xx, and this one sent it again. |
+| `usage_complete` | `false` when the tokens are a lower bound because the call's real usage never arrived: a killed agent session, a failed or timed-out `codex-cli` turn, a Gemini or OpenAI call that got no answer or hit its deadline, or an attempt the client stopped waiting for (its `error` starts `abandoned`). Absent otherwise. |
+| `error_status` / `error_code` | A failed call: the HTTP status the vendor answered with, or the connection's code (`ECONNRESET`, `ENOTFOUND`, …). [methodology.md](methodology.md#failed-and-abandoned-calls) says which of these bill $0. |
+| `adapter_provenance` | `modeled` on every event from a seat adapter (`codex-cli`), whatever the event's own `provenance`. An `estimated` event that carries it is a seat floor, not metered spend. Absent for metered adapters. |
+| `codex_thread_id` | `codex-cli` dispatches only: the nested `codex exec` thread. Its rollout under `CODEX_HOME/sessions` ends in this id. |
 
 **The cached-token convention.** Codex reports `input_tokens` inclusive of `cached_input_tokens`; this harness stores them exclusive, so `input_tokens + input_tokens_cached` is the true total. An adapter that gets this wrong double-counts cached input and inflates cost. The convention is enforced in `plugin/codex/telemetry/event-reader.mjs`, and [methodology.md](methodology.md) explains why it was chosen.
 

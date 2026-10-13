@@ -104,8 +104,11 @@ Agent-side steps (1 = discovery smoke, 3 = dispatch smoke) — you run yourself:
    `gpt-plus-flash`):
    ```bash
    node '{{PLUGIN_ROOT}}/codex/dispatch.mjs' --packet=<smoke-packet.json> \
-     --out=<smoke-result.json> --policy={{POLICY}} --project-root='{{PROJECT_ROOT}}'
+     --out=<smoke-result.json> --policy={{POLICY}} --project-root='{{PROJECT_ROOT}}' \
+     --telemetry='{{PROJECT_ROOT}}/.sdlc/pre-check/telemetry.jsonl'
    ```
+   The smoke calls are paid, so they are recorded like any other dispatch; no run exists yet, so
+   they go to the pre-check's own telemetry file.
    If both return their expected output within the timeout, record pass:
    ```bash
    echo '{"tiers_tested":["gpt","gemini-flash"]}' | node '{{PLUGIN_ROOT}}/scripts/pre-check.mjs' --record dispatch pass

@@ -14,12 +14,14 @@
  */
 
 import OpenAI from "openai";
-import type { AttemptRecord, ExecutionResult, ModelConfig, TaskPacket } from "../types.js";
+import type { AttemptRecord, ExecutionResult, ModelConfig, RunContext, TaskPacket } from "../types.js";
 import { computeCostUsd, estimateTokens } from "../pricing.js";
 import type { ModelAdapter } from "./ModelAdapter.js";
 import { splitStableFromDynamic } from "./BuiltinAnthropicAdapter.js";
 import { log } from "../log.js";
 import { DispatchPricer, priceFields, refusedResult, type Clock } from "./dispatchPricer.js";
+import { answeredWithError, describeVendorFailure, neverSent, type VendorFailure } from "./vendorFailure.js";
+import { dispatchTimeoutMs, startDeadline, type Deadline } from "./deadline.js";
 
 // No published absolute output-token ceiling is pinned for gpt-5.6-terra as
 // of this port; the official codex policy sets max_output_tokens_absolute
@@ -29,9 +31,18 @@ const OPENAI_ABSOLUTE_OUTPUT_TOKENS_FALLBACK = 32000;
 
 const MAX_DOUBLINGS = 3;
 
+/**
+ * The SDK's default retry count. The client is built with maxRetries: 0 and
+ * the adapter retries instead, so every request is its own recorded attempt;
+ * a request the SDK resent itself would be billed with no record.
+ */
+const MAX_TRANSIENT_RETRIES = 2;
+
 interface OpenAIAdapterOptions {
   client?: OpenAI;
   clock?: Clock;
+  /** Milliseconds to wait before transient retry `retry` (0-based). */
+  retryDelayMs?: (retry: number, err: unknown) => number;
 }
 
 export class OpenAIAdapter implements ModelAdapter {
@@ -40,11 +51,13 @@ export class OpenAIAdapter implements ModelAdapter {
   private client: OpenAI;
   private cachedSystem = "";
   private readonly pricer: DispatchPricer;
+  private readonly retryDelayMs: (retry: number, err: unknown) => number;
 
   constructor(config: ModelConfig, options: OpenAIAdapterOptions = {}) {
     this.id = config.id;
     this.modelConfig = config;
     this.pricer = new DispatchPricer(config, options.clock);
+    this.retryDelayMs = options.retryDelayMs ?? sdkRetryDelayMs;
     if (options.client) {
       this.client = options.client;
     } else {
@@ -53,7 +66,7 @@ export class OpenAIAdapter implements ModelAdapter {
       if (!apiKey) {
         throw new Error(`${envKey} not set for OpenAIAdapter (model ${config.id})`);
       }
-      this.client = new OpenAI({ apiKey });
+      this.client = new OpenAI({ apiKey, maxRetries: 0 });
     }
   }
 
@@ -61,7 +74,16 @@ export class OpenAIAdapter implements ModelAdapter {
     this.cachedSystem = text;
   }
 
-  async execute(packet: TaskPacket): Promise<ExecutionResult> {
+  async execute(packet: TaskPacket, _cacheContext?: string, runContext?: RunContext): Promise<ExecutionResult> {
+    const deadline = startDeadline(dispatchTimeoutMs(this.modelConfig), runContext?.signal);
+    try {
+      return await this.dispatch(packet, deadline, runContext);
+    } finally {
+      deadline.clear();
+    }
+  }
+
+  private async dispatch(packet: TaskPacket, deadline: Deadline, runContext?: RunContext): Promise<ExecutionResult> {
     const { stableBlock, userPrompt } = splitStableFromDynamic(packet, this.cachedSystem);
 
     const absoluteCeiling =
@@ -69,17 +91,23 @@ export class OpenAIAdapter implements ModelAdapter {
     const effort = this.modelConfig.reasoning?.effort;
 
     const attempts: AttemptRecord[] = [];
-    // Set when an attempt has to price tokens the vendor did not report, so
-    // the result can be labelled `estimated` rather than inheriting this
-    // adapter's vendor-metered default.
+    const record = (attempt: AttemptRecord) => {
+      attempts.push(attempt);
+      runContext?.onAttempt?.(attempt);
+    };
+    // Any attempt priced from tokens the vendor did not report; summarised on the result.
     let usedEstimate = false;
     let ceiling = Math.min(packet.budget.maxOutputTokens, absoluteCeiling);
+    let doublings = 0;
+    let transientRetries = 0;
+    let retryReason: AttemptRecord["retry_reason"];
 
     const dispatchDate = this.pricer.now();
     const listed = this.pricer.price(dispatchDate);
     if (listed.unpriced) return refusedResult(this.modelConfig, dispatchDate, listed.reason, ceiling);
 
-    for (let attemptNumber = 1; attemptNumber <= MAX_DOUBLINGS + 1; attemptNumber++) {
+    for (;;) {
+      const attemptNumber = attempts.length + 1;
       const attemptStart = Date.now();
       const req: OpenAI.Responses.ResponseCreateParamsNonStreaming = {
         model: this.modelConfig.model_name,
@@ -105,7 +133,7 @@ export class OpenAIAdapter implements ModelAdapter {
       let resp: OpenAI.Responses.Response;
       let vendorError: string | undefined;
       try {
-        resp = await this.client.responses.create(req);
+        resp = await this.client.responses.create(req, { signal: deadline.signal });
         log("debug", "api.openai.response", {
           packet_id: packet.id,
           model_name: this.modelConfig.model_name,
@@ -113,13 +141,22 @@ export class OpenAIAdapter implements ModelAdapter {
           usage: JSON.stringify(resp.usage ?? {}),
         });
       } catch (err: any) {
-        vendorError = err?.message ?? String(err);
+        vendorError = deadline.expired ? `${deadlineNote(this.modelConfig)}: ${err?.message ?? err}` : (err?.message ?? String(err));
+        const failure = describeVendorFailure(err);
         log("debug", "api.openai.response", {
           packet_id: packet.id,
           model_name: this.modelConfig.model_name,
-          http_status: err?.status ?? err?.response?.status,
+          http_status: failure.error_status ?? err?.response?.status,
+          error_code: failure.error_code,
         });
-        const failTokens = { input: estimateTokens(userPrompt), input_cached: 0, output: 0 };
+        // A request that never left this machine reached nobody to bill. An answered error keeps
+        // the estimate: OpenAI publishes no statement that a 4xx or 5xx is free.
+        const unbilled = neverSent(failure);
+        // With no answer at all the request may have been served in full, so the prompt is only a floor.
+        const lowerBound = !unbilled && !answeredWithError(failure);
+        const failTokens = unbilled
+          ? { input: 0, input_cached: 0, output: 0 }
+          : { input: estimateTokens(userPrompt + (stableBlock ?? "")), input_cached: 0, output: 0 };
         const failPrice = this.pricer.require(dispatchDate, { requestInputTokens: failTokens.input, estimated: true });
         const attempt: AttemptRecord = {
           attempt_number: attemptNumber,
@@ -130,10 +167,23 @@ export class OpenAIAdapter implements ModelAdapter {
           latency_ms: Date.now() - attemptStart,
           success: false,
           error: vendorError,
+          ...failure,
           ...priceFields(failPrice),
+          ...(unbilled ? {} : { cost_provenance: "estimated" as const }),
+          ...(lowerBound ? { usage_complete: false as const } : {}),
+          ...(retryReason ? { retry_reason: retryReason } : {}),
         };
-        attempts.push(attempt);
-        return this.finalizeResult(attempts, null, false, "vendor_error", true);
+        record(attempt);
+        if (transientRetries < MAX_TRANSIENT_RETRIES && !deadline.signal.aborted && retryable(err, failure)) {
+          await pause(this.retryDelayMs(transientRetries, err), deadline.signal);
+          transientRetries += 1;
+          if (!deadline.signal.aborted) {
+            if (!unbilled) usedEstimate = true;
+            retryReason = "transient";
+            continue;
+          }
+        }
+        return this.finalizeResult(attempts, null, false, "vendor_error", usedEstimate || !unbilled);
       }
 
       const text = resp.output_text ?? "";
@@ -145,7 +195,8 @@ export class OpenAIAdapter implements ModelAdapter {
       // token twice. Anthropic's API reports these disjointly, which is why
       // the carried adapter needs no such subtraction and this one does.
       const cachedInput = usage?.input_tokens_details?.cached_tokens ?? 0;
-      if (!usage || usage.output_tokens === undefined) usedEstimate = true;
+      const attemptEstimated = !usage || usage.output_tokens === undefined;
+      if (attemptEstimated) usedEstimate = true;
       const attemptTokens = {
         input: usage
           ? Math.max(0, (usage.input_tokens ?? 0) - cachedInput)
@@ -175,8 +226,10 @@ export class OpenAIAdapter implements ModelAdapter {
         success: !hitOutputCap,
         ...priceFields(price),
         ...(promptTokens !== undefined ? { prompt_tokens: promptTokens } : {}),
+        ...(attemptEstimated ? { cost_provenance: "estimated" as const } : {}),
+        ...(retryReason ? { retry_reason: retryReason } : {}),
       };
-      attempts.push(attempt);
+      record(attempt);
 
       if (!hitOutputCap) {
         let parsed: any;
@@ -190,7 +243,7 @@ export class OpenAIAdapter implements ModelAdapter {
 
       const nextCeiling = Math.min(ceiling * 2, absoluteCeiling);
       const atModelAbsolute = nextCeiling <= ceiling;
-      const doublingsExhausted = attemptNumber > MAX_DOUBLINGS;
+      const doublingsExhausted = doublings >= MAX_DOUBLINGS;
       if (doublingsExhausted || atModelAbsolute) {
         const truncatedParsed = { raw: text, _truncated: true };
         return this.finalizeResult(
@@ -204,9 +257,9 @@ export class OpenAIAdapter implements ModelAdapter {
         );
       }
       ceiling = nextCeiling;
+      doublings += 1;
+      retryReason = "output_cap";
     }
-
-    return this.finalizeResult(attempts, null, false, "output_cap_doubling_budget_exhausted", usedEstimate);
   }
 
   private finalizeResult(
@@ -246,4 +299,56 @@ export class OpenAIAdapter implements ModelAdapter {
       ...(usedEstimate ? { cost_provenance: "estimated" as const } : {}),
     };
   }
+}
+
+/**
+ * The SDK's rule: a request with no answer at all, or a 408, 409, 429 or 5xx,
+ * unless the vendor's x-should-retry header says otherwise. An error raised
+ * after a 200 (a body that would not parse) is not resent.
+ */
+export function retryable(err: unknown, failure: VendorFailure): boolean {
+  if (err instanceof OpenAI.APIUserAbortError) return false;
+  const should = header(err, "x-should-retry");
+  if (should === "true") return true;
+  if (should === "false") return false;
+  const status = failure.error_status;
+  if (status !== undefined) return status === 408 || status === 409 || status === 429 || status >= 500;
+  return err instanceof OpenAI.APIConnectionError;
+}
+
+/** The SDK's backoff: the vendor's retry-after when under a minute, else 0.5 s doubling to 8 s, less up to 25% jitter. */
+export function sdkRetryDelayMs(retry: number, err: unknown): number {
+  let ms: number | undefined;
+  const afterMs = parseFloat(header(err, "retry-after-ms") ?? "");
+  if (!Number.isNaN(afterMs)) ms = afterMs;
+  const after = header(err, "retry-after");
+  if (after && !ms) {
+    const sec = parseFloat(after);
+    ms = Number.isNaN(sec) ? Date.parse(after) - Date.now() : sec * 1000;
+  }
+  if (ms && ms >= 0 && ms < 60_000) return ms;
+  return Math.min(500 * 2 ** retry, 8000) * (1 - Math.random() * 0.25);
+}
+
+function header(err: any, name: string): string | undefined {
+  const h = err?.headers;
+  const v = typeof h?.get === "function" ? h.get(name) : h?.[name];
+  return typeof v === "string" ? v : undefined;
+}
+
+function pause(ms: number, signal: AbortSignal): Promise<void> {
+  return new Promise((resolve) => {
+    if (signal.aborted || ms <= 0) return resolve();
+    const done = () => {
+      clearTimeout(timer);
+      signal.removeEventListener("abort", done);
+      resolve();
+    };
+    const timer = setTimeout(done, ms);
+    signal.addEventListener("abort", done, { once: true });
+  });
+}
+
+function deadlineNote(config: ModelConfig): string {
+  return `dispatch deadline of ${dispatchTimeoutMs(config) / 1000}s reached (the leaf's worker_timeout_sec)`;
 }

@@ -112,8 +112,11 @@ test("outside codex, or with no run folder to write to, no marker is written", a
     const { connect } = fakeBridge();
     await runDispatch({ packet, out: join(dir, "o.json"), telemetry: join(dir, "telemetry.jsonl") }, { connect, env: {} });
     assert.equal(existsSync(join(dir, SESSION_MARKERS_FILE)), false);
-    await runDispatch({ packet, out: join(dir, "o.json") }, { connect, env: { CODEX_THREAD_ID: THREAD } });
-    assert.equal(existsSync(join(dir, SESSION_MARKERS_FILE)), false, "no --telemetry: --out may be anywhere");
+    await assert.rejects(
+      () => runDispatch({ packet, out: join(dir, "o.json") }, { connect, env: { CODEX_THREAD_ID: THREAD } }),
+      /--telemetry=<path> is required/,
+    );
+    assert.equal(existsSync(join(dir, SESSION_MARKERS_FILE)), false, "no --telemetry: refused before any marker");
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -124,9 +127,20 @@ test("a bare --telemetry flag with no value does not trip the marker", async () 
   try {
     const packet = join(dir, "p.json");
     writeFileSync(packet, JSON.stringify({ id: "p" }));
-    const { connect, calls } = fakeBridge();
-    await runDispatch({ packet, out: join(dir, "o.json"), telemetry: true }, { connect, env: { CODEX_THREAD_ID: THREAD } });
+    const { connect, calls } = fakeBridge({ ok: true });
+    await assert.rejects(
+      () => runDispatch({ packet, out: join(dir, "o.json"), telemetry: true }, { connect, env: { CODEX_THREAD_ID: THREAD } }),
+      /--telemetry=<path> is required/,
+    );
+    assert.equal(calls.length, 0);
+    assert.equal(existsSync(join(dir, SESSION_MARKERS_FILE)), false);
+
+    await runDispatch(
+      { preflight: true, "auth-mode": "vendor", out: join(dir, "preflight.json"), telemetry: true },
+      { connect, env: { CODEX_THREAD_ID: THREAD } },
+    );
     assert.equal(calls.length, 1);
+    assert.equal(markers(dir)[0].tool, "preflight_dispatch", "a preflight falls back to --out");
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
