@@ -24,7 +24,7 @@
  *   node setup-policy.mjs --print-only              # print default_policy from project.json (stderr names a routing-policy.yaml that overrides it); no writes
  *   node setup-policy.mjs --list-json               # enumerate policies as JSON (no writes)
  *   node setup-policy.mjs --check-creds --policy=X  # verify creds for a policy (routing-policy.yaml wins); JSON out
- *   node setup-policy.mjs --guard-active-run        # check .sdlc/local/state.json; JSON out
+ *   node setup-policy.mjs --guard-active-run        # a run holding the write contract or stopped at a gate (its run folder); JSON out
  */
 
 import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, watch, writeFileSync } from "node:fs";
@@ -35,7 +35,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { createConnection } from "node:net";
 import { platform } from "node:os";
 import { OFF_LIMITS_DEFAULT } from "./lib/off-limits.mjs";
-import { liveLock } from "./lib/contract-lock.mjs";
+import { openRuns } from "./lib/open-runs.mjs";
 // The Gemini credential question is already answered, correctly, in
 // verify-setup.mjs. Importing it keeps one answer instead of two that
 // disagree — see ALTERNATIVE_DOORS below for what the disagreement was.
@@ -595,33 +595,18 @@ async function checkCredsForFile({ name: policyName, path }, projectRoot) {
 
 // ── active-run guard ─────────────────────────────────────────────────
 //
-// A brownfield run mid-flight has a policy pinned into its provenance and
-// task packets already dispatched under it. Changing default_policy
-// underneath would surface as inconsistent telemetry rows and confused
-// resumers, so $mmo-codex:policy change refuses until the run reaches a
-// terminal state. session-hydrate.mjs treats `complete`/`aborted` as
-// terminal; we accept `completed` and `failed` as well since callers may
-// spell it either way.
-
-const TERMINAL_RUN_STATUSES = new Set(["complete", "completed", "aborted", "failed"]);
+// A run mid-flight has a policy pinned into its provenance and task packets
+// already dispatched under it, so $mmo-codex:policy change refuses while a
+// run holds the write contract or waits at a gate it never got past (its
+// state.json), until that run records its end.
 
 function checkActiveRun(projectRoot) {
-  const live = liveLock(projectRoot);
-  if (live) return { active: true, run_id: live.run_id, phase: null, status: "live", write_contract: "live" };
-  const path = join(projectRoot, ".sdlc", "local", "state.json");
-  if (!existsSync(path)) return { active: false };
-  let parsed;
-  try { parsed = JSON.parse(readFileSync(path, "utf8")); }
-  catch { return { active: false }; }
-  if (!parsed || typeof parsed !== "object") return { active: false };
-  const status = parsed.status;
-  if (!status || TERMINAL_RUN_STATUSES.has(status)) return { active: false };
-  return {
-    active: true,
-    run_id: parsed.run_id ?? null,
-    phase: parsed.phase ?? null,
-    status,
-  };
+  const runs = openRuns(projectRoot);
+  const live = runs.find((r) => r.write_contract === "live");
+  if (live) return { active: true, run_id: live.run_id, phase: live.phase, status: "live", write_contract: "live" };
+  const waiting = runs.find((r) => r.gate_pending);
+  if (!waiting) return { active: false };
+  return { active: true, run_id: waiting.run_id, phase: waiting.phase, status: waiting.status };
 }
 
 // ── main flows ───────────────────────────────────────────────────────

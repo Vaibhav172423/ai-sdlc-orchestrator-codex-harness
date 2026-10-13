@@ -420,7 +420,8 @@ given: in a session, the `gates:` line the start script printed; on the `run.mjs
 conductor prompt's "Approval gates" section. Never answer a gate on the user's behalf. Every gate
 is a fenced `> ⏸ **HITL Gate <N> — <Title>**` block (templates below), printed verbatim.
 **Persist the gate-pending state to `<output_dir>/state.json` before printing**, so a session that
-dies mid-gate leaves a record of the open gate in the run's own folder.
+dies mid-gate leaves a record of the open gate in the run's own folder. Write the whole file, one
+object: `{"run_id": "{{RUN_ID}}", "phase": "<phase>", "gate": N, "status": "gate_pending", "at": "<ISO time>"}`.
 
 **Gate record.** On both routes, append every gate decision, Gate 0 included, as a new line to
 `{{OUTPUT_DIR}}/gates.jsonl` before you act on it, with the decision under the key `decision`:

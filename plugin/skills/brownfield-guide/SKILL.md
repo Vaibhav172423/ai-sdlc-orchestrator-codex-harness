@@ -42,10 +42,10 @@ outcome it lists. On the `run.mjs` route the driver records it instead.
 Before anything else, invoke:
 
 ```bash
-node '{{PLUGIN_ROOT}}/scripts/session-hydrate.mjs' --json
+node '{{PLUGIN_ROOT}}/scripts/session-hydrate.mjs' --json --sdlc='{{PROJECT_ROOT}}/.sdlc' --run-id={{RUN_ID}}
 ```
 
-Read the JSON. Three cases:
+`--run-id` is this run, so it is never offered as its own resume. Read the JSON. Three cases:
 
 - **`resume.pending: true` with `kind: "setup"`** — a previous session died mid-setup. Print
   something like *"Setup was interrupted at section &lt;N&gt; — resuming shepherd from there..."*
@@ -57,13 +57,20 @@ Read the JSON. Three cases:
   Would you like to resume it, or start fresh?"* Accept `resume`, `discard`, or `abort`. If
   `resume` in a session: end this session's new run (`--outcome=stopped`, reason `resumed run
   <run_id>`), run `node '{{PLUGIN_ROOT}}/codex/start-run.mjs' --resume=<run_id>`, and follow the
-  playbooks it prints from the first incomplete phase. If `discard`, end that run first, so its
-  write contract stops binding:
+  playbooks it prints from the first incomplete phase. When `resume.route` is `headless`, that
+  run was started by `run.mjs` and resumes only there (`run.mjs --resume=<run_id>`), so offer
+  `discard` and `abort` only. If `discard`, end that run first, so its write contract stops
+  binding:
   ```bash
   node '{{PLUGIN_ROOT}}/scripts/write-contract.mjs' --abandon --run-id=<run_id> --reason='discarded at resume' --project-root='{{PROJECT_ROOT}}'
   ```
   An exit 2 saying the run holds no write contract means it never reached Gate 0; carry on. Then
-  clear that run's gate-pending state (`.sdlc/runs/<run_id>/state.json`) and continue to step 2.
+  record that run's end, so it is not offered again. When `.sdlc/runs/<run_id>/run.json` exists:
+  ```bash
+  node '{{PLUGIN_ROOT}}/codex/end-run.mjs' --run-dir='{{PROJECT_ROOT}}/.sdlc/runs/<run_id>' --outcome=stopped --reason='discarded at resume'
+  ```
+  Otherwise delete that run's gate-pending state (`.sdlc/runs/<run_id>/state.json`). Then continue
+  to step 2.
 
   When `resume.write_contract` is `"live"`, that run never ended: its write contract still binds
   this repository in every Codex session, and `phase` may be `null`. Say so in the question:

@@ -12,7 +12,8 @@
  *
  * Usage:
  *   node session-hydrate.mjs                    # walks up from cwd for .sdlc/
- *   node session-hydrate.mjs --sdlc /abs/.sdlc  # explicit
+ *   node session-hydrate.mjs --sdlc /abs/.sdlc  # explicit (also --sdlc=/abs/.sdlc)
+ *   node session-hydrate.mjs --run-id=<id>      # the run asking: never offered as its own resume
  *   node session-hydrate.mjs --json             # default; JSON on stdout
  *   node session-hydrate.mjs --marker           # print only the one-line marker
  *
@@ -22,13 +23,16 @@
  *     baseline: { present, git_head, built_at, staleness_hint } | null,
  *     recent_runs: [{ run_id, intent, started_at, outcome, files_touched, spend_usd }, …],
  *     recent_runs_total: N,
- *     resume: { pending: bool, kind, run_id, section, checkpoint, at, staleness, write_contract? } | null,
+ *     resume: { pending: bool, kind, run_id, route, phase, checkpoint, status, at, write_contract? } | null,
  *     concurrent: { possible: bool, pid, run_id, started_at } | null }
+ *
+ * A run to resume is the newest brownfield run under .sdlc/runs/ that recorded no end (lib/open-runs.mjs), with
+ * its gate state from its own state.json.
  */
 
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { resolve, dirname, join } from "node:path";
-import { liveLock } from "./lib/contract-lock.mjs";
+import { openRuns } from "./lib/open-runs.mjs";
 
 const MMO_REL = ".sdlc";
 const MAX_RECENT_RUNS = 3;
@@ -116,8 +120,7 @@ function baselineHint(sdlc) {
 
 // ─── resume state ────────────────────────────────────────────────────
 
-function readResume(sdlc) {
-  const s = safeReadJson(join(sdlc, "local", "state.json"));
+function readResume(sdlc, exclude) {
   const setup = safeReadJson(join(sdlc, "local", "setup-status.json"));
 
   // Setup-status is checked first; an interrupted setup is more urgent than an
@@ -132,35 +135,21 @@ function readResume(sdlc) {
     };
   }
 
-  // A live write-contract lock is a run that never ended, whatever state.json says: it still binds every session.
-  const live = liveLock(dirname(sdlc));
-  if (live) {
-    const same = s?.run_id === live.run_id ? s : null;
-    return {
-      pending: true,
-      kind: "run",
-      run_id: live.run_id,
-      phase: same?.phase ?? null,
-      checkpoint: same?.checkpoint ?? same?.next_packet_index ?? null,
-      status: "live",
-      write_contract: "live",
-      at: live.frozen_at ?? null,
-    };
-  }
-
-  if (s && s.status && s.status !== "complete" && s.status !== "aborted") {
-    return {
-      pending: true,
-      kind: "run",
-      run_id: s.run_id ?? null,
-      phase: s.phase ?? null,
-      checkpoint: s.checkpoint ?? s.next_packet_index ?? null,
-      status: s.status,
-      at: s.timestamp ?? s.updated_at ?? null,
-    };
-  }
-
-  return null;
+  // A live lock outranks a newer unlocked run: it still binds every session in this repository.
+  const runs = openRuns(dirname(sdlc), { exclude }).filter((r) => r.mode !== "greenfield");
+  const run = runs.find((r) => r.write_contract === "live") ?? runs[0];
+  if (!run) return null;
+  return {
+    pending: true,
+    kind: "run",
+    run_id: run.run_id,
+    route: run.route,
+    phase: run.phase,
+    checkpoint: run.checkpoint,
+    status: run.status,
+    ...(run.write_contract ? { write_contract: run.write_contract } : {}),
+    at: run.at,
+  };
 }
 
 // ─── concurrent-run advisory (v1 marker file, not a real lock) ───────
@@ -232,10 +221,13 @@ function buildMarker({ recentRuns, recentRunsTotal, baseline, resume, concurrent
 // ─── main ────────────────────────────────────────────────────────────
 
 function parseArgs(argv) {
-  const args = { sdlc: null, markerOnly: false };
+  const args = { sdlc: null, markerOnly: false, runId: null };
   for (let i = 2; i < argv.length; i++) {
     const a = argv[i];
     if (a === "--sdlc") args.sdlc = argv[++i] ?? null;
+    else if (a.startsWith("--sdlc=")) args.sdlc = a.slice("--sdlc=".length) || null;
+    else if (a === "--run-id") args.runId = argv[++i] ?? null;
+    else if (a.startsWith("--run-id=")) args.runId = a.slice("--run-id=".length) || null;
     else if (a === "--marker") args.markerOnly = true;
     else if (a === "--json") args.markerOnly = false;
   }
@@ -269,7 +261,7 @@ function main() {
   const ledgerAll = readLedger(sdlc);
   const recentRuns = ledgerAll.slice(-MAX_RECENT_RUNS).reverse().map(shapeRun);
   const baseline = baselineHint(sdlc);
-  const resume = readResume(sdlc);
+  const resume = readResume(sdlc, args.runId);
   const concurrent = readConcurrent(sdlc);
 
   const marker = buildMarker({

@@ -10,7 +10,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, existsSync, readFileSync, rmSync, mkdirSync, writeFileSync } from "node:fs";
+import { appendFileSync, mkdtempSync, existsSync, readFileSync, rmSync, mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -388,15 +388,15 @@ test("--guard-active-run reports active:false when there is no state.json", () =
   } finally { cleanup(dir); }
 });
 
-test("--guard-active-run reports active:true for an in-flight run", () => {
+test("--guard-active-run reports active:true for a run stopped at a gate, from its run folder's state.json", () => {
   const dir = newTmpDir();
   try {
-    const stateDir = join(dir, ".sdlc", "local");
+    const stateDir = join(dir, ".sdlc", "runs", "run-abc");
     mkdirSync(stateDir, { recursive: true });
     writeFileSync(join(stateDir, "state.json"), JSON.stringify({
       run_id: "run-abc",
       phase: "codegen",
-      status: "in_progress",
+      status: "gate_pending",
     }));
     const r = run(dir, ["--guard-active-run"]);
     assert.equal(r.code, 0);
@@ -410,7 +410,7 @@ test("--guard-active-run reports active:true for an in-flight run", () => {
 test("--guard-active-run treats terminal statuses as inactive", () => {
   const dir = newTmpDir();
   try {
-    const stateDir = join(dir, ".sdlc", "local");
+    const stateDir = join(dir, ".sdlc", "runs", "run-x");
     mkdirSync(stateDir, { recursive: true });
     for (const status of ["complete", "completed", "aborted", "failed"]) {
       writeFileSync(join(stateDir, "state.json"), JSON.stringify({
@@ -427,12 +427,38 @@ test("--guard-active-run treats terminal statuses as inactive", () => {
 test("--guard-active-run tolerates malformed state.json (treats as inactive)", () => {
   const dir = newTmpDir();
   try {
-    const stateDir = join(dir, ".sdlc", "local");
+    const stateDir = join(dir, ".sdlc", "runs", "run-x");
     mkdirSync(stateDir, { recursive: true });
     writeFileSync(join(stateDir, "state.json"), "not valid json {");
     const r = run(dir, ["--guard-active-run"]);
     assert.equal(r.code, 0);
     const parsed = JSON.parse(r.stdout);
     assert.equal(parsed.active, false, "malformed state.json → inactive, not a crash");
+  } finally { cleanup(dir); }
+});
+
+test("--guard-active-run ignores a gate state whose run recorded its end, and the old shared state.json", () => {
+  const dir = newTmpDir();
+  try {
+    const pending = JSON.stringify({ run_id: "x", phase: "codegen", status: "gate_pending" });
+    mkdirSync(join(dir, ".sdlc", "local"), { recursive: true });
+    writeFileSync(join(dir, ".sdlc", "local", "state.json"), pending);
+    const session = join(dir, ".sdlc", "runs", "s1");
+    mkdirSync(session, { recursive: true });
+    writeFileSync(join(session, "state.json"), pending);
+    writeFileSync(join(session, "run.json"), JSON.stringify({ run_id: "s1", route: "interactive", outcome: "completed" }));
+    const headless = join(dir, ".sdlc", "runs", "h1");
+    mkdirSync(headless, { recursive: true });
+    writeFileSync(join(headless, "state.json"), pending);
+    writeFileSync(join(headless, "driver-events.jsonl"), [
+      { v: 1, kind: "invocation_start", run_id: "h1", invocation: 1 },
+      { v: 1, kind: "run_end", invocation: 1, outcome: "max_turns" },
+    ].map((r) => JSON.stringify(r)).join("\n") + "\n");
+    assert.equal(JSON.parse(run(dir, ["--guard-active-run"]).stdout).active, false);
+
+    appendFileSync(join(headless, "driver-events.jsonl"), JSON.stringify({ v: 1, kind: "invocation_start", run_id: "h1", invocation: 2 }) + "\n");
+    const resumed = JSON.parse(run(dir, ["--guard-active-run"]).stdout);
+    assert.equal(resumed.active, true, "a resumed run.mjs run that never wrote its run_end is still at its gate");
+    assert.equal(resumed.run_id, "h1");
   } finally { cleanup(dir); }
 });
