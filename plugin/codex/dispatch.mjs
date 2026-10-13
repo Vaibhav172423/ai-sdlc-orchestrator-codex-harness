@@ -173,7 +173,7 @@ function writeResult(outPath, payload) {
  * and they accrue to the driver loop rather than here; the reason string
  * carries that so the row explains itself.
  */
-export function buildLogEventArgs({ phase, taskType, module, reason, policyName, telemetryPath }) {
+export function buildLogEventArgs({ phase, taskType, module, reason, policyName, policyPath, projectRoot, telemetryPath }) {
   if (!phase) throw new Error("dispatch: --log-phase=<phase> is required for --log-phase.");
   if (typeof telemetryPath !== "string" || telemetryPath.trim() === "") {
     throw new Error("dispatch: --telemetry=<path> is required for --log-phase — an unwritten event is not a record.");
@@ -186,6 +186,10 @@ export function buildLogEventArgs({ phase, taskType, module, reason, policyName,
   // the handler as undefined and fails inside appendEvent, not at validation.
   return {
     telemetry_path: telemetryPath,
+    // The bridge stamps the routing with the policy these resolve to, as execute_with_model would route.
+    ...(policyName ? { policy_name: policyName } : {}),
+    ...(policyPath ? { policy_path: policyPath } : {}),
+    ...(projectRoot ? { project_root: projectRoot } : {}),
     event: {
       pass: null,
       phase,
@@ -197,7 +201,7 @@ export function buildLogEventArgs({ phase, taskType, module, reason, policyName,
       routed_by: "manual",
       routing: {
         policy_name: policyName ?? null,
-        policy_version: 1,
+        policy_version: null,
         rule_index: -1,
         rule_reason:
           reason ??
@@ -244,6 +248,8 @@ export async function runDispatch(args, { connect, env = process.env } = {}) {
       module: args.module,
       reason: args.reason,
       policyName: args.policy,
+      policyPath,
+      projectRoot,
       telemetryPath: args.telemetry,
     });
   } else if (isPreflight) {

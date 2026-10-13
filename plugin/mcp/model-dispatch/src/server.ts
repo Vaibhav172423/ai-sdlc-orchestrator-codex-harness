@@ -361,10 +361,18 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     },
     {
       name: "log_telemetry",
-      description: "Append a telemetry event to the pass JSONL log.",
+      description:
+        "Append a telemetry event to the pass JSONL log. Given policy_name, policy_path or project_root, the event's " +
+        "routing names the policy those resolve to, the one execute_with_model would route by.",
       inputSchema: {
         type: "object",
-        properties: { telemetry_path: { type: "string" }, event: { type: "object" } },
+        properties: {
+          telemetry_path: { type: "string" },
+          event: { type: "object" },
+          policy_name: { type: "string" },
+          project_root: { type: "string" },
+          policy_path: { type: "string" },
+        },
         required: ["telemetry_path", "event"],
       },
     },
@@ -607,7 +615,12 @@ server.setRequestHandler(CallToolRequestSchema, async (req, extra) => {
         if (!isPhase(a.event?.phase)) throw new Error(unknownPhaseMessage("log_telemetry: event.phase", a.event?.phase));
         // Direct-tier caller is a model with no clock — normalize overwrites
         // its `ts` and nulls `latency_ms`.
-        appendEvent(a.telemetry_path, normalizeDirectTierEvent(a.event as TelemetryEvent));
+        let event = normalizeDirectTierEvent(a.event as TelemetryEvent);
+        if (a.policy_name !== undefined || a.policy_path !== undefined || a.project_root !== undefined) {
+          const policy = ensurePolicy(a.policy_name, a.project_root, a.policy_path);
+          event = { ...event, routing: { ...event.routing, policy_name: policy.name, policy_version: policy.version } };
+        }
+        appendEvent(a.telemetry_path, event);
         log("debug", "telemetry.append", { telemetry_path: a.telemetry_path, events_written: 1 });
         return { content: [{ type: "text", text: "ok" }] };
       }
