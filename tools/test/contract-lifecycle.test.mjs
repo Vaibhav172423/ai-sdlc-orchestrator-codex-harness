@@ -135,6 +135,29 @@ test("headless: a fresh brownfield run in a project another run holds is refused
   } finally { p.done(); }
 });
 
+test("headless: a run that stops on an error of its own still ends its contract, and --resume picks it up", async () => {
+  const p = repo();
+  try {
+    mkdirSync(join(p.runDir("b5"), "driver-cost-modeled.jsonl"), { recursive: true });
+    p.scenario("b5", [{ freeze: { allowlist: ["src/**"] }, gates: [{ gate: 0, decision: "auto-approved" }] }]);
+    let r = await p.run(["--run-id=b5", ...BROWNFIELD, "--max-turns=1"]);
+    assert.equal(r.code, 1, r.err);
+    assert.match(r.err, /^run failed: EISDIR/m);
+    const lock = p.lock("b5");
+    assert.equal(lock.end_outcome, "failed");
+    assert.match(lock.end_reason, /^run\.mjs stopped on an error: EISDIR/);
+    assert.equal(p.contract().active, false, "a run that cannot finish does not keep holding the project");
+    assert.match(r.out, /^ {2}write contract: ended \(failed\), switched off$/m);
+    assert.match(r.out, /^ {2}Continue: {4}node '[^']*run\.mjs' --resume=b5 --project-root='[^']*my repo'$/m);
+
+    rmSync(join(p.runDir("b5"), "driver-cost-modeled.jsonl"), { recursive: true });
+    p.scenario("b5", [{ gates: [{ gate: 4, decision: "auto-approved" }], close: true, summary: true }]);
+    r = await p.run(["--resume=b5"]);
+    assert.equal(r.code, 0, r.err);
+    assert.equal(p.lock("b5").end_outcome, "completed");
+  } finally { p.done(); }
+});
+
 test("headless: a greenfield run neither checks nor ends a contract", async () => {
   const p = repo();
   try {
@@ -289,5 +312,24 @@ test("the run-end step leaves a greenfield project alone, names the undo for a r
     const out = await finalizeRun({ route: "interactive", projectRoot: p.root, runDir: p.runDir("r1"), runId: "r1", mode: "brownfield", outcome: "completed", policyName: "gpt-plus-flash" });
     assert.deepEqual(out.contractLines, ["Undo:        $mmo-codex:revert r1 (2 file(s) in provenance.json)"]);
     assert.equal(out.contract.found, true);
+  } finally { p.done(); }
+});
+
+test("a headless run end whose driver files cannot be rewritten still ends the contract, with a note", async () => {
+  const p = repo();
+  try {
+    freezeContract({ projectRoot: p.root, runId: "f1", allowlist: ["src/**"] });
+    mkdirSync(join(p.runDir("f1"), "driver-cost-modeled.jsonl"));
+    const out = await finalizeRun({
+      projectRoot: p.root, runDir: p.runDir("f1"), runId: "f1", mode: "brownfield", outcome: "max_turns", reason: "x",
+      policyName: "gpt-plus-flash", records: [], driver: { model: "gpt-5.6-terra", pin: { model: "gpt-5.6-terra", effort: "high" } },
+      env: {}, codexHome: join(p.root, "no-codex-home"),
+    });
+    assert.equal(out.driverManifest, null);
+    assert.ok(out.notes.some((n) => /^driver-cost-modeled\.jsonl and driver-manifest\.json were not rewritten: EISDIR/.test(n)), out.notes.join("\n"));
+    assert.ok(p.lock("f1").ended_at);
+    assert.equal(p.lock("f1").end_outcome, "max_turns");
+    assert.equal(p.contract().active, false);
+    assert.deepEqual(out.contractLines, ["write contract: ended (max_turns), switched off"]);
   } finally { p.done(); }
 });

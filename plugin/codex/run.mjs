@@ -57,7 +57,7 @@ import {
   STDERR_TAIL_MAX,
   STDOUT_LINE_MAX,
 } from "./run-record.mjs";
-import { finalizeRun, regenerateDriverFiles } from "./run-finalize.mjs";
+import { endWriteContract, finalizeRun, regenerateDriverFiles } from "./run-finalize.mjs";
 import { hookArgs } from "./hook-wiring.mjs";
 import { abandonCommand, ContractRefusal, reopenRun } from "../scripts/write-contract.mjs";
 import { liveLock, readContract, readLock } from "../scripts/lib/contract-lock.mjs";
@@ -1017,6 +1017,10 @@ async function runDriver(args, deps) {
   let outcome = null;
   let reason = null;
   let lastEnd = null;
+  const continueCommand = () => {
+    const outputDir = runDir === runDirFor(projectRoot, runId) ? "" : ` --output-dir=${shellQuote(runDir)}`;
+    return `node ${shellQuote(join(CODEX_DIR, "run.mjs"))} --resume=${runId} --project-root=${shellQuote(projectRoot)}${outputDir}`;
+  };
   const recordGateAbort = (gate, note) => {
     try {
       appendFileSync(gatesPath, JSON.stringify(gateLine({ gate, decision: "aborted", note, recorded_by: "run.mjs" })) + "\n");
@@ -1055,6 +1059,8 @@ async function runDriver(args, deps) {
         stderrTail = `${stderrTail}${clean}\n`.slice(-STDERR_TAIL_MAX);
       };
 
+      // A record that cannot be written inside codex's output handler would otherwise escape as an uncaught error.
+      let recordError = null;
       const result = await spawnCodex(argvFor(nextPrompt, threadId), {
         spawnFn,
         cwd: projectRoot,
@@ -1093,7 +1099,7 @@ async function runDriver(args, deps) {
           if (stopping) killGroup(stopping);
         },
         onRecord: (rec) => {
-          record(rec);
+          try { record(rec); } catch (err) { recordError ??= err; }
           if (rec.kind === "codex") events.push({ ...rec.event, invocation });
         },
         onStderr: (chunk) => {
@@ -1112,6 +1118,7 @@ async function runDriver(args, deps) {
       });
       if (stderrPending) stderrLine(stderrPending);
       child = null;
+      if (recordError) throw recordError;
       clearTimeout(killTimer);
       resumeAfter = null;
       if (result.threadId) threadId = result.threadId;
@@ -1301,25 +1308,32 @@ async function runDriver(args, deps) {
     if (summaryWhy && existsSync(join(runDir, "SUMMARY.md"))) warn(`  SUMMARY.md does not count as the final report: ${summaryWhy}`);
     for (const n of finalNotes) warn(`  ${n}`);
     for (const line of contractLines) say(`  ${line}`);
-    if (m.pin_rejection) warn(`  the codex CLI rejected the pinned model or effort — ${m.pin_rejection}`);
-    for (const t of m.driver_model_observed?.threads ?? []) {
+    if (m?.pin_rejection) warn(`  the codex CLI rejected the pinned model or effort — ${m.pin_rejection}`);
+    for (const t of m?.driver_model_observed?.threads ?? []) {
       if (t.status !== "mismatch") continue;
       warn(
         `  driver model: codex's session file says thread ${t.thread_id} ran ${t.observed?.model} at effort ` +
           `${t.observed?.effort ?? "unknown"}, not the pin ${pin.model} at effort ${pin.effort} (${t.rollout_path})`,
       );
     }
-    for (const w of m.codex_warnings ?? []) warn(`  codex warning: ${w}`);
-    for (const line of driverLines(m, driverUsage, cost)) say(`  ${line}`);
+    for (const w of m?.codex_warnings ?? []) warn(`  codex warning: ${w}`);
+    for (const line of m ? driverLines(m, driverUsage, cost) : []) say(`  ${line}`);
     if (cost) say(`  run total (dispatched + driver): ${money(cost.run_total_usd, cost.run_total_bound)}`);
     say(`  run folder:  ${runDir}`);
     if (reportPath) say(`  report:      ${reportPath}`);
     say(`  Cost report: ${reportCommand(runDir)}`);
-    if (outcome !== "completed") {
-      const outputDir = runDir === runDirFor(projectRoot, runId) ? "" : ` --output-dir=${shellQuote(runDir)}`;
-      say(`  Continue:    node ${shellQuote(join(CODEX_DIR, "run.mjs"))} --resume=${runId} --project-root=${shellQuote(projectRoot)}${outputDir}`);
-    }
+    if (outcome !== "completed") say(`  Continue:    ${continueCommand()}`);
     return exitCode;
+  } catch (err) {
+    // The run cannot finish its own end, so its write contract is ended here: a live one would hold every session.
+    const ended = endWriteContract({
+      projectRoot, runDir, runId, mode: runMode ?? null, outcome: "failed",
+      reason: `run.mjs stopped on an error: ${err?.message ?? err}`,
+    });
+    for (const n of ended.notes) warn(`  ${n}`);
+    for (const line of ended.lines) say(`  ${line}`);
+    if (ended.contract?.ended) say(`  Continue:    ${continueCommand()}`);
+    throw err;
   } finally {
     killGroup("SIGKILL");
     for (const [sig, handler] of handlers) (signals.off ?? signals.removeListener).call(signals, sig, handler);

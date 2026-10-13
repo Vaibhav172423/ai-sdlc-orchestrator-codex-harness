@@ -217,13 +217,17 @@ export async function finalizeRun(ctx) {
   let driverManifest = null;
   const route = ctx.route === "interactive" ? "interactive" : "headless";
   if (route === "headless") {
-    const records = ctx.records ?? readRunRecords(ctx.runDir);
-    ({ manifest: driverManifest } = regenerateDriverFiles({
-      runDir: ctx.runDir,
-      runId: ctx.runId,
-      records,
-      driver: { policyName: ctx.policyName, codexHome, ...ctx.driver },
-    }));
+    try {
+      const records = ctx.records ?? readRunRecords(ctx.runDir);
+      ({ manifest: driverManifest } = regenerateDriverFiles({
+        runDir: ctx.runDir,
+        runId: ctx.runId,
+        records,
+        driver: { policyName: ctx.policyName, codexHome, ...ctx.driver },
+      }));
+    } catch (err) {
+      notes.push(`driver-cost-modeled.jsonl and driver-manifest.json were not rewritten: ${err?.message ?? err}`);
+    }
   }
   // Before the manifest and the report, which book the figure it writes.
   const collected = collectConductorUsage(ctx, { route, codexHome, env, notes });
