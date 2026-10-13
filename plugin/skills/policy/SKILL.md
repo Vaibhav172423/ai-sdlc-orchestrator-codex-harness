@@ -155,8 +155,8 @@ No browser. The script validates `<name>` against files in `plugin/config/polici
 - The change is per-project. Once written to `.sdlc/project.json`, every subsequent
   `$mmo-codex:greenfield` or `$mmo-codex:brownfield` in this folder uses the new policy, unless a
   `routing-policy.yaml` sits at the project root: while that file exists, every run uses it, for
-  routing, the driver pin and the cost cap alike. Prior runs'
-  `provenance.json` records the policy that was in effect at run time — those do not get rewritten.
+  routing, the driver pin and the cost cap alike. Earlier runs are not rewritten: each dispatch
+  row in a run's `telemetry.jsonl` names the policy it ran under (`routing.policy_name`).
 - To change the policy for a single ticket without touching the project's default:
   - **Interactive** (`$mmo-codex:brownfield`): type a different policy name at Gate 0's Policy bullet
     when reviewing the discovery summary. Accepted for that run only.

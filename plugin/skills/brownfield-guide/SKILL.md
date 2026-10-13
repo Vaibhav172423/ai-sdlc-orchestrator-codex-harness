@@ -256,9 +256,10 @@ On `approved`:
    ```bash
    node '{{PLUGIN_ROOT}}/scripts/write-contract.mjs' --freeze --run-id=<run-id> \
      --allowlist='<allowlist JSON>' --off-limits='<extra off-limits JSON>' \
-     --project-root='{{PROJECT_ROOT}}'
+     --intent=<intent> --project-root='{{PROJECT_ROOT}}'
    ```
    `<run-id>` is this run's folder name under `.sdlc/runs/` (letters, digits, `.`, `_`, `-`).
+   `<intent>` is the intent confirmed above (`bugfix`, `docs`, ...).
    `--off-limits` carries only what this run adds: the AI configs from discovery and the paths
    the user named. The script merges the project defaults from `.sdlc/project.json` itself.
    Add `--strict-write=off` only when the user asked for out-of-scope writes to be warned about
@@ -283,6 +284,12 @@ From here until close-out the run writes freely inside `.sdlc/runs/<run-id>/` (e
 contract's lock, its frozen copy, the rendered `skills/`, `provenance.json` and `backups/`) and
 elsewhere only inside the allowlist.
 
+The freeze also opens the run's provenance record, `.sdlc/runs/<run-id>/provenance.json`, the
+input `$mmo-codex:revert` reads. The write hook snapshots each file before the first write to it
+lands, backing up a file that held uncommitted or untracked content, and close-out reconciles the
+record against `git status` and the run's commits. Do not run `write-provenance.mjs` yourself,
+and do not write under `.sdlc/runs/<run-id>/backups/`.
+
 On `revise: <comments>` — rewrite the affected parts and re-show Gate 0.
 
 On `abort` — nothing is frozen yet. Do not delete the run directory (leave it as a partial
@@ -294,7 +301,7 @@ Follow the pipeline playbook, `{{OUTPUT_DIR}}/skills/pipeline.md`, with:
 - `mode: brownfield`
 - `intent: <from Gate 0>`
 - `run_id: {{RUN_ID}}` — the id the invoking route handed over. Do not generate another; the
-  write contract, every packet's `pass_id` and every provenance call use this one.
+  write contract and every packet's `pass_id` use this one.
 - `intent_brief_path: .sdlc/runs/<run-id>/intent_brief.md`
 - `baseline_path: .sdlc/baseline/current.json`
 - `policy: <as configured by setup — see the Policy bullet of Gate 0>`
@@ -326,10 +333,11 @@ Then, in the same turn:
    ```bash
    node '{{PLUGIN_ROOT}}/scripts/write-contract.mjs' --close --run-id=<run-id> --project-root='{{PROJECT_ROOT}}'
    ```
-   It refuses while `gates.jsonl` records neither an accepted Gate 4 nor an abort. If it exits
-   non-zero, print its message and stop: the message names the `--abandon` command the user runs
-   to end the run. The ledger below sits outside the run's folder, so it is written only after
-   this step.
+   It also closes the run's provenance record and prints how many files it holds and the
+   `$mmo-codex:revert <run-id>` command that undoes the run. It refuses while `gates.jsonl`
+   records neither an accepted Gate 4 nor an abort. If it exits non-zero, print its message and
+   stop: the message names the `--abandon` command the user runs to end the run. The ledger
+   below sits outside the run's folder, so it is written only after this step.
 2. Append a row to `.sdlc/ledger.md` (human-readable) and `.sdlc/ledger.json` (machine mirror).
 3. Update the project fingerprint record with a link to the ledger.
 4. Run Phase 9's write-manifest command again with `--status=accepted` (or
@@ -338,8 +346,9 @@ Then, in the same turn:
 5. Record the end (`--outcome=completed`, after Gate 4 is accepted), once step 4 has run. Its
    `Cost report:` line gives the cost report command for this run folder, or says this install
    has none.
-6. Print the report to the user with cost breakdown, files touched, and (if applicable) the
-   `git reset` command the report provides as the escape hatch.
+6. Print the report to the user with cost breakdown, files touched (from
+   `.sdlc/runs/<run-id>/provenance.json`), and the `$mmo-codex:revert <run-id>` line `--close`
+   printed as the way to undo the run.
 
 **An abort at Gate 1, 2, 3 or 4** ends the run too. Append the gate's `aborted` line, with that
 gate's number and artifact (here, an abort at Gate 2):
@@ -350,7 +359,8 @@ gate's number and artifact (here, an abort at Gate 2):
 
 then run
 `node '{{PLUGIN_ROOT}}/scripts/write-contract.mjs' --abandon --run-id=<run-id> --reason='aborted at gate <N>' --project-root='{{PROJECT_ROOT}}'`,
-record the end (`--outcome=aborted`), and stop. Keep the reason plain words.
+record the end (`--outcome=aborted`), and stop. Keep the reason plain words. `--abandon` closes
+the provenance record as well.
 
 Do not propose a follow-up run.
 

@@ -5,7 +5,7 @@
  *
  * Usage:
  *   node write-contract.mjs --freeze --run-id=<id> --allowlist='<JSON array>' [--off-limits='<JSON array>']
- *                           [--strict-write=off] [--project-root=<dir>]
+ *                           [--strict-write=off] [--intent=<id>] [--project-root=<dir>]
  *   node write-contract.mjs --close --run-id=<id> [--project-root=<dir>]
  *   node write-contract.mjs --abandon --run-id=<id> [--reason=<text>] [--project-root=<dir>]
  *   node write-contract.mjs --assert-guard-live [--run-id=<id>] [--project-root=<dir>]
@@ -13,12 +13,16 @@
  * Flags take `--name=value` or `--name value`. The project root is the root of its git project, the only place the
  * hook reads a contract. Exit 0 = done, 2 = refused, usage or a failed file write; the message says which, and a guard
  * check that finds the write guard did not run in this session says so.
+ *
+ * The freeze opens the run's provenance record (write-provenance.mjs) and the end of a run closes it; a provenance
+ * failure warns and never changes the exit code.
  */
 import { existsSync, realpathSync, rmSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { OFF_LIMITS_DEFAULT } from "./lib/off-limits.mjs";
 import { isRunId, runDirFor } from "./lib/run-id.mjs";
+import { finalizeProvenance, initProvenance } from "./write-provenance.mjs";
 import {
   CONTRACT_MAX_BYTES, CONTRACT_REL_PATH, DECISIONS_REL_PATH, FROZEN_FILE, LOCK_FILE, contractTampered, fingerprint,
   gitRoot, jsonBytes, liveLock, liveLocks, lockPresent, readContract, readContractBytes, readLock, readRegular,
@@ -69,6 +73,25 @@ function gitProjectRoot(projectRoot) {
   );
 }
 
+const INTENT_RE = /^[a-z][a-z0-9_-]{0,39}$/;
+
+/** Runs a provenance step: its summary, null when the run has no record, or `{error}`. Never throws. */
+function provenanceStep(runId, step) {
+  try {
+    const prov = step();
+    if (!prov) return null;
+    return {
+      path: `.sdlc/runs/${runId}/provenance.json`,
+      files_touched: prov.files_touched.length,
+      reconciled: prov.files_touched.filter((f) => f.recorded_by === "finalize").length,
+      unrecorded_changes: prov.unrecorded_changes?.length ?? 0,
+      finalized: typeof prov.finalized_at === "string",
+    };
+  } catch (err) {
+    return { path: `.sdlc/runs/${runId}/provenance.json`, error: err?.message ?? String(err) };
+  }
+}
+
 function globList(value, flag) {
   const v = typeof value === "string" ? (() => { try { return JSON.parse(value); } catch { return null; } })() : value;
   if (!Array.isArray(v) || !v.every((g) => typeof g === "string" && g.length > 0)) {
@@ -87,8 +110,9 @@ function projectOffLimits(root) {
 }
 
 /** Writes the contract, its frozen copy and the lock (the lock last: it is what makes the freeze real). */
-export function freezeContract({ projectRoot, runId, allowlist, offLimits = [], strict = true, now } = {}) {
+export function freezeContract({ projectRoot, runId, allowlist, offLimits = [], strict = true, intent = null, now } = {}) {
   requireRunId(runId);
+  if (intent !== null && intent !== undefined && !INTENT_RE.test(String(intent))) refuse(`--intent must be the run's intent, such as bugfix or docs; got ${JSON.stringify(intent)}`);
   const root = gitProjectRoot(projectRoot);
   const allow = globList(allowlist, "--allowlist");
   const extra = globList(offLimits, "--off-limits");
@@ -135,12 +159,19 @@ export function freezeContract({ projectRoot, runId, allowlist, offLimits = [], 
     rmSync(frozenPath(root, runId), { force: true });
     refuse(`the run's lock could not be written (${err?.message ?? err}): nothing is frozen`);
   }
-  return { root, contract, sha256 };
+  const provenance = provenanceStep(runId, () => {
+    const prov = initProvenance({ root, runId, intent: intent ?? null, now });
+    if (prov.finalized_at) throw new Error(`a closed record for run ${runId} is already there, so this run's writes are not snapshotted`);
+    return prov;
+  });
+  return { root, contract, sha256, provenance };
 }
 
 /**
- * Ends a run: the lock's end record first, then the contract switched off, so the switch-off is never a change to a
- * live frozen contract. Keeps the frozen copy. A run with no lock and no contract naming it has nothing to end.
+ * Ends a run: the lock's end record first, then the provenance record closed, then the contract switched off. The
+ * switch-off is never a change to a live frozen contract, and the record closes once the run no longer binds, so its
+ * reconciliation sees every write the run made. Keeps the frozen copy. A run with no lock and no contract naming it has
+ * nothing to end.
  */
 export function endRun({ projectRoot, runId, outcome, reason = null, now } = {}) {
   requireRunId(runId);
@@ -158,6 +189,9 @@ export function endRun({ projectRoot, runId, outcome, reason = null, now } = {})
     result.ended = true;
   } else if (lock) {
     result.already_ended = true;
+  }
+  if (wasLive || (!lock && contract?.active === true && contract.run_id === runId)) {
+    result.provenance = provenanceStep(runId, () => finalizeProvenance({ root, runId, now }));
   }
 
   if (contract?.active === true) {
@@ -208,7 +242,8 @@ export function reopenRun({ projectRoot, runId, now } = {}) {
     if (before) writeWhole(contractPath, before);
     refuse(`run ${runId}'s lock could not be reopened (${err?.message ?? err})`);
   }
-  return { run_id: runId, reopened: true, live: true };
+  const provenance = provenanceStep(runId, () => initProvenance({ root, runId, reopen: true, now }));
+  return { run_id: runId, reopened: true, live: true, provenance };
 }
 
 /**
@@ -293,7 +328,7 @@ export function assertGuardLive({ projectRoot, runId, now } = {}) {
 }
 
 const MODES = ["--freeze", "--close", "--abandon", "--assert-guard-live"];
-const VALUE_FLAGS = ["--run-id", "--allowlist", "--off-limits", "--reason", "--project-root", "--strict-write"];
+const VALUE_FLAGS = ["--run-id", "--allowlist", "--off-limits", "--reason", "--project-root", "--strict-write", "--intent"];
 
 export function parseArgs(argv) {
   const out = { mode: null };
@@ -320,16 +355,37 @@ export function parseArgs(argv) {
   return out;
 }
 
+/** One line on what the run's provenance record holds, or why it could not be written. */
+function sayProvenance(p, runId, { stdout, stderr }) {
+  if (!p) return;
+  if (p.error) {
+    stderr.write(`write-contract: WARN: provenance record ${p.path}: ${p.error}. $mmo-codex:revert has less to restore for this run.\n`);
+    return;
+  }
+  if (!p.finalized) return;
+  if (p.files_touched === 0 && p.unrecorded_changes === 0) {
+    stdout.write(`write-contract: the run changed no files (${p.path})\n`);
+    return;
+  }
+  stdout.write(`write-contract: ${p.files_touched} file(s) recorded in ${p.path}; undo the run with $mmo-codex:revert ${runId}\n`);
+  const missed = [
+    p.reconciled ? `${p.reconciled} file(s) changed by writes the hook did not see (a shell edit, a tool, an agent worker) were found in git status or the run's commits at close-out` : null,
+    p.unrecorded_changes ? `${p.unrecorded_changes} change(s) no snapshot saw are listed in its unrecorded_changes` : null,
+  ].filter(Boolean);
+  if (missed.length) stderr.write(`write-contract: WARN: ${missed.join("; ")} (${p.path}).\n`);
+}
+
 export function main(argv = process.argv.slice(2), { stdout = process.stdout, stderr = process.stderr } = {}) {
   try {
     const a = parseArgs(argv);
     const projectRoot = a["project-root"] ?? process.cwd();
     const runId = a["run-id"];
     if (a.mode === "--freeze") {
-      const { root, contract } = freezeContract({
+      const { root, contract, provenance } = freezeContract({
         projectRoot, runId, allowlist: a.allowlist ?? refuse("--freeze needs --allowlist"),
-        offLimits: a["off-limits"] ?? [], strict: a["strict-write"] !== "off",
+        offLimits: a["off-limits"] ?? [], strict: a["strict-write"] !== "off", intent: a.intent ?? null,
       });
+      sayProvenance(provenance, runId, { stdout, stderr });
       stdout.write(`write-contract: frozen for run ${runId} (${contract.allowlist.length} allowlist, ${contract.off_limits.length} off-limits pattern(s)${contract.strict ? "" : ", strict off"})\n`);
       stdout.write(`write-contract: check the guard next, in a tool call of its own: node ${shq(SCRIPT_PATH)} --assert-guard-live --run-id=${runId} --project-root=${shq(root)}\n`);
       return EXIT_OK;
@@ -337,11 +393,13 @@ export function main(argv = process.argv.slice(2), { stdout = process.stdout, st
     if (a.mode === "--close") {
       const r = closeContract({ projectRoot, runId });
       stdout.write(`write-contract: run ${runId} ${r.ended ? `ended ${r.outcome}` : "had already ended"}; ${r.switched_off ? "its contract is switched off" : "its contract was already off"}\n`);
+      sayProvenance(r.provenance, runId, { stdout, stderr });
       return EXIT_OK;
     }
     if (a.mode === "--abandon") {
       const r = abandonRun({ projectRoot, runId, reason: a.reason });
       stdout.write(`write-contract: run ${runId} ${r.ended ? `ended (aborted: ${r.reason})` : "had already ended"}${r.switched_off ? "; its contract is switched off" : ""}\n`);
+      sayProvenance(r.provenance, runId, { stdout, stderr });
       return EXIT_OK;
     }
     const r = assertGuardLive({ projectRoot, runId });

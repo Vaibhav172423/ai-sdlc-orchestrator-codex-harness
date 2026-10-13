@@ -131,8 +131,9 @@ run folder. Both paths arrive resolved; do not invent your own.
 
 Your run id is `{{RUN_ID}}` and your run folder is `{{OUTPUT_DIR}}`. Wherever the pipeline or the
 brownfield guide says `<output_dir>` or `.sdlc/runs/<run-id>/`, it means this folder. Do not
-generate another run id: the write contract's `run_id`, every packet's `pass_id` and every
-`write-provenance.mjs --run-id` use `{{RUN_ID}}`.
+generate another run id: the write contract's `run_id` and every packet's `pass_id` use
+`{{RUN_ID}}`. In a brownfield run, code keeps the provenance record; never run
+`write-provenance.mjs` yourself.
 
 ## TaskPacket — every dispatch needs all of these
 

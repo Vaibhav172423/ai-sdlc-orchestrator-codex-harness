@@ -51,6 +51,11 @@ export function extractBashTargets(command) {
 
 const SHELL_PATCH_RE = /(?:^|[\s;&|(])(?:apply_patch|applypatch)(?=$|[\s;&|)<'"])/;
 
+/** The file headers of an `apply_patch` run through the shell: literal paths, not shell words. */
+export function shellPatchTargets(command) {
+  return typeof command === "string" && SHELL_PATCH_RE.test(command) ? extractApplyPatchTargets(command) : [];
+}
+
 /** The command with a shell `apply_patch`'s patch text taken out: its lines are file content, not shell. */
 function shellOnly(command) {
   if (typeof command !== "string") return command;
@@ -59,7 +64,7 @@ function shellOnly(command) {
 
 function bashWriteTargets(raw) {
   if (typeof raw !== "string") return [];
-  const targets = SHELL_PATCH_RE.test(raw) ? extractApplyPatchTargets(raw) : [];
+  const targets = shellPatchTargets(raw);
   const command = shellOnly(raw);
   const redirectRe = /(?:^|[\s;&|(])\d*>{1,2}\s*([^\s;&|()<>]+)/g;
   let m;
@@ -230,7 +235,7 @@ export function guardedHit(rel, runId, { containing = false } = {}) {
 const statusOf = (st) => ({ root: st.root, run_id: st.runId ?? st.live?.run_id ?? null, binds: st.binds });
 
 /** A word the shell writes to as it stands: no `~` or `=` expansion, variable, command substitution, glob or quoting. */
-const isLiteralWord = (w) => typeof w === "string" && w.length > 0 && !/^[~=]/.test(w) && !/[$`*?[\]{}\\'"]/.test(w);
+export const isLiteralWord = (w) => typeof w === "string" && w.length > 0 && !/^[~=]/.test(w) && !/[$`*?[\]{}\\'"]/.test(w);
 
 const absent = (p) => { try { lstatSync(p); return false; } catch (e) { return e?.code === "ENOENT"; } };
 
@@ -363,15 +368,17 @@ function checkWrite(target, cwd, sessionRoot, session, mayCreate, narrow = false
     const v = decide(st, abs, target, mayCreate, narrow);
     if (v.deny) return { ...v, state: st };
     warns.push(...v.warns);
-    if (st.binds && !narrow) bound.push({ ...statusOf(st), target, abs, rel: v.rel });
+    if (st.binds) bound.push({ ...statusOf(st), target, abs, rel: v.rel });
   }
   return { warns, bound };
 }
 
+/** A refusal, or `{bound}`: each binding contract the removal falls under, for the provenance snapshot. */
 function checkRemoval(target, cwd, sessionRoot, session) {
   const abs = joinRaw(cwd, target);
   const candidates = statesFor(abs, sessionRoot, session);
   if (session && !candidates.includes(session)) candidates.push(session);
+  const bound = [];
   for (const st of candidates) {
     const runId = st.binds ? st.runId : st.live?.run_id;
     if (!st.binds && !st.live) continue;
@@ -386,14 +393,16 @@ function checkRemoval(target, cwd, sessionRoot, session) {
         };
       }
     }
+    if (st.binds && insidePath(st.root, abs) !== null) bound.push({ ...statusOf(st), target, abs });
   }
-  return null;
+  return { bound };
 }
 
 /**
- * The hook's answer for one tool call: `{ decision, reason, warnings, record, bound }`. `record` is where the decision
- * log row goes, or null (no binding contract, and for a refusal no `.sdlc/` folder to write into). `bound` lists each
- * allowed write a binding contract judged.
+ * The hook's answer for one tool call: `{ decision, reason, warnings, record, bound, unsure, removed }`. `record` is
+ * where the decision log row goes, or null (no binding contract, and for a refusal no `.sdlc/` folder to write into).
+ * `bound` lists each allowed write a binding contract judged, `unsure` each redirect with no space before the `>` under
+ * one, and `removed` each path a shell removal names under one.
  */
 export function decideCall(call, { wiredBy = "plugin" } = {}) {
   const cwd = typeof call?.cwd === "string" && call.cwd ? call.cwd : process.cwd();
@@ -405,6 +414,7 @@ export function decideCall(call, { wiredBy = "plugin" } = {}) {
 
   const warnings = [];
   const bound = [];
+  const removed = [];
   let refusal = null;
   for (const target of targets) {
     const v = checkWrite(target, cwd, sessionRoot, session, mayCreateWhenAbsent(call, target, cwd));
@@ -412,16 +422,19 @@ export function decideCall(call, { wiredBy = "plugin" } = {}) {
     warnings.push(...v.warns ?? []);
     bound.push(...v.bound);
   }
+  const unsure = [];
   if (!refusal) {
     for (const target of extractNarrowTargets(call)) {
       const v = checkWrite(target, cwd, sessionRoot, session, mayCreateWhenAbsent(call, target, cwd), true);
       if (v.deny) { refusal = { ...v, target }; break; }
+      unsure.push(...v.bound);
     }
   }
   if (!refusal) {
     for (const target of extractRemovals(call)) {
       const v = checkRemoval(target, cwd, sessionRoot, session);
-      if (v) { refusal = { ...v, target }; break; }
+      if (v.deny) { refusal = { ...v, target }; break; }
+      removed.push(...v.bound);
     }
   }
 
@@ -434,6 +447,8 @@ export function decideCall(call, { wiredBy = "plugin" } = {}) {
       reason: refusal.deny,
       warnings,
       bound: [],
+      unsure: [],
+      removed: [],
       record: keep ? {
         root,
         row: row("deny", {
@@ -450,6 +465,8 @@ export function decideCall(call, { wiredBy = "plugin" } = {}) {
     reason: null,
     warnings,
     bound,
+    unsure,
+    removed,
     record: binding ? {
       root: binding.root,
       row: row("allow", {

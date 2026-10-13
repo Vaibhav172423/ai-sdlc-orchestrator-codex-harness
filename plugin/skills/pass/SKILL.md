@@ -133,7 +133,8 @@ When the run ends, record it with the `end_run` command the start script printed
   project with `--output-dir`)
 - `telemetry_path`: `<output_dir>/telemetry.jsonl`
 - `manifest_path`: `<output_dir>/manifest.json`
-- Brownfield also writes `<output_dir>/provenance.json`, the record `$mmo-codex:revert` reads
+- Brownfield also writes `<project-root>/.sdlc/runs/<run-id>/provenance.json` (and `backups/`
+  beside it), the record `$mmo-codex:revert` reads, whatever `--output-dir` says
 
 # Cost report
 

@@ -215,8 +215,11 @@ What differs from greenfield:
 - **Gate 0 confirms scope** before anything is written. The file allowlist and the off-limits set
   are agreed there, and `.sdlc/local/write-contract.json` is written from that approval.
 - **Every write is checked against the contract** by a hook, before it happens.
-- **Touched files are backed up** if untracked or uncommitted, so `$mmo-codex:revert` can restore
-  them. The record is `provenance.json`.
+- **Every file the run changes is recorded** in `.sdlc/runs/<run-id>/provenance.json`. The write
+  hook snapshots a file before the run's first write to it, backing up one that held uncommitted
+  or untracked content, and the end of the run reconciles the record against `git status` and the
+  run's commits.
+  `$mmo-codex:revert <run-id>` restores from it.
 
 **Running brownfield unattended.** The operating manual asks which job type to run and interviews
 you about it. Under `--gates=auto-approve` there is nobody to answer and stdin is closed, so

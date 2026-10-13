@@ -109,7 +109,8 @@ In each run's folder, `.sdlc/runs/<run-id>/`:
 | `SUMMARY.md` | Rendered from `manifest.json` by the same script. A run counts as completed once Gate 4 is accepted and the script has run again after it. |
 | `gates.jsonl` | One line per gate decision, including `auto-approved` and `pending` ones, so an unattended run leaves the same audit trail as an attended one. When you abort a relayed gate (or give no answer) and the conductor does not record it, `run.mjs` adds the `aborted` line with `"recorded_by": "run.mjs"`. |
 | `state.json` | The gate that is waiting for an answer, written before the gate is printed. |
-| `provenance.json` | Brownfield: every file the run touched, with its pre-run hash. The input `$mmo-codex:revert` reads. |
+| `provenance.json` | Brownfield: every file the run changed, with its pre-run hash and where its pre-run content is. The input `$mmo-codex:revert` reads. |
+| `backups/` | Brownfield: copies of files that held uncommitted or untracked content when the run first wrote them. The folder holds its own `.gitignore` (`*`), so git never lists it, whatever your project's `.gitignore` says. |
 | `orchestrator.log` | `run.start` and `run.end` (from `run.mjs`, or from `start-run.mjs` and `end-run.mjs` in a session), the conductor's `phase.start`, `phase.end`, `phase.skip`, `gate.open` and `gate.resolved` lines, and the bridge's log of each dispatch. |
 | `run.json` | Session runs: the route (`interactive`), mode, intent, the policy (`policy_source`, `policy_path`, `policy_sha256`) and its driver `pin`, every start of the run with the session's model and effort (`session_model`), and how it ended (`outcome`, `reason`). `start-run.mjs` writes it, `end-run.mjs` closes it. |
 | `skills/` | The playbooks rendered with this run's paths (`pipeline.md`, `brownfield-guide.md`, `discovery.md`, `roles/*.md`). The conductor reads these copies, never the plugin's own `SKILL.md` files. |
@@ -175,7 +176,17 @@ The manifest holds no summed run total: dispatched work and the conductor's cost
 
 ### `provenance.json`
 
-Written per run in `.sdlc/runs/<run-id>/`. For each touched file: path, whether it was tracked and committed before the run, and its pre-run hash. `$mmo-codex:revert` restores tracked files with git and untracked ones from a per-run backup, and refuses when a later run has touched the same file — printing a three-way diff instead of guessing.
+Written per brownfield run in `.sdlc/runs/<run-id>/`, by code only: `write-contract.mjs --freeze` opens it, the write hook adds a file before the run's first allowed write to it (the first snapshot of a file stands, so a retry never replaces the original), and the end of the run closes it. Closing it reconciles the record against `git status` and the run's commits, so a write the hook could not see, such as a shell edit, a lockfile rewrite or an agent worker's edit, is recorded too, committed or not.
+
+| Field | What it holds |
+|---|---|
+| `git_head_before` / `git_head_after` / `commits` | Where the run started and ended, and the commits between. |
+| `started_at` / `finalized_at` / `reopened` | When the record opened and closed. `finalized_at` is null for a run that never closed. A resumed run reopens it. |
+| `dirty_at_start` | Every file uncommitted or untracked when the run started, with its hash. These are hashed, not copied. |
+| `files_touched[]` | Per file: `path`, `existed_before`, `sha_before`, `sha_after`, `tracked_in_git`, `dirty_before`, `backup_path`, `recorded_by` (`hook`, `finalize` or `cli`). |
+| `unrecorded_changes[]` | Changes no snapshot saw, with the reason: start-of-run work the run changed, or a file that was there before the run but that `git status` did not list at its start, such as an ignored file a `.gitignore` change uncovered. Revert leaves these alone. |
+
+`$mmo-codex:revert` asks `write-provenance.mjs --plan` for each file's action: `git checkout` for a file that was committed and clean, the backup for one that was not, removal for a file the run created. It refuses while a run is live, and holds back a file a later run touched, one that changed after the run, and any change only the close-out reconciliation found, whether it would restore or delete the file: no snapshot saw the run write it, so it may be your own edit, made while the run was going. For each one it shows you the change and asks, instead of guessing. A record path, backup or commit that fails its checks (outside the project, under `.git/` or `.sdlc/`, a backup outside the run's `backups/`) gets no command.
 
 ### `guard-decisions.jsonl`
 
@@ -191,6 +202,7 @@ The only record of a refused write. A denied call leaves no trace in the Codex e
 | `matched_rule` | The pattern or record a refusal hit. |
 | `tool_name` | `apply_patch` or `Bash`. |
 | `wired_by` | `run` (headless `run.mjs`) or `plugin` (the installed plugin's hook). Two rows per call with both values mean both wirings fired. |
+| `snapshots` | On an allow row for a call that writes or removes files: how many of them are in the run's `provenance.json`. For a removed folder, it counts the files under it. |
 
 ## A phase with no row is a lost event
 

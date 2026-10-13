@@ -235,7 +235,10 @@ re-dispatch. After 2 mechanical-tier retries fail, the policy escalates to the p
 automatically (rule with `retry_count: { gte: 2 }`) — the routing decision is the policy's, and
 the escalated packet dispatches exactly like every other one.
 
-Write the returned file content to disk at the packet's stated `artifact_path`.
+Write the returned file content to disk at the packet's stated `artifact_path`. In a brownfield
+run the write hook snapshots each file before your first write to it lands, for
+`$mmo-codex:revert`. Do not run `write-provenance.mjs` yourself, and do not write under
+`.sdlc/runs/<run-id>/backups/`.
 
 ### Phase 6 — senior_code_review
 
@@ -469,7 +472,8 @@ guide, `{{OUTPUT_DIR}}/skills/brownfield-guide.md`, shows:
 
 ```bash
 node '{{PLUGIN_ROOT}}/scripts/write-contract.mjs' --freeze --run-id=<run-id> \
-  --allowlist='<allowlist JSON>' --off-limits='<extra off-limits JSON>' --project-root='{{PROJECT_ROOT}}'
+  --allowlist='<allowlist JSON>' --off-limits='<extra off-limits JSON>' --intent=<intent> \
+  --project-root='{{PROJECT_ROOT}}'
 ```
 
 Then update `intent_brief.md` with the final scope, and prove the write hook runs with a
@@ -493,9 +497,9 @@ non-zero, print its message and stop. While the contract is live the run writes 
 `.sdlc/runs/<run-id>/` folder and, outside it, only the allowlist.
 
 **Ending a brownfield run.** After the user accepts Gate 4 and its `accepted` line is in
-`gates.jsonl`, `write-contract.mjs --close --run-id=<run-id>` ends the run and switches the
-contract off, before the ledger rows are written. An abort at any gate appends that gate's
-`aborted` line, then runs `write-contract.mjs --abandon --run-id=<run-id>
+`gates.jsonl`, `write-contract.mjs --close --run-id=<run-id>` ends the run, closes its provenance
+record and switches the contract off, before the ledger rows are written. An abort at any gate
+appends that gate's `aborted` line, then runs `write-contract.mjs --abandon --run-id=<run-id>
 --reason='aborted at gate <N>'`. When `--close` refuses, print its message and stop: it names the
 `--abandon` command the user runs to end the run.
 
