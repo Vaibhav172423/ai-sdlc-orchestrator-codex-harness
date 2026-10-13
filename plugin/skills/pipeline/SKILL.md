@@ -424,10 +424,11 @@ dies mid-gate leaves a record of the open gate in the run's own folder. Write th
 object: `{"run_id": "{{RUN_ID}}", "phase": "<phase>", "gate": N, "status": "gate_pending", "at": "<ISO time>"}`.
 
 **Gate record.** On both routes, append every gate decision, Gate 0 included, as a new line to
-`{{OUTPUT_DIR}}/gates.jsonl` before you act on it, with the decision under the key `decision`:
+`{{OUTPUT_DIR}}/gates.jsonl` before you act on it, with the decision under the key `decision`
+(never `status`) and the time you write it under `ts`:
 
 ```json
-{"gate": 1, "artifact": "requirements.md", "decision": "approved|revise|aborted|accepted|rejected|auto-approved", "note": "<one line>"}
+{"gate": 1, "artifact": "requirements.md", "decision": "approved|revise|aborted|accepted|rejected|auto-approved", "note": "<one line>", "ts": "<ISO 8601 time>"}
 ```
 
 In a session, write the line once the user has replied, or as you continue under

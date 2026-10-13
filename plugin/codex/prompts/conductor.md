@@ -164,10 +164,10 @@ than failing downstream. If you get such a refusal, fix the packet — do not ro
 - **Gate 4** — after the final report
 
 At every gate, whatever the mode, append one line to `{{OUTPUT_DIR}}/gates.jsonl`, with the
-decision under the key `decision`:
+decision under the key `decision` (never `status`) and the time you write it under `ts`:
 
 ```json
-{"gate": 1, "artifact": "requirements.md", "decision": "pending|approved|accepted|auto-approved|revise|rejected|aborted", "note": "<one line>"}
+{"gate": 1, "artifact": "requirements.md", "decision": "pending|approved|accepted|auto-approved|revise|rejected|aborted", "note": "<one line>", "ts": "<ISO 8601 time>"}
 ```
 
 `pending` is only for a gate you are handing to a person and ending your turn on. Gate 4 records

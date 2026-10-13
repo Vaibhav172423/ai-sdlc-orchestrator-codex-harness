@@ -64,6 +64,7 @@ import { liveLock, readContract, readLock } from "../scripts/lib/contract-lock.m
 import { renderPrompt, renderSkills } from "./render.mjs";
 import { listDriverPriceFn } from "../mcp/model-dispatch/dist/driverPricing.js";
 import { reportCommand } from "../scripts/report.mjs";
+import { gateLine } from "../scripts/lib/gate-record.mjs";
 
 const CODEX_DIR = dirname(fileURLToPath(import.meta.url));
 const PLUGIN_ROOT = dirname(CODEX_DIR);
@@ -149,7 +150,7 @@ export const GATE_MODES = {
   prompt:
     "A person is at the terminal that started this run, but cannot type into your session. At " +
     "each gate, print the gate block, append " +
-    '{"gate": N, "artifact": "<file>", "decision": "pending"} to gates.jsonl in your run folder, ' +
+    '{"gate": N, "artifact": "<file>", "decision": "pending", "ts": "<ISO 8601 time>"} to gates.jsonl in your run folder, ' +
     "then end your turn without doing anything else. The person's answer arrives as your next " +
     "message: record their decision on a new gates.jsonl line and act on it. Never record a " +
     "decision they did not give. Any other question for the person (the brownfield job type or " +
@@ -1013,7 +1014,7 @@ async function runDriver(args, deps) {
   let lastEnd = null;
   const recordGateAbort = (gate, note) => {
     try {
-      appendFileSync(gatesPath, JSON.stringify({ gate, decision: "aborted", note, recorded_by: "run.mjs" }) + "\n");
+      appendFileSync(gatesPath, JSON.stringify(gateLine({ gate, decision: "aborted", note, recorded_by: "run.mjs" })) + "\n");
     } catch { /* the run record still says why */ }
   };
 

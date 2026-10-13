@@ -116,7 +116,7 @@ In each run's folder, `.sdlc/runs/<run-id>/`:
 | `telemetry.jsonl` | One JSON line per model call. The source of everything in the report. |
 | `manifest.json` | Written by `plugin/scripts/write-manifest.mjs`, never by the model: the telemetry rollup, the cost split by provenance, the conductor's modeled cost, the gates and the file counts. See below. |
 | `SUMMARY.md` | Rendered from `manifest.json` by the same script. A run counts as completed once Gate 4 is accepted and the script has run again after it. |
-| `gates.jsonl` | One line per gate decision, including `auto-approved` and `pending` ones, so an unattended run leaves the same audit trail as an attended one. When you abort a relayed gate (or give no answer) and the conductor does not record it, `run.mjs` adds the `aborted` line with `"recorded_by": "run.mjs"`. |
+| `gates.jsonl` | One line per gate decision, `{gate, artifact, decision, note, ts}`, including `auto-approved` and `pending` ones, so an unattended run leaves the same audit trail as an attended one. The latest Gate 4 line decides completion. Readers also accept an answer recorded under `status`. When you abort a relayed gate (or give no answer) and the conductor does not record it, `run.mjs` adds the `aborted` line with `"recorded_by": "run.mjs"`. |
 | `state.json` | The gate that is waiting for an answer, written before the gate is printed. |
 | `provenance.json` | Brownfield: every file the run changed, with its pre-run hash and where its pre-run content is. The input `$mmo-codex:revert` reads. |
 | `backups/` | Brownfield: copies of files that held uncommitted or untracked content when the run first wrote them. The folder holds its own `.gitignore` (`*`), so git never lists it, whatever your project's `.gitignore` says. |
@@ -179,7 +179,7 @@ Phase 9 runs `write-manifest.mjs`, Gate 4's acceptance runs it again with `--sta
 | `totals.driver_cost_source`, `totals.driver_usage` | Which of the two files the figure came from and, for `driver-usage.json`, its `cost_source`, `verified`, `cost_complete` and `unpriced`. |
 | `phase_breakdown`, `model_breakdown`, `module_breakdown`, `task_type_breakdown` | The bridge's `buildManifest` rollups. |
 | `artifacts` | `files` and `loc` of the product. Left out, with a note, when the code directory is the repository and no `provenance.json` lists the files the run wrote. |
-| `gates` | Every `gates.jsonl` line that parses. |
+| `gates` | Every `gates.jsonl` line that parses, with the answer under `decision` even when the line recorded it as `status`. |
 | `driver` | From `driver-manifest.json`: invocations, turns, incomplete turns, outcome, thread ids, pin. `null` on the interactive route. |
 | `summary` | The `SUMMARY.md` this script rendered, with its sha256. A hand-written or edited `SUMMARY.md` does not match it, and does not complete the run. |
 | `notes` | What the script left out, and why. |

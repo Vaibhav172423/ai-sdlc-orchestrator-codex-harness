@@ -13,6 +13,7 @@ import { findCodexWarnings, findPinRejection } from "./telemetry/fairnessPin.mjs
 import { driverTurns, summarizeDriverTurns } from "../mcp/model-dispatch/dist/driverUsage.js";
 import { driverPriceRecord, listDriverPriceFn, PRICE_LIST_VERIFIED } from "../mcp/model-dispatch/dist/driverPricing.js";
 import { ACCEPTED_STATUSES, codeWrittenSummary } from "../scripts/write-manifest.mjs";
+import { gate4Accepted, gateDecision, gateNumber, isAbortDecision, readGateLines } from "../scripts/lib/gate-record.mjs";
 
 export const RECORD_VERSION = 1;
 export const STDOUT_LINE_MAX = 4096;
@@ -212,36 +213,16 @@ export function snapshotStopEvidence(runDir, projectRoot) {
   return { files, guardLines: countLines(join(projectRoot, ".sdlc", "local", "guard-decisions.jsonl")) };
 }
 
-function gateNumber(line) {
-  const g = line?.gate;
-  if (typeof g === "number") return g;
-  const m = /(\d+)/.exec(String(g ?? ""));
-  return m ? Number(m[1]) : null;
-}
+export { gateDecision, gateNumber, readGateLines };
 
-const GATE4_ACCEPTED = /^(approved|accept|accepted|auto-approved)$/i;
-
-/** Gate decisions recorded in gates.jsonl, leniently parsed. */
-export function readGateLines(runDir) {
-  return parseJsonLines(readLines(join(runDir, "gates.jsonl")));
-}
-
-/** Conductors have written both `decision` and `status`; read either. */
-export function gateDecision(line) {
-  return String(line?.decision ?? line?.status ?? "").trim();
-}
-
-export { gateNumber };
-
-/** The last Gate 4 line that accepts the run, or null. */
+/** The latest Gate 4 line when it accepts the run, or null. */
 export function gate4Acceptance(runDir) {
-  const lines = readGateLines(runDir).filter((l) => gateNumber(l) === 4 && GATE4_ACCEPTED.test(gateDecision(l)));
-  return lines[lines.length - 1] ?? null;
+  return gate4Accepted(readGateLines(runDir));
 }
 
 /**
- * Completion needs the final acceptance gate recorded as accepted, and the
- * final report written after it: a SUMMARY.md that write-manifest.mjs wrote
+ * Completion needs the latest Gate 4 line to accept the run, and the final
+ * report written after it: a SUMMARY.md that write-manifest.mjs wrote
  * since the run began, with the manifest's status accepted or auto-approved
  * (the Gate 4 re-run, after any close-out). Phase 9's first SUMMARY.md is
  * provisional and comes before Gate 4. `summaryReason` says why a SUMMARY.md
@@ -287,11 +268,11 @@ export function stopCheck({
   };
   const newGates = parseJsonLines(readLines(join(runDir, "gates.jsonl")).slice(gatesLinesBefore));
   const last = newGates[newGates.length - 1];
-  if (gateMode === "prompt" && last && gateDecision(last).toLowerCase() === "pending") {
+  if (gateMode === "prompt" && last && gateDecision(last) === "pending") {
     const gate = gateNumber(last);
     return { outcome: "gate_pending", gate, reason: `gate ${gate ?? "?"} is waiting for an answer` };
   }
-  const aborted = newGates.find((l) => /^abort/i.test(gateDecision(l)));
+  const aborted = newGates.find((l) => isAbortDecision(gateDecision(l)));
   if (aborted) {
     const note = aborted.note ? `: ${aborted.note}` : "";
     return { outcome: "aborted", reason: `gate ${gateNumber(aborted) ?? "?"} aborted${note}` };

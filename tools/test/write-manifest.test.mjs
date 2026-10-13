@@ -184,7 +184,7 @@ test("gates come from gates.jsonl in either key spelling; a malformed line is sk
   try {
     p.put("gates.jsonl", p.lines([{ gate: 1, decision: "approved" }, "{not json", { gate: 4, status: "pending", run_id: "r1" }]));
     const { manifest: m, notes } = p.write({ summary: true });
-    assert.deepEqual(m.gates, [{ gate: 1, decision: "approved" }, { gate: 4, status: "pending", run_id: "r1" }]);
+    assert.deepEqual(m.gates, [{ gate: 1, decision: "approved" }, { gate: 4, status: "pending", run_id: "r1", decision: "pending" }]);
     assert.ok(notes.some((n) => /1 gates\.jsonl line\(s\) could not be read/.test(n)));
     assert.match(p.summary(), /\| 1 \| approved \|/);
     assert.match(p.summary(), /\| 4 \| pending \|/);

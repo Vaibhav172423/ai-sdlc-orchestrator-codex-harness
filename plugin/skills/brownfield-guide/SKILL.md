@@ -331,7 +331,7 @@ When the user replies `accept` at Gate 4, record it in `.sdlc/runs/<run-id>/gate
 `accepted`, one line:
 
 ```json
-{"gate": 4, "artifact": "SUMMARY.md", "decision": "accepted", "note": "<one line>"}
+{"gate": 4, "artifact": "SUMMARY.md", "decision": "accepted", "note": "<one line>", "ts": "<ISO 8601 time>"}
 ```
 
 Then, in the same turn:
@@ -366,7 +366,7 @@ Then, in the same turn:
 gate's number and artifact (here, an abort at Gate 2):
 
 ```json
-{"gate": 2, "artifact": "design.md", "decision": "aborted", "note": "<one line>"}
+{"gate": 2, "artifact": "design.md", "decision": "aborted", "note": "<one line>", "ts": "<ISO 8601 time>"}
 ```
 
 then run

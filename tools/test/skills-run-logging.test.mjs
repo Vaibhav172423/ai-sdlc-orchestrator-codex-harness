@@ -68,7 +68,7 @@ test("the rendered playbook has the conductor record every gate in this run's ga
     assert.doesNotMatch(delivery, /on the `run\.mjs` route, record the gate in/, "the record is not tied to one route");
 
     const shape = JSON.parse(/```json\n(.*)\n```/.exec(delivery)[1]);
-    assert.deepEqual(Object.keys(shape), ["gate", "artifact", "decision", "note"]);
+    assert.deepEqual(Object.keys(shape), ["gate", "artifact", "decision", "note", "ts"]);
     acceptedSummary(r.runDir);
     for (const [decision, ok] of [["accepted", true], ["auto-approved", true], ["rejected", false]]) {
       assert.ok(shape.decision.split("|").includes(decision), decision);

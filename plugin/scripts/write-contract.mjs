@@ -21,6 +21,7 @@ import { existsSync, realpathSync, rmSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { OFF_LIMITS_DEFAULT } from "./lib/off-limits.mjs";
+import { GATES_FILE, gatesOutcome, parseGateLines } from "./lib/gate-record.mjs";
 import { isRunId, runDirFor } from "./lib/run-id.mjs";
 import { finalizeProvenance, initProvenance } from "./write-provenance.mjs";
 import {
@@ -34,9 +35,6 @@ export const EXIT_REFUSED = 2;
 
 /** End outcomes a resumed run may not reopen: the run finished, or the person ended it. */
 const FINAL_OUTCOMES = new Set(["completed", "aborted"]);
-/** Gate-4 answers that end a run as completed, compared without case. `accept` is the reply the Gate 4 prompt asks for. */
-const GATE4_ACCEPTED = new Set(["approved", "accepted", "accept", "auto-approved"]);
-const ABORTED = new Set(["aborted", "abort"]);
 
 const SCRIPT_PATH = fileURLToPath(import.meta.url);
 const shq = (s) => `'${String(s).replace(/'/g, "'\\''")}'`;
@@ -246,22 +244,9 @@ export function reopenRun({ projectRoot, runId, now } = {}) {
   return { run_id: runId, reopened: true, live: true, provenance };
 }
 
-/**
- * completed / aborted from the run's gates.jsonl, or null while neither is recorded. Conductors have written the
- * answer as `decision` and as `status`, so both are read.
- */
+/** completed / aborted from the run's gates.jsonl, read the way the run's own completion check reads it. */
 function gateOutcome(root, runId) {
-  const text = readRegular(join(runDirFor(root, runId), "gates.jsonl"), 4 * 1024 * 1024)?.toString("utf8") ?? "";
-  let outcome = null;
-  for (const line of text.split("\n")) {
-    let g;
-    try { g = JSON.parse(line); } catch { continue; }
-    if (!g || typeof g !== "object") continue;
-    const answer = String(g.decision ?? g.status ?? "").trim().toLowerCase();
-    if (ABORTED.has(answer)) return "aborted";
-    if (Number(g.gate) === 4 && GATE4_ACCEPTED.has(answer)) outcome = "completed";
-  }
-  return outcome;
+  return gatesOutcome(parseGateLines(readRegular(join(runDirFor(root, runId), GATES_FILE), 4 * 1024 * 1024)?.toString("utf8") ?? ""));
 }
 
 /** Close-out: ends the run once Gate 4 is accepted (or the run aborted) in its gates.jsonl, then switches the contract off. */

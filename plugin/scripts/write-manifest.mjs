@@ -20,6 +20,7 @@ import { buildManifest } from "../mcp/model-dispatch/dist/telemetry.js";
 import { driverUsageIsFresh } from "./lib/driver-usage-fresh.mjs";
 import { productCounts } from "./lib/product-count.mjs";
 import { isRunId } from "./lib/run-id.mjs";
+import { gateDecision } from "./lib/gate-record.mjs";
 import { ACCEPTED_STATUSES, codeWrittenSummary, isCodeWritten, MANIFEST_WRITER, renderRunSummary, sha256 } from "./lib/run-summary.mjs";
 
 export { ACCEPTED_STATUSES, codeWrittenSummary, MANIFEST_WRITER };
@@ -29,6 +30,13 @@ export const SCHEMA_VERSION = 1;
 export const CONDUCTOR_STATUSES = ["provisional", "accepted", "auto-approved", "rejected"];
 /** What run.mjs writes when a run ends any other way (run-finalize.mjs maps outcomes to these). */
 export const RUN_STATUSES = ["incomplete", "aborted", "halted", "refused", "stopped", "cost_cap", "failed", "pin_rejected", "interrupted"];
+
+/** A gate line as recorded, with its answer under `decision` even when the conductor wrote `status`. */
+function manifestGate(row) {
+  if (row === null || typeof row !== "object" || Array.isArray(row) || row.decision !== undefined) return row;
+  const decision = gateDecision(row);
+  return decision ? { ...row, decision } : row;
+}
 
 export class UsageError extends Error {
   constructor(message) {
@@ -310,7 +318,7 @@ export function writeManifest({ runDir, runId, policy, projectRoot, codeDir, sta
     },
     ...rollups,
     ...(artifacts ? { artifacts } : {}),
-    gates: gates.rows,
+    gates: gates.rows.map(manifestGate),
     driver: driverBlock(dm),
     summary: null,
     notes,

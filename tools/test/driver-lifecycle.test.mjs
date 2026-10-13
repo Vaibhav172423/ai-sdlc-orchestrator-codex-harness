@@ -607,7 +607,9 @@ test("no answer at a gate (end of input) aborts the run", async () => {
     assert.equal(code, 4);
     assert.equal(h.records("r1").at(-1).reason, "no answer at gate 2");
     const gates = readLines(join(h.runDirOf("r1"), "gates.jsonl"));
-    assert.deepEqual(gates.at(-1), { gate: 2, decision: "aborted", note: "no answer at the terminal", recorded_by: "run.mjs" });
+    const { ts, ...written } = gates.at(-1);
+    assert.match(ts, /^\d{4}-\d{2}-\d{2}T/, "run.mjs stamps the line it writes");
+    assert.deepEqual(written, { gate: 2, artifact: null, decision: "aborted", note: "no answer at the terminal", recorded_by: "run.mjs" });
   } finally {
     h.cleanup();
   }
@@ -1078,8 +1080,10 @@ test("abort typed at a gate ends the run, recorded once, whether or not the cond
     assert.ok(h.calls()[1].argv.at(-1).startsWith("Gate 1 answer from the person: abort: wrong product"));
     const end = h.records("r1").at(-1);
     assert.deepEqual([end.outcome, end.reason], ["aborted", "gate 1 aborted at the terminal"]);
-    assert.deepEqual(readLines(join(h.runDirOf("r1"), "gates.jsonl")).at(-1), {
+    const { ts: _ts, ...typed } = readLines(join(h.runDirOf("r1"), "gates.jsonl")).at(-1);
+    assert.deepEqual(typed, {
       gate: 1,
+      artifact: null,
       decision: "aborted",
       note: "the person answered abort at the terminal",
       recorded_by: "run.mjs",

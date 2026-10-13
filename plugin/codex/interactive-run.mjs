@@ -9,6 +9,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { ACCEPTED_STATUSES, codeWrittenSummary } from "../scripts/lib/run-summary.mjs";
+import { GATE4_ACCEPTED, gateDecision, latestGateLine, readGateLines } from "../scripts/lib/gate-record.mjs";
 
 export const PLUGIN_ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
 export const RUN_JSON = "run.json";
@@ -43,7 +44,7 @@ export const INTERACTIVE_GATE_MODES = {
 export const GATE_RECORD =
   'Record every gate decision as a new line in gates.jsonl in the run folder: {"gate": N, ' +
   '"artifact": "<file>", "decision": "<approved|revise|aborted|accepted|rejected|auto-approved>", ' +
-  '"note": "<one line>"}.';
+  '"note": "<one line>", "ts": "<ISO 8601 time>"}. The answer goes under "decision", never "status".';
 
 /** The run-log vocabulary orchestrator.log speaks (Claude parity): completed, aborted or failed. */
 export function runLogOutcome(outcome) {
@@ -113,28 +114,8 @@ export function writeRunJson(runDir, record) {
   renameSync(tmp, path);
 }
 
-/** Every gates.jsonl line that parses, in order. Model-written lines carry `decision` or `status`. */
-export function gateLines(runDir) {
-  const path = join(runDir, "gates.jsonl");
-  if (!existsSync(path)) return [];
-  const out = [];
-  for (const line of readFileSync(path, "utf-8").split("\n")) {
-    if (!line.trim()) continue;
-    try {
-      const rec = JSON.parse(line);
-      if (rec && typeof rec === "object" && !Array.isArray(rec)) out.push(rec);
-    } catch { /* a torn or hand-edited line is skipped */ }
-  }
-  return out;
-}
-
-function gateNumber(value) {
-  if (typeof value === "number") return value;
-  const m = /(\d+)/.exec(String(value ?? ""));
-  return m ? Number(m[1]) : null;
-}
-
-const GATE_4_ACCEPTED = new Set(["accepted", "accept", "approved", "auto-approved"]);
+/** Every gates.jsonl line that parses, in order. */
+export const gateLines = readGateLines;
 
 /**
  * What a completed session run needs: the SUMMARY.md write-manifest.mjs wrote
@@ -145,8 +126,8 @@ export function checkCompleted(runDir) {
   const exists = existsSync(join(runDir, "SUMMARY.md"));
   const byCode = exists ? codeWrittenSummary(runDir) : null;
   const summary = byCode?.ok === true && ACCEPTED_STATUSES.includes(byCode.status);
-  const gate4 = gateLines(runDir).filter((g) => gateNumber(g.gate) === 4).at(-1) ?? null;
-  const gate4Decision = gate4 ? String(gate4.decision ?? gate4.status ?? "").trim().toLowerCase() : null;
+  const gate4 = latestGateLine(readGateLines(runDir), 4);
+  const gate4Decision = gate4 ? gateDecision(gate4) : null;
   const missing = [];
   if (!exists) missing.push("SUMMARY.md in the run folder (Phase 9)");
   else if (!byCode.ok) missing.push(`a SUMMARY.md written by Phase 9's command (${byCode.reason})`);
@@ -154,7 +135,7 @@ export function checkCompleted(runDir) {
     missing.push(`Phase 9's command run again with --status=accepted after Gate 4 (manifest.json's status is ${byCode.status})`);
   }
   if (!gate4) missing.push("a Gate 4 line in gates.jsonl");
-  else if (!GATE_4_ACCEPTED.has(gate4Decision)) missing.push(`Gate 4 accepted (the latest Gate 4 line says '${gate4Decision}')`);
+  else if (!GATE4_ACCEPTED.includes(gate4Decision)) missing.push(`Gate 4 accepted (the latest Gate 4 line says '${gate4Decision}')`);
   return { summary, gate4Decision, ok: missing.length === 0, missing };
 }
 
