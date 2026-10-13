@@ -658,12 +658,24 @@ function money(usd, bound) {
   return usd == null ? "not measured" : `${BOUND_WORD[bound] ?? ""}$${usd.toFixed(4)}`;
 }
 
+/** Which incomplete turns the booked figure holds: the session file can price a turn the exec stream never completed. */
+function incompleteText(m, cost) {
+  const n = cost ? cost.driver_turns_incomplete : m.driver_turns_incomplete;
+  if (!n) return "";
+  const unpriced = cost ? cost.driver_turns_incomplete_unpriced : m.driver_cost_complete === true ? 0 : n;
+  const priced = n - unpriced;
+  const parts = [];
+  if (priced > 0) parts.push(`${unpriced > 0 ? `${priced} ` : ""}priced from the session file`);
+  if (unpriced > 0) parts.push(`${priced > 0 ? `${unpriced} ` : ""}not priced, cost not known, not $0`);
+  return ` (${n} incomplete: ${parts.join("; ")})`;
+}
+
 /** The conductor's figure and how it was checked, as the run's last lines say it; `cost` is the report's booking. */
-function driverLines(m, usage, cost) {
+export function driverLines(m, usage, cost) {
   const lines = [];
-  const incomplete = m.driver_turns_incomplete ? ` (${m.driver_turns_incomplete} incomplete: cost not known, not $0)` : "";
-  const figure = cost ? money(cost.driver_usd_modeled, cost.driver_bound) : money(m.driver_cost_usd_modeled, m.driver_turns_incomplete ? "floor" : "exact");
-  lines.push(`invocations ${m.codex_invocations}, turns ${m.driver_turns}${incomplete}, driver cost (modeled) ${figure}`);
+  const floor = m.driver_cost_complete === false || (m.driver_cost_complete == null && m.driver_turns_incomplete > 0);
+  const figure = cost ? money(cost.driver_usd_modeled, cost.driver_bound) : money(m.driver_cost_usd_modeled, floor ? "floor" : "exact");
+  lines.push(`invocations ${m.codex_invocations}, turns ${m.driver_turns}${incompleteText(m, cost)}, driver cost (modeled) ${figure}`);
   if (m.driver_cost_source) lines.push(`driver cost booked from: ${m.driver_cost_source}`);
   const cc = usage?.cross_check;
   if (cc) {

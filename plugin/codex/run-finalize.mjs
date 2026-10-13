@@ -132,7 +132,7 @@ function collectConductorUsage(ctx, { route, codexHome, env, notes }) {
 
 /** The run's cost as the report books it, for the run.cost log line and the console. */
 export function runCost(runDir) {
-  const t = summarize(readRun(runDir)).totals;
+  const { totals: t, driver } = summarize(readRun(runDir));
   return {
     dispatched_usd: t.dispatched_usd,
     driver_usd_modeled: t.driver_usd,
@@ -141,6 +141,8 @@ export function runCost(runDir) {
     run_total_bound: t.run_total_bound,
     vendor_metered_usd: t.vendor_metered_usd,
     modeled_usd: t.modeled_usd,
+    driver_turns_incomplete: driver.turns_incomplete,
+    driver_turns_incomplete_unpriced: driver.turns_incomplete_unpriced,
   };
 }
 
