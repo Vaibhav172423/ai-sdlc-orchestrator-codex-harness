@@ -737,6 +737,14 @@ function refuseChange(flag, given, recorded, runId) {
   }
 }
 
+function refusePathChange(flag, given, resolved, recorded, runId) {
+  if (given !== undefined && recorded && resolved !== recorded) {
+    throw new UsageError(
+      `--${flag}=${given} resolves to ${resolved}, not run ${runId}'s ${recorded}; a resumed run keeps its ${flag}. Drop --${flag}.`,
+    );
+  }
+}
+
 async function runDriver(args, deps) {
   const env = deps.env ?? process.env;
   const cwd = deps.cwd ?? process.cwd();
@@ -806,6 +814,9 @@ async function runDriver(args, deps) {
     : (recorded.code_dir ?? resolveCodeDir({ projectRoot, mode: runMode }));
   assertRunDirApart({ projectRoot, runId, runDir, codeDir });
   const briefPath = args.brief ? fromCwd(cwd, args.brief) : (recorded.brief_path ?? join(projectRoot, "brief.md"));
+  // A resumed session is not told new values: its prompt and rendered playbooks keep the ones it started with.
+  refusePathChange("code-dir", args["code-dir"], codeDir, recorded.code_dir, runId);
+  refusePathChange("brief", args.brief, briefPath, recorded.brief_path, runId);
   const promptPath = args["prompt-file"] ? fromCwd(cwd, args["prompt-file"]) : join(CODEX_DIR, "prompts", "conductor.md");
   const codexBin = codexBinFrom(cwd, args["codex-bin"]);
   let threadId = run.resume?.threadId ?? null;

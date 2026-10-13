@@ -170,7 +170,7 @@ shaped correctly. Drop the flag to run for real.
 | `--project-root=<path>` | current directory | The repo the run works against. |
 | `--output-dir=<path>` | `<project-root>/.sdlc/runs/<run-id>` | Greenfield only: a different run folder inside the project. It may not be the project root, a folder inside `.sdlc` other than the run's own, or a folder that overlaps the code directory. Pass it again on `--resume`. |
 | `--policy=<name>` | `.sdlc/project.json` default, else `gpt-plus-flash` | Routing policy for this run. A per-run override; it does not rewrite the project default. A `routing-policy.yaml` at the project root beats it — see [Which policy a run uses](#which-policy-a-run-uses). |
-| `--code-dir=<path>` | `<project-root>/src` (greenfield), `<project-root>` (brownfield, or no `--mode`) | Where generated code goes. It must stay inside the project and outside `.sdlc`. |
+| `--code-dir=<path>` | `<project-root>/src` (greenfield), `<project-root>` (brownfield, or no `--mode`) | Where generated code goes. It must stay inside the project and outside `.sdlc`. A resumed run keeps its own. |
 | `--gates=<mode>` | `prompt` | `prompt`, `auto-approve`, or `auto-abort`. See below. `prompt` needs a terminal. |
 | `--mode=<mode>` | inferred | `greenfield` or `brownfield`. Omit to let the conductor work it out from the brief and the repo; the driver then handles the run as brownfield: it needs git, and the code goes to the project root. A folder that is not a git repository needs `--mode=greenfield`. |
 | `--intent=<id>` | — | Brownfield job type: `docs`, `bugfix`, `feature-extend`, `feature-new`, `refactor`, `test`, `deps`. Rejected with `--mode=greenfield`, which has no intents. |
@@ -356,7 +356,8 @@ node plugin/codex/run.mjs --resume=pass1 --project-root=.
 ```
 
 The driver finds `.sdlc/runs/pass1/`, resumes the codex thread recorded there, and appends to the
-same record. The run keeps its policy, mode and intent, and `--brief` is not needed. `--gates`
+same record. The run keeps its policy, mode, intent, code directory and brief, and `--brief` is not
+needed; a `--code-dir` or `--brief` that names another path exits 2. `--gates`
 may change between invocations; without it the run keeps the last gate mode. A completed run is
 not resumed, and neither is a run whose driver is still running (mid-turn, or waiting at a gate in
 another terminal). A run in a custom `--output-dir` needs the same `--output-dir` again.

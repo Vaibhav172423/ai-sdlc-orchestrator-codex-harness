@@ -545,6 +545,30 @@ test("a signal after the conductor finished the run leaves it completed, exit 0,
   }
 });
 
+test("--resume keeps the run's --code-dir and --brief: another path is refused before spending, the same one is accepted", async () => {
+  const h = harness();
+  try {
+    withScenario(h, "r1", [{}]);
+    assert.equal((await h.run(args(h, "r1", "--max-turns=1"))).code, 3);
+    writeFileSync(join(h.root, "other.md"), "# Other\n");
+    for (const [flag, recorded] of [["--code-dir=app", join(h.root, "src")], ["--brief=other.md", join(h.root, "brief.md")]]) {
+      const r = await h.run(["--project-root", h.root, "--resume=r1", flag]);
+      assert.equal(r.code, 2, flag);
+      assert.match(r.err, new RegExp(`${escapeRe(flag)} resolves to .*not run r1's ${escapeRe(recorded)}; a resumed run keeps its`));
+    }
+    assert.equal(h.calls().length, 1, "refused before any codex call");
+
+    withScenario(h, "r1", [COMPLETE]);
+    const same = await h.run(["--project-root", h.root, "--resume=r1", "--code-dir=src", "--brief=brief.md"]);
+    assert.equal(same.code, 0, same.err);
+    const starts = h.records("r1").filter((r) => r.kind === "invocation_start");
+    assert.deepEqual(new Set(starts.map((s) => s.code_dir)), new Set([join(h.root, "src")]));
+    assert.deepEqual(new Set(starts.map((s) => s.brief_path)), new Set([join(h.root, "brief.md")]));
+  } finally {
+    h.cleanup();
+  }
+});
+
 test("a codex that ignores SIGTERM is killed after the grace period", async () => {
   const h = harness();
   try {
