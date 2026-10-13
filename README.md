@@ -271,7 +271,7 @@ Every artifact lands under `./.sdlc/`. Generated source lands under `./src/`.
 | File | Contents |
 |---|---|
 | `telemetry.jsonl` | One JSON line per model call: phase, model, tokens (input / cached / output), cost, latency, task_id. |
-| `manifest.json` | Rollup of the telemetry: totals, per-phase, per-module, per-task-type. |
+| `manifest.json` | Rollup of the telemetry, written by `plugin/scripts/write-manifest.mjs`: totals, per-phase, per-module, per-task-type. |
 | `provenance.json` | Every file the run touched, with pre-run hash — the input `$mmo-codex:revert` reads. |
 | `local/guard-decisions.jsonl` | One line per hooked call while a brownfield contract binds, allow or deny; outside a run, one line per refusal, and only in a project that already has `.sdlc/`. A denied call leaves no trace in the Codex event stream, so this file is the only record of it. |
 | `delegation/` | Only on runs that used the agent path. Three files per delegated packet: task brief, worker usage sidecar, receipt. |

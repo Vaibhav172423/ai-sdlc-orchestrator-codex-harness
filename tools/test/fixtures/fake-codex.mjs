@@ -5,13 +5,18 @@
  *
  * Step keys: fixture (a codex-0.160.1 capture to replay), events (raw lines
  * after thread.started), usage, message, failTurn, noThread, thread, stderr,
- * gates, summary, preflight, stop, question, guardDeny, telemetry, sleepMs (after
- * turn.started, or after turn.completed with sleepAfterTurn), ignoreTerm,
- * exit.
+ * gates, summary (Phase 9's write-manifest.mjs; summaryStatus is its
+ * --status, by default the one an accepting Gate 4 line in the same step
+ * calls for, null for none), handSummary (a SUMMARY.md written by hand),
+ * preflight, stop, question, guardDeny, telemetry, blockManifest (a
+ * directory where manifest.json goes), sleepMs (after turn.started, or after
+ * turn.completed with sleepAfterTurn), ignoreTerm, exit.
  */
 import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+
+import { writeManifest } from "../../../plugin/scripts/write-manifest.mjs";
 
 const argv = process.argv.slice(2);
 const env = process.env;
@@ -46,13 +51,33 @@ const append = (path, line) => {
   appendFileSync(path, JSON.stringify(line) + "\n");
 };
 
+/** What a conductor that follows the playbook passes to Phase 9's re-run after Gate 4. */
+function gate4Status(gates = []) {
+  const g4 = gates.filter((g) => /4/.test(String(g.gate)) && /^(accept|accepted|approved|auto-approved)$/i.test(g.decision ?? g.status ?? "")).at(-1);
+  if (!g4) return undefined;
+  return /^auto-approved$/i.test(g4.decision ?? g4.status) ? "auto-approved" : "accepted";
+}
+
 function writeFiles() {
   for (const g of step.gates ?? []) append(join(runDir, "gates.jsonl"), g);
   for (const t of step.telemetry ?? []) append(join(runDir, "telemetry.jsonl"), t);
   if (step.preflight) writeFileSync(join(runDir, "preflight.json"), JSON.stringify(step.preflight));
   if (step.stop) writeFileSync(join(runDir, "stop.json"), JSON.stringify(step.stop));
   if (step.question) writeFileSync(join(runDir, "question.json"), JSON.stringify({ question: step.question }));
-  if (step.summary) writeFileSync(join(runDir, "SUMMARY.md"), "# Summary\n");
+  if (step.summary) {
+    const start = readFileSync(join(runDir, "driver-events.jsonl"), "utf-8").split("\n").filter((l) => l.trim()).map((l) => JSON.parse(l)).find((r) => r.kind === "invocation_start");
+    writeManifest({
+      runDir,
+      runId: start?.run_id ?? basename(runDir),
+      policy: start?.policy ?? "gpt-plus-flash",
+      projectRoot: scenario.projectRoot,
+      codeDir: start?.code_dir,
+      status: step.summaryStatus === undefined ? gate4Status(step.gates) : (step.summaryStatus ?? undefined),
+      summary: true,
+    });
+  }
+  if (step.handSummary) writeFileSync(join(runDir, "SUMMARY.md"), "# Summary\n");
+  if (step.blockManifest) mkdirSync(join(runDir, "manifest.json"), { recursive: true });
   if (step.guardDeny) {
     append(join(scenario.projectRoot, ".sdlc", "local", "guard-decisions.jsonl"), {
       ts: new Date().toISOString(),

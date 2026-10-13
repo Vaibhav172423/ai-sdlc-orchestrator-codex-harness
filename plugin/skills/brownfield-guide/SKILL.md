@@ -320,7 +320,7 @@ When the user replies `accept` at Gate 4, record it in `.sdlc/runs/<run-id>/gate
 {"gate": 4, "artifact": "SUMMARY.md", "decision": "accepted", "note": "<one line>"}
 ```
 
-Then:
+Then, in the same turn:
 
 1. End the run and switch its write contract off:
    ```bash
@@ -332,9 +332,13 @@ Then:
    this step.
 2. Append a row to `.sdlc/ledger.md` (human-readable) and `.sdlc/ledger.json` (machine mirror).
 3. Update the project fingerprint record with a link to the ledger.
-4. Record the end (`--outcome=completed`, after Gate 4 is accepted). Its `Cost report:` line gives
-   the cost report command for this run folder, or says this install has none.
-5. Print the report to the user with cost breakdown, files touched, and (if applicable) the
+4. Run Phase 9's write-manifest command again with `--status=accepted` (or
+   `--status=auto-approved`), as the pipeline's Gate 4 says. The run counts as finished from
+   that write, so it comes after steps 1-3.
+5. Record the end (`--outcome=completed`, after Gate 4 is accepted), once step 4 has run. Its
+   `Cost report:` line gives the cost report command for this run folder, or says this install
+   has none.
+6. Print the report to the user with cost breakdown, files touched, and (if applicable) the
    `git reset` command the report provides as the escape hatch.
 
 **An abort at Gate 1, 2, 3 or 4** ends the run too. Append the gate's `aborted` line, with that

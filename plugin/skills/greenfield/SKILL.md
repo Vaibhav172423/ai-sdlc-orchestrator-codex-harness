@@ -259,7 +259,7 @@ the user's behalf. Record each decision as a new line in `gates.jsonl` in the ru
 
 When the run ends, record how it ended with the `end_run` command the start script printed (the
 playbook's "Run logging" section lists the outcomes): `--outcome=completed` once Gate 4 is
-accepted, or the outcome and a one-line `--reason` when the run stops early — an aborted gate, a
+accepted and the playbook's Phase 9 command has run again with `--status=accepted`, or the outcome and a one-line `--reason` when the run stops early — an aborted gate, a
 preflight halt, a refused write, the cost cap. Run it before the report in step 7.
 
 # 7. Report

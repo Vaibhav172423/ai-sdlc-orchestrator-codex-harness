@@ -34,8 +34,8 @@ This skill is the source of truth for the conductor. When invoked under `$mmo-co
 7. test_run                           → npm install && npm test; debug failures (route via policy)
 8. security_review                    → security_review.md
    ── GATE 3 ─────────────────────────────────────
-9. generate_final_report              → updates manifest.json with artifacts + rollups
-   ── GATE 4 (final acceptance) ───────────────────
+9. generate_final_report              → write-manifest.mjs writes manifest.json + SUMMARY.md
+   ── GATE 4 (final acceptance) ───────────────────  → write-manifest.mjs again, --status=accepted
 ```
 
 ---
@@ -61,7 +61,7 @@ quick success check. A non-zero exit means the dispatch failed.
 
 If stderr contains `COST_CAP_EXCEEDED`, the run has spent its policy's `hard_cost_cap_usd`.
 Do not retry and do not dispatch anything else: the bridge refuses every further call this run.
-Stop, print the message verbatim, and do not write `SUMMARY.md` — the run did not finish.
+Stop, print the message verbatim, and do not go on to Phase 9 — the run did not finish.
 
 Keep the single quotes around paths. They can contain spaces, and an unquoted one splits into
 separate arguments.
@@ -314,11 +314,31 @@ Phase 6.
 
 ### Phase 9 — generate_final_report
 
-Read all events in `<telemetry_path>`. Build rollup manifest using the `buildManifest` shape (see `plugin/mcp/model-dispatch/src/telemetry.ts`). Write `<output_dir>/manifest.json`. Also write a brief `<output_dir>/SUMMARY.md` with: total cost of dispatched work, breakdown, links to key artifacts, and this line verbatim under the total:
+Run one command. It builds `<output_dir>/manifest.json` from `telemetry.jsonl`, `gates.jsonl` and
+the driver's record with the bridge's own `buildManifest`, and renders `<output_dir>/SUMMARY.md`
+from it:
 
-> Conductor (driver) cost is not included. A run started with `run.mjs` models it into `driver-cost-modeled.jsonl` as each turn completes; a run started from an interactive `$mmo-codex:*` skill does not measure it at all.
+```
+node '{{PLUGIN_ROOT}}/scripts/write-manifest.mjs' '{{OUTPUT_DIR}}' \
+  --run-id={{RUN_ID}} --policy={{POLICY}} \
+  --project-root='{{PROJECT_ROOT}}' --code-dir='{{CODE_DIR}}' --summary
+```
 
-Do not try to account for the driver's cost yourself — see the telemetry contract below.
+**Do not write manifest.json or SUMMARY.md yourself**, and do not edit either file once the
+command has written it. `manifest.json` records the hash of the `SUMMARY.md` it rendered: a
+hand-written or edited `SUMMARY.md` reads as a run that has not finished.
+
+The command prints the dispatched total, then a `note:` line for anything it left out (telemetry
+lines it could not read, file counts it could not make). Print the notes. A non-zero exit means
+`manifest.json` was not written, and a `SUMMARY.md` it left behind does not count: fix what its
+message names and run it again.
+
+`SUMMARY.md` states the conductor's own cost as the record has it — modeled by `run.mjs` on a
+headless run, "not measured" on the interactive route. Do not add a figure for it; see the
+telemetry contract below.
+
+This first `SUMMARY.md` is provisional. The run is finished only once Gate 4 is accepted and the
+command has run again with `--status=accepted` (see Gate 4).
 
 ---
 
@@ -409,7 +429,7 @@ dies mid-gate leaves a record of the open gate in the run's own folder.
 In a session, write the line once the user has replied, or as you continue under
 `--gates=auto-approve`. Gate 4 records `accepted`, `auto-approved` or `rejected`. The end command
 in "Run logging" refuses `--outcome=completed` until the latest Gate 4 line in this file is
-`accepted` or `auto-approved`. The brownfield close-out (`write-contract.mjs --close`) reads this
+`accepted` or `auto-approved` and Phase 9's command has run again after it. The brownfield close-out (`write-contract.mjs --close`) reads this
 file too and refuses while it holds neither an accepted Gate 4 nor an abort. On the `run.mjs`
 route the conductor prompt also has you record `pending` before you end your turn on a gate.
 Log each gate's opening and resolution as "Run logging" below says.
@@ -501,9 +521,19 @@ explicitly.
 
 ### Gate 4
 > ⏸ **HITL Gate 4 — Final Acceptance**
-> The full SDLC pass is complete.
-> Total cost: $X.XX  ·  Files: N  ·  Tests: passing/total
+> The full SDLC pass is complete. The summary is `<output_dir>/SUMMARY.md`.
+> Dispatched cost: $X.XXXX  ·  Files: N  ·  Tests: passing/total
 > Reply `accept` to finalize the manifest, or `reject: <comments>` to revise.
+
+Take the figures from `manifest.json`: `totals.dispatched_cost_usd`, and `artifacts.files` (print
+`—` when the manifest has no `artifacts`).
+
+On `accept`, record the gate, finish any close-out your playbook gives (the brownfield guide's step
+7), then run the Phase 9 command again with `--status=accepted` added. When the gate instruction has
+you record Gate 4 as `auto-approved`, add `--status=auto-approved` instead. On a run started by
+`run.mjs`, that re-run is the run's last record; end your turn after it. On a run started in a
+session, record the end next, as "Run logging" below says. On `reject: <comments>`, revise what the
+comments name, and run Phase 9 again before you reopen Gate 4.
 
 ---
 
@@ -549,7 +579,7 @@ node '{{PLUGIN_ROOT}}/codex/end-run.mjs' --run-dir='{{OUTPUT_DIR}}' --outcome=<o
 
 | Outcome | When |
 |---|---|
-| `completed` | Gate 4 is recorded as `accepted` in `gates.jsonl` and Phase 9 wrote `SUMMARY.md`. The script refuses `completed` otherwise. |
+| `completed` | Gate 4 is recorded as `accepted` in `gates.jsonl`, and Phase 9's command has run again with `--status=accepted` since. The script refuses `completed` otherwise. |
 | `aborted` | A gate was answered `abort`, or the user stopped the run. |
 | `halted` | Preflight returned `ok: false`, or a pre-check step failed. |
 | `refused` | The write guard refused a write, and you stopped as the rules say. |
@@ -557,8 +587,8 @@ node '{{PLUGIN_ROOT}}/codex/end-run.mjs' --run-dir='{{OUTPUT_DIR}}' --outcome=<o
 | `stopped` | Any other deliberate stop, such as setup not done for this project. |
 | `failed` | An error the run could not get past. |
 
-Every outcome but `completed` needs `--reason`. Run it once Gate 4 is accepted and before the final
-report, or right after you tell the user why the run stopped. Its `Cost report:` line gives the
+Every outcome but `completed` needs `--reason`. Run it once Gate 4 is accepted and Phase 9's command
+has run again, before the final report, or right after you tell the user why the run stopped. Its `Cost report:` line gives the
 cost report command for the run folder, or says this install has none; then build the breakdown
 from `{{OUTPUT_DIR}}/telemetry.jsonl`. Running the same command again keeps the recorded end and
 repeats only the run-end steps. A Gate 4 `reject` sends the run back for changes; it does not end
@@ -608,7 +638,7 @@ Event shape:
 `codex exec --json` event stream as it arrives and derives the conductor's token usage from it, writing those events with
 `provenance: "modeled"` — modeled from token counts at the pinned rates, because this runtime
 reports no wallet figures. On the interactive skill route nothing reads that stream, so the
-conductor's cost goes unmeasured — say so in `SUMMARY.md` rather than estimating it. Never invent token counts or cost for your own work: a guessed figure
+conductor's cost goes unmeasured, and Phase 9's `SUMMARY.md` says so. Never invent token counts or cost for your own work: a guessed figure
 sitting beside measured ones is worse than no figure.
 
 **But a phase that made no model call must still leave a row.** Two cases produce one:

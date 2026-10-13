@@ -11,6 +11,7 @@ import { dirname, join } from "node:path";
 import { codexEvents } from "./telemetry/event-reader.mjs";
 import { findCodexWarnings, findPinRejection } from "./telemetry/fairnessPin.mjs";
 import { driverTurns, summarizeDriverTurns } from "../mcp/model-dispatch/dist/driverUsage.js";
+import { ACCEPTED_STATUSES, codeWrittenSummary } from "../scripts/write-manifest.mjs";
 
 export const RECORD_VERSION = 1;
 export const STDOUT_LINE_MAX = 4096;
@@ -231,17 +232,33 @@ export function gateDecision(line) {
 
 export { gateNumber };
 
+/** The last Gate 4 line that accepts the run, or null. */
+export function gate4Acceptance(runDir) {
+  const lines = readGateLines(runDir).filter((l) => gateNumber(l) === 4 && GATE4_ACCEPTED.test(gateDecision(l)));
+  return lines[lines.length - 1] ?? null;
+}
+
 /**
- * Completion needs both the final report (a SUMMARY.md written since the run
- * began) and the final acceptance gate recorded as accepted.
+ * Completion needs the final acceptance gate recorded as accepted, and the
+ * final report written after it: a SUMMARY.md that write-manifest.mjs wrote
+ * since the run began, with the manifest's status accepted or auto-approved
+ * (the Gate 4 re-run, after any close-out). Phase 9's first SUMMARY.md is
+ * provisional and comes before Gate 4. `summaryReason` says why a SUMMARY.md
+ * on disk does not count.
  */
 export function completionEvidence(runDir, runStartedAtMs) {
   const summary = join(runDir, "SUMMARY.md");
-  const fresh = existsSync(summary) && (runStartedAtMs == null || writtenSince(summary, runStartedAtMs - 2000));
-  const accepted = readGateLines(runDir).some(
-    (l) => gateNumber(l) === 4 && GATE4_ACCEPTED.test(gateDecision(l)),
-  );
-  return { summary: fresh, gate4: accepted, complete: fresh && accepted };
+  const exists = existsSync(summary);
+  const fresh = exists && (runStartedAtMs == null || writtenSince(summary, runStartedAtMs - 2000));
+  let byCode = fresh ? codeWrittenSummary(runDir) : { ok: false, reason: exists ? "SUMMARY.md is older than this run" : null };
+  if (byCode.ok && !ACCEPTED_STATUSES.includes(byCode.status)) {
+    byCode = {
+      ok: false,
+      reason: `manifest.json's status is ${byCode.status}: Phase 9's command has not been run again with --status=accepted (or --status=auto-approved) since Gate 4`,
+    };
+  }
+  const accepted = gate4Acceptance(runDir) !== null;
+  return { summary: byCode.ok, summaryReason: byCode.ok ? null : byCode.reason, gate4: accepted, complete: byCode.ok && accepted };
 }
 
 /**
@@ -317,7 +334,7 @@ export function stopCheck({
   if (rejection) return { outcome: "pin_rejected", reason: `the codex CLI rejected the pinned model or effort — ${rejection}` };
 
   if (completionEvidence(runDir, runStartedAtMs).complete) {
-    return { outcome: "completed", reason: "SUMMARY.md written and Gate 4 accepted" };
+    return { outcome: "completed", reason: "write-manifest.mjs wrote SUMMARY.md and Gate 4 was accepted" };
   }
   return null;
 }

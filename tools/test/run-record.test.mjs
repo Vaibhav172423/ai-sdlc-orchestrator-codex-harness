@@ -1,7 +1,7 @@
 /** The driver's run record: outcomes and exit codes, the stop check, and driver-manifest.json. */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from "node:fs";
+import { appendFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -21,6 +21,7 @@ import {
   snapshotStopEvidence,
   stopCheck,
 } from "../../plugin/codex/run-record.mjs";
+import { writeManifest } from "../../plugin/scripts/write-manifest.mjs";
 
 function folder() {
   const root = mkdtempSync(join(tmpdir(), "run-record-"));
@@ -95,20 +96,66 @@ test("a guard deny counts for this run or for no run, not for another run", () =
   }
 });
 
-test("completion needs a SUMMARY.md written during the run and an accepted Gate 4", () => {
+const phase9 = (f, status = "accepted") => writeManifest({ runDir: f.runDir, runId: "r1", policy: "gpt-plus-flash", projectRoot: f.root, status, summary: true });
+
+test("completion needs a SUMMARY.md write-manifest.mjs wrote during the run and an accepted Gate 4", () => {
   const f = folder();
   try {
     const started = Date.now() - 1000;
-    writeFileSync(join(f.runDir, "SUMMARY.md"), "# done\n");
+    phase9(f);
     assert.equal(completionEvidence(f.runDir, started).complete, false);
     writeFileSync(join(f.runDir, "gates.jsonl"), line({ gate: "gate-4", status: "accepted" }));
     assert.equal(completionEvidence(f.runDir, started).complete, true, "gate-4 written as {status} counts");
     const old = new Date(started - 60_000);
     utimesSync(join(f.runDir, "SUMMARY.md"), old, old);
     assert.equal(completionEvidence(f.runDir, started).complete, false, "a SUMMARY.md older than the run is stale");
-    writeFileSync(join(f.runDir, "SUMMARY.md"), "# done\n");
+    phase9(f);
     writeFileSync(join(f.runDir, "gates.jsonl"), line({ gate: 4, decision: "reject: tests fail" }));
     assert.equal(completionEvidence(f.runDir, started).complete, false, "a rejected Gate 4 sends the run back");
+  } finally {
+    f.cleanup();
+  }
+});
+
+test("Phase 9's provisional SUMMARY.md, written before Gate 4, is not the final report", () => {
+  const f = folder();
+  try {
+    const started = Date.now() - 1000;
+    phase9(f, null);
+    writeFileSync(join(f.runDir, "gates.jsonl"), line({ gate: 4, decision: "accepted" }));
+    const ev = completionEvidence(f.runDir, started);
+    assert.equal(ev.complete, false);
+    assert.match(ev.summaryReason, /status is provisional: Phase 9's command has not been run again with --status=accepted/);
+    phase9(f, "rejected");
+    assert.equal(completionEvidence(f.runDir, started).complete, false);
+    phase9(f, "auto-approved");
+    assert.equal(completionEvidence(f.runDir, started).complete, true);
+  } finally {
+    f.cleanup();
+  }
+});
+
+test("a SUMMARY.md the conductor wrote or edited by hand is not the final report", () => {
+  const f = folder();
+  try {
+    const started = Date.now() - 1000;
+    writeFileSync(join(f.runDir, "gates.jsonl"), line({ gate: 4, decision: "accepted" }));
+    writeFileSync(join(f.runDir, "SUMMARY.md"), "# done\n");
+    let ev = completionEvidence(f.runDir, started);
+    assert.equal(ev.complete, false, "no code-written manifest vouches for it");
+    assert.match(ev.summaryReason, /SUMMARY\.md was not written by plugin\/scripts\/write-manifest\.mjs: manifest\.json is missing/);
+
+    phase9(f);
+    assert.equal(completionEvidence(f.runDir, started).complete, true);
+    appendFileSync(join(f.runDir, "SUMMARY.md"), "\nAll good, says the conductor.\n");
+    ev = completionEvidence(f.runDir, started);
+    assert.equal(ev.complete, false, "an edited summary no longer matches the manifest's hash");
+    assert.match(ev.summaryReason, /hand-written or edited/);
+
+    writeFileSync(join(f.runDir, "manifest.json"), JSON.stringify({ pass: "r1", total_cost_usd: 0 }));
+    phase9(f);
+    writeFileSync(join(f.runDir, "SUMMARY.md"), readFileSync(join(f.runDir, "SUMMARY.md"), "utf-8"));
+    assert.equal(completionEvidence(f.runDir, started).complete, true, "rewriting the same bytes keeps it the code's");
   } finally {
     f.cleanup();
   }

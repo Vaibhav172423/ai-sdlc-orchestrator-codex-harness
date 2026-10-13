@@ -12,6 +12,7 @@ import { fileURLToPath } from "node:url";
 
 import { checkCompleted, INTERACTIVE_OUTCOMES } from "../../plugin/codex/interactive-run.mjs";
 import { renderedSkillPath, renderSkills } from "../../plugin/codex/render.mjs";
+import { acceptedSummary } from "./fixtures/accepted-summary.mjs";
 
 const SKILLS = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "plugin", "skills");
 const read = (p) => readFileSync(p, "utf-8");
@@ -68,7 +69,7 @@ test("the rendered playbook has the conductor record every gate in this run's ga
 
     const shape = JSON.parse(/```json\n(.*)\n```/.exec(delivery)[1]);
     assert.deepEqual(Object.keys(shape), ["gate", "artifact", "decision", "note"]);
-    writeFileSync(join(r.runDir, "SUMMARY.md"), "x");
+    acceptedSummary(r.runDir);
     for (const [decision, ok] of [["accepted", true], ["auto-approved", true], ["rejected", false]]) {
       assert.ok(shape.decision.split("|").includes(decision), decision);
       writeFileSync(join(r.runDir, "gates.jsonl"), JSON.stringify({ ...shape, gate: 4, decision }) + "\n");

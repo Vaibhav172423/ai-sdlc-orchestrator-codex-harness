@@ -45,7 +45,7 @@ failure this architecture exists to prevent.
 
 If stderr contains `COST_CAP_EXCEEDED`, the run has spent its policy's `hard_cost_cap_usd`.
 Do not retry and do not dispatch anything else: the bridge refuses every further call this run.
-Stop, print the message verbatim, and do not write `SUMMARY.md` — the run did not finish.
+Stop, print the message verbatim, and do not go on to Phase 9 — the run did not finish.
 
 ## Rule 0 — preflight, before anything else
 
@@ -97,8 +97,8 @@ different things depending on which one you last read.
  7. test_run                     → in {{CODE_DIR}}: npm install && npm test; debug failures via dispatched packets
  8. security_review              → security_review.md
     ── GATE 3 ────────────────────────────────
- 9. generate_final_report        → manifest.json rollups
-    ── GATE 4 (final acceptance) ─────────────
+ 9. generate_final_report        → write-manifest.mjs writes manifest.json + SUMMARY.md
+    ── GATE 4 (final acceptance) ─────────────  → write-manifest.mjs again, --status=accepted
 ```
 
 Phases 1, 2, 4, 6 and 8 are judgment work: the policy routes them to the premium tier. Phases 5
@@ -170,8 +170,23 @@ decision under the key `decision`:
 ```
 
 `pending` is only for a gate you are handing to a person and ending your turn on. Gate 4 records
-`accepted`, `auto-approved` or `rejected`. The run counts as finished only once Phase 9 has
-written `SUMMARY.md` and Gate 4 is recorded as accepted or auto-approved.
+`accepted`, `auto-approved` or `rejected`.
+
+## The final report
+
+Phase 9 is one command:
+
+```
+node '{{PLUGIN_ROOT}}/scripts/write-manifest.mjs' '{{OUTPUT_DIR}}' \
+  --run-id={{RUN_ID}} --policy={{POLICY}} \
+  --project-root='{{PROJECT_ROOT}}' --code-dir='{{CODE_DIR}}' --summary
+```
+
+It writes `manifest.json` from the telemetry and renders `SUMMARY.md` from it. Do not write
+manifest.json or SUMMARY.md yourself, and do not edit them afterwards. Once Gate 4 is recorded as
+`accepted` (or `auto-approved`) and any close-out is done, run the same command again with
+`--status=accepted` (or `--status=auto-approved`). The run counts as finished only after that
+re-run.
 
 A run whose gates were not actually reviewed by a person must say so in that record. A reader
 looking at the artifacts later cannot tell the difference otherwise, and "a human approved this"

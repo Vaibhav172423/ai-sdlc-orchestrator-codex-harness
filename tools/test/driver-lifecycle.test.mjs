@@ -1137,3 +1137,101 @@ test("--resume is refused while another driver process still runs the run, and a
     h.cleanup();
   }
 });
+
+const readManifest = (h, id) => JSON.parse(readFileSync(join(h.runDirOf(id), "manifest.json"), "utf-8"));
+
+test("every run end leaves a code-written manifest.json; a max_turns stop has status incomplete and no SUMMARY.md", async () => {
+  const h = harness();
+  try {
+    const telemetry = [{ ts: new Date().toISOString(), pass: "r1", phase: "requirements_analysis", model: "gpt-5.6-terra", provenance: "vendor", cost_usd: 0.25, input_tokens: 10, input_tokens_cached: 0, output_tokens: 5 }];
+    withScenario(h, "r1", [{ telemetry, gates: [{ gate: 1, decision: "auto-approved" }] }]);
+    assert.equal((await h.run(args(h, "r1", "--max-turns=1"))).code, 3);
+    const m = readManifest(h, "r1");
+    assert.equal(m.written_by, "plugin/scripts/write-manifest.mjs");
+    assert.equal(m.status, "incomplete");
+    assert.equal(m.route, "headless");
+    assert.equal(m.run_id, "r1");
+    assert.equal(m.pass, "r1");
+    assert.equal(m.policy, "gpt-plus-flash");
+    assert.equal(m.policy_name, "gpt-plus-flash");
+    assert.equal(m.totals.dispatched_cost_usd, 0.25);
+    assert.equal(m.driver.outcome, "max_turns");
+    assert.equal(m.totals.driver_cost_usd_modeled, h.manifest("r1").driver_cost_usd_modeled);
+    assert.equal(m.summary, null);
+    assert.ok(!existsSync(join(h.runDirOf("r1"), "SUMMARY.md")), "only Phase 9 produces SUMMARY.md");
+  } finally {
+    h.cleanup();
+  }
+});
+
+test("a completed run's SUMMARY.md is rendered again with the conductor's modeled cost, and says who accepted it", async () => {
+  const h = harness();
+  try {
+    withScenario(h, "r1", [COMPLETE]);
+    assert.equal((await h.run(args(h, "r1"))).code, 0);
+    const m = readManifest(h, "r1");
+    assert.equal(m.status, "auto-approved", "the gate mode approved Gate 4, not a person");
+    assert.equal(m.driver.outcome, "completed");
+    assert.equal(m.driver.driver_turns, 1);
+    const summary = readFileSync(join(h.runDirOf("r1"), "SUMMARY.md"), "utf-8");
+    const cost = h.manifest("r1").driver_cost_usd_modeled;
+    assert.ok(summary.includes(`Conductor (driver) cost, modeled: $${cost.toFixed(4)} over 1 turn.`), summary);
+    assert.doesNotMatch(summary, /still going/);
+    assert.match(summary, /Status: \*\*auto-approved\*\*/);
+
+    const t = terminal(["accept\n"]);
+    withScenario(h, "r2", [
+      { gates: [{ gate: 4, decision: "pending" }], summary: true },
+      { gates: [{ gate: 4, decision: "accepted" }], summary: true, summaryStatus: "accepted" },
+    ]);
+    const run2 = await h.run(["--project-root", h.root, "--run-id=r2", "--mode=greenfield"], { stdin: t.stdin, stdout: t.stdout });
+    assert.equal(run2.code, 0);
+    assert.equal(readManifest(h, "r2").status, "accepted");
+  } finally {
+    h.cleanup();
+  }
+});
+
+test("a manifest.json the run end cannot write is a warning: the run keeps its exit code", async () => {
+  const h = harness();
+  try {
+    withScenario(h, "r1", [{ gates: [{ gate: 1, decision: "auto-approved" }], blockManifest: true }]);
+    const { code, err } = await h.run(args(h, "r1", "--max-turns=1"));
+    assert.equal(code, 3);
+    assert.match(err, /manifest\.json was not written: /);
+    assert.equal(h.records("r1").at(-1).kind, "run_end");
+    assert.equal(h.manifest("r1").outcome, "max_turns", "driver-manifest.json is still rebuilt");
+  } finally {
+    h.cleanup();
+  }
+});
+
+test("a SUMMARY.md the conductor wrote by hand does not complete the run, and the run end says why", async () => {
+  const h = harness();
+  try {
+    withScenario(h, "r1", [{ gates: [{ gate: 4, decision: "auto-approved" }], handSummary: true }]);
+    const { code, err } = await h.run(args(h, "r1", "--max-turns=1"));
+    assert.equal(code, 3);
+    assert.match(err, /SUMMARY\.md does not count as the final report: SUMMARY\.md was not written by plugin\/scripts\/write-manifest\.mjs/);
+    assert.equal(readManifest(h, "r1").summary, null);
+  } finally {
+    h.cleanup();
+  }
+});
+
+test("Phase 9's provisional SUMMARY.md does not end the run: the re-run after Gate 4 does", async () => {
+  const h = harness();
+  try {
+    withScenario(h, "r1", [
+      { gates: [{ gate: 4, decision: "auto-approved" }], summary: true, summaryStatus: null },
+      { summary: true, summaryStatus: "auto-approved" },
+    ]);
+    const { code, out } = await h.run(args(h, "r1", "--max-turns=2"));
+    assert.equal(code, 0);
+    assert.equal(h.calls().length, 2, "the turn that left a provisional summary was resumed");
+    assert.match(out, /run r1: completed — write-manifest\.mjs wrote SUMMARY\.md and Gate 4 was accepted/);
+    assert.match(h.calls()[1].argv.at(-1), /run that command again with --status=accepted or --status=auto-approved/);
+  } finally {
+    h.cleanup();
+  }
+});

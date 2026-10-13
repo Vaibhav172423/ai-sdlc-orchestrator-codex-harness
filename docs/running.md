@@ -181,7 +181,7 @@ A run pauses at human-in-the-loop gates. Four in a greenfield run, plus Gate 0 f
 | **Gate 1** | After requirements | `requirements.md` |
 | **Gate 2** | After architecture | `design.md` |
 | **Gate 3** | After security review | `security_review.md` |
-| **Gate 4** | At the end | Final acceptance — total cost, file count, test results |
+| **Gate 4** | At the end | Final acceptance — dispatched cost, file count, test results |
 
 Gates 1–3 take `approved`, `revise: <comments>`, or `abort`. Gate 4 takes `accept` or
 `reject: <comments>`.
@@ -255,8 +255,8 @@ contract and its decision log under `local/`, the baseline, the ledger — stays
 | `review.json` | Phase 6 | Senior review findings and refinement packets |
 | `security_review.md` | Phase 8 | Security findings, gated at Gate 3 |
 | `telemetry.jsonl` | every dispatch | One record per model call, vendor-metered |
-| `manifest.json` | Phase 9 | Rollup of the whole run |
-| `SUMMARY.md` | Phase 9 | Total cost, breakdown, links to artifacts |
+| `manifest.json` | `write-manifest.mjs`: Phase 9, Gate 4, and every run end | Rollup of the whole run, written by code |
+| `SUMMARY.md` | `write-manifest.mjs`: Phase 9, Gate 4, and a completed run's end | Dispatched cost and its split, the conductor's cost, phases, gates, links to artifacts |
 | `gates.jsonl` | each gate | Gate decisions |
 | `preflight.json` | Phase -1 | Whether every model the run dispatches to is reachable |
 | `state.json` | each gate | The gate that is waiting for an answer |
@@ -295,7 +295,7 @@ exit code says how:
 
 | Exit | Outcome | What happened |
 |---|---|---|
-| 0 | `completed` | Phase 9 wrote `SUMMARY.md` and Gate 4 was accepted |
+| 0 | `completed` | Gate 4 was accepted, and `write-manifest.mjs` wrote `SUMMARY.md` after it |
 | 1 | `codex_failed`, `pin_rejected` | codex exited non-zero (its stderr is printed and kept in `driver-stderr.log`), or rejected the pinned model or effort |
 | 2 | — | A usage error, or a refusal before anything was spent |
 | 3 | `max_turns` | `--max-turns` invocations ran out before the run finished |

@@ -91,7 +91,7 @@ If it missed something, say so instead — `revise: the 404 body should include 
 
 **Gate 3 — security review.** `.sdlc/security_review.md`. On a service this small this is short.
 
-**Gate 4 — final acceptance.** Prints total cost, file count and test results. Reply `accept`.
+**Gate 4 — final acceptance.** Prints dispatched cost, file count and test results. Reply `accept`.
 
 Between the gates the run works without stopping: it plans task packets, generates code, writes
 tests, runs them, and reviews what it produced.

@@ -62,7 +62,7 @@ code says how the run ended:
 
 | Exit | Meaning |
 |---|---|
-| 0 | Completed: `SUMMARY.md` written and Gate 4 accepted |
+| 0 | Completed: Gate 4 accepted, and Phase 9's `write-manifest.mjs` re-run wrote `SUMMARY.md` after it |
 | 1 | codex failed, or rejected the pinned model or effort |
 | 2 | Usage error, or refused before spending anything |
 | 3 | `--max-turns` reached before the run finished; continue with `--resume` |

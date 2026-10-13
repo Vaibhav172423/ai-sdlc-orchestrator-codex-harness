@@ -14,6 +14,7 @@ import { finalizeRun } from "../../plugin/codex/run-finalize.mjs";
 import { resolveRun, RUN_RECORD_FILES } from "../../plugin/codex/run-folder.mjs";
 import { isMain } from "../../plugin/scripts/lib/is-main.mjs";
 import { sessionHome } from "./fixtures/session-home.mjs";
+import { acceptedSummary } from "./fixtures/accepted-summary.mjs";
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
 const PLUGIN_ROOT = join(REPO_ROOT, "plugin");
@@ -191,7 +192,7 @@ test("a named run id that already holds a record is refused, whichever route wro
   } finally { p.done(); }
 });
 
-test("completed needs SUMMARY.md and an accepted Gate 4; nothing is written until both are there", async () => {
+test("completed needs an accepted Gate 4 and the SUMMARY.md Phase 9's re-run wrote; nothing is written until both are there", async () => {
   const p = project();
   try {
     greenfield(p.root);
@@ -212,6 +213,17 @@ test("completed needs SUMMARY.md and an accepted Gate 4; nothing is written unti
 
     appendFileSync(join(runDir, "gates.jsonl"), 'not json\n{"gate": "gate-4", "status": "approved", "run_id": "r1"}\n');
     r = await end(p.root, ["--run-dir=.sdlc/runs/r1", "--outcome=completed"]);
+    assert.equal(r.code, 2, "a hand-written SUMMARY.md is not the final report");
+    assert.match(r.err, /a SUMMARY\.md written by Phase 9's command \(SUMMARY\.md was not written by plugin\/scripts\/write-manifest\.mjs/);
+
+    acceptedSummary(runDir, { status: "provisional" });
+    r = await end(p.root, ["--run-dir=.sdlc/runs/r1", "--outcome=completed"]);
+    assert.equal(r.code, 2, "Phase 9's first, provisional SUMMARY.md comes before Gate 4");
+    assert.match(r.err, /Phase 9's command run again with --status=accepted after Gate 4 \(manifest\.json's status is provisional\)/);
+    assert.equal(readFileSync(join(runDir, "run.json"), "utf-8"), before);
+
+    acceptedSummary(runDir);
+    r = await end(p.root, ["--run-dir=.sdlc/runs/r1", "--outcome=completed"]);
     assert.equal(r.code, 0, r.err);
     const run = readJson(join(runDir, "run.json"));
     assert.equal(run.outcome, "completed");
@@ -222,6 +234,9 @@ test("completed needs SUMMARY.md and an accepted Gate 4; nothing is written unti
     assert.doesNotMatch(r.out, /Continue:/);
     assert.equal(existsSync(join(runDir, "driver-cost-modeled.jsonl")), false, "an interactive run has no exec stream to model");
     assert.equal(existsSync(join(runDir, "driver-manifest.json")), false);
+    const manifest = readJson(join(runDir, "manifest.json"));
+    assert.deepEqual([manifest.route, manifest.status, manifest.driver], ["interactive", "accepted", null]);
+    assert.equal(checkCompleted(runDir).ok, true, "the run end renders SUMMARY.md again and it still counts");
 
     r = await end(p.root, [`--run-dir=${runDir}`, "--outcome=aborted", "--reason=too late"]);
     assert.equal(r.code, 2);
@@ -232,7 +247,7 @@ test("completed needs SUMMARY.md and an accepted Gate 4; nothing is written unti
 test("completion evidence reads both gate-line shapes the conductor writes", () => {
   const p = project();
   try {
-    writeFileSync(join(p.root, "SUMMARY.md"), "x");
+    acceptedSummary(p.root);
     for (const line of ['{"gate":4,"decision":"auto-approved"}', '{"gate":"4","status":"accepted"}', '{"gate":"Gate-4","decision":"Accept"}']) {
       writeFileSync(join(p.root, "gates.jsonl"), `${line}\n`);
       assert.equal(checkCompleted(p.root).ok, true, line);
@@ -292,7 +307,7 @@ test("--resume refuses a completed run, a headless run and an unknown id", async
     greenfield(p.root);
     await start(p.root, ["--mode=greenfield", "--run-id=r1"]);
     const runDir = join(p.root, ".sdlc", "runs", "r1");
-    writeFileSync(join(runDir, "SUMMARY.md"), "x");
+    acceptedSummary(runDir);
     writeFileSync(join(runDir, "gates.jsonl"), '{"gate":4,"decision":"accepted"}\n');
     assert.equal((await end(p.root, [`--run-dir=${runDir}`, "--outcome=completed"])).code, 0);
     let r = await start(p.root, ["--resume=r1"]);
@@ -397,13 +412,33 @@ test("the run-end steps get the interactive context, and a failing one still lea
   } finally { p.done(); }
 });
 
-test("finalizeRun leaves the driver files alone on the interactive route", async () => {
+test("finalizeRun leaves the driver files alone on the interactive route and still writes manifest.json", async () => {
   const p = project();
   try {
-    const out = await finalizeRun({ route: "interactive", projectRoot: p.root, runDir: p.root, runId: "r1", outcome: "aborted" });
-    assert.deepEqual(out, { driverManifest: null });
+    const ctx = { route: "interactive", projectRoot: p.root, runDir: p.root, runId: "r1", outcome: "aborted" };
+    let out = await finalizeRun({ ...ctx, policyName: "gpt-plus-flash" });
+    assert.equal(out.driverManifest, null);
     assert.equal(existsSync(join(p.root, "driver-manifest.json")), false);
     assert.equal(existsSync(join(p.root, "driver-cost-modeled.jsonl")), false);
+    const m = readJson(join(p.root, "manifest.json"));
+    assert.deepEqual([m.route, m.status, m.driver, m.policy], ["interactive", "aborted", null, "gpt-plus-flash"]);
+    assert.equal(existsSync(join(p.root, "SUMMARY.md")), false, "only a completed run end renders SUMMARY.md");
+
+    out = await finalizeRun(ctx);
+    assert.deepEqual(out.notes, ["manifest.json was not written: --policy is missing"], "a run with no policy recorded is a note, not a failed end");
+  } finally { p.done(); }
+});
+
+test("end-run prints the run-end notes, such as a manifest.json it could not write, and still exits 0", async () => {
+  const p = project();
+  try {
+    greenfield(p.root);
+    await start(p.root, ["--mode=greenfield", "--run-id=r1"]);
+    const runDir = join(p.root, ".sdlc", "runs", "r1");
+    const loadFinalize = async () => ({ finalizeRun: async () => ({ driverManifest: null, manifest: null, notes: ["manifest.json was not written: disk full"] }) });
+    const r = await end(p.root, [`--run-dir=${runDir}`, "--outcome=stopped", "--reason=x"], { loadFinalize });
+    assert.equal(r.code, 0, r.err);
+    assert.match(r.err, /^  manifest\.json was not written: disk full$/m);
   } finally { p.done(); }
 });
 
@@ -482,7 +517,7 @@ test("ending a run again with the same outcome keeps the first record and runs o
     assert.equal(runEnds().length, 1);
     assert.equal(finalized, 2);
 
-    writeFileSync(join(runDir, "SUMMARY.md"), "# Summary\n");
+    acceptedSummary(runDir);
     writeFileSync(join(runDir, "gates.jsonl"), '{"gate": 4, "decision": "accepted"}\n');
     const completed = [`--run-dir=${runDir}`, "--outcome=completed"];
     assert.equal((await end(p.root, completed, { loadFinalize })).code, 0);

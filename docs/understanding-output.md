@@ -61,8 +61,8 @@ In each run's folder, `.sdlc/runs/<run-id>/`:
 | File | Contents |
 |---|---|
 | `telemetry.jsonl` | One JSON line per model call. The source of everything in the report. |
-| `manifest.json` | Rollup of the telemetry — totals, per-phase, per-module, per-task-type — plus the run's artifacts. |
-| `SUMMARY.md` | Written by the final phase. A run counts as completed only once this exists and Gate 4 is accepted. |
+| `manifest.json` | Written by `plugin/scripts/write-manifest.mjs`, never by the model: the telemetry rollup, the cost split by provenance, the conductor's modeled cost, the gates and the file counts. See below. |
+| `SUMMARY.md` | Rendered from `manifest.json` by the same script. A run counts as completed once Gate 4 is accepted and the script has run again after it. |
 | `gates.jsonl` | One line per gate decision, including `auto-approved` and `pending` ones, so an unattended run leaves the same audit trail as an attended one. When you abort a relayed gate (or give no answer) and the conductor does not record it, `run.mjs` adds the `aborted` line with `"recorded_by": "run.mjs"`. |
 | `state.json` | The gate that is waiting for an answer, written before the gate is printed. |
 | `provenance.json` | Brownfield: every file the run touched, with its pre-run hash. The input `$mmo-codex:revert` reads. |
@@ -105,6 +105,29 @@ One event per line. The fields that matter when reading by hand:
 | `codex_thread_id` | `codex-cli` dispatches only: the nested `codex exec` thread. Its rollout under `CODEX_HOME/sessions` ends in this id. |
 
 **The cached-token convention.** Codex reports `input_tokens` inclusive of `cached_input_tokens`; this harness stores them exclusive, so `input_tokens + input_tokens_cached` is the true total. An adapter that gets this wrong double-counts cached input and inflates cost. The convention is enforced in `plugin/codex/telemetry/event-reader.mjs`, and [methodology.md](methodology.md) explains why it was chosen.
+
+### `manifest.json`
+
+Phase 9 runs `write-manifest.mjs`, Gate 4's acceptance runs it again with `--status=accepted`, and every run end runs it once more: `run.mjs` on a headless run, `end-run.mjs` on a run started in a session. Its main keys:
+
+| Key | What it holds |
+|---|---|
+| `run_id`, `pass` | The run id, in both spellings readers use. |
+| `policy`, `policy_name` | The policy name, in both spellings. |
+| `status` | `provisional` until Gate 4, then `accepted` or `auto-approved`. A run that ends any other way gets its outcome: `incomplete` (`--max-turns`), `aborted`, `halted`, `refused`, `stopped`, `cost_cap`, `failed`, `pin_rejected`, `interrupted`. |
+| `route` | `headless` for a `run.mjs` run, `interactive` otherwise. |
+| `total_cost_usd`, `totals.dispatched_cost_usd` | Dispatched work, summed from `telemetry.jsonl`. |
+| `totals.by_provenance` | The same total split into `vendor`, `estimated`, `modeled`, `none` and `unlabelled`. |
+| `totals.driver_cost_usd_modeled` | The conductor's modeled cost; `null` when nothing measured it. It comes from `driver-usage.json` when the session-file collector wrote one (it books the session file wherever the exec stream disagrees with it), else from `driver-manifest.json`. The cost report reads them in the same order. |
+| `totals.driver_cost_source`, `totals.driver_usage` | Which of the two files the figure came from and, for `driver-usage.json`, its `cost_source`, `verified`, `cost_complete` and `unpriced`. |
+| `phase_breakdown`, `model_breakdown`, `module_breakdown`, `task_type_breakdown` | The bridge's `buildManifest` rollups. |
+| `artifacts` | `files` and `loc` of the product. Left out, with a note, when the code directory is the repository and no `provenance.json` lists the files the run wrote. |
+| `gates` | Every `gates.jsonl` line that parses. |
+| `driver` | From `driver-manifest.json`: invocations, turns, incomplete turns, outcome, thread ids, pin. `null` on the interactive route. |
+| `summary` | The `SUMMARY.md` this script rendered, with its sha256. A hand-written or edited `SUMMARY.md` does not match it, and does not complete the run. |
+| `notes` | What the script left out, and why. |
+
+The manifest holds no summed run total: dispatched work and the conductor's cost stay on separate lines.
 
 ### `provenance.json`
 

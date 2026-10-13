@@ -43,6 +43,7 @@ import {
 import {
   appendRecord,
   classifyDriverAuth,
+  completionEvidence,
   countLines,
   invocationCount,
   isDeliberate,
@@ -62,6 +63,7 @@ import { renderPrompt, renderSkills } from "./render.mjs";
 const CODEX_DIR = dirname(fileURLToPath(import.meta.url));
 const PLUGIN_ROOT = dirname(CODEX_DIR);
 const WRITE_CONTRACT_HOOK = join(CODEX_DIR, "hooks", "write-contract-check.mjs");
+export const WRITE_MANIFEST_MJS = join(PLUGIN_ROOT, "scripts", "write-manifest.mjs");
 
 /** Sandbox and approval pins — see the verification doc's "Pins chosen". */
 export const SANDBOX_MODE = "workspace-write";
@@ -355,7 +357,10 @@ export const RESUME_PROMPT =
   'stop.json with {"reason": "<one line>"}): a turn that ends with no new record reads as ' +
   "running out of context, and the session is resumed. The rules you were given still apply: " +
   "you author no shipped content, every artifact comes back from a dispatch. Finish with Phase 9 " +
-  "(manifest.json and SUMMARY.md) and Gate 4.";
+  `and Gate 4. Phase 9 is one command, node '${WRITE_MANIFEST_MJS}' with the arguments your playbook ` +
+  "gives it: it writes manifest.json and SUMMARY.md, so do not write manifest.json or SUMMARY.md " +
+  "yourself. Once Gate 4 is recorded as accepted or auto-approved and any close-out your playbook " +
+  "gives is done, run that command again with --status=accepted or --status=auto-approved.";
 
 /**
  * RESUME_PROMPT plus this invocation's gate mode, which may differ from the
@@ -1184,7 +1189,9 @@ async function runDriver(args, deps) {
       code_dir: codeDir,
       brief_path: briefPath,
     });
-    const { driverManifest: m } = await finalizeRun({
+    // Read before the run end rewrites manifest.json with the outcome as its status.
+    const summaryWhy = outcome === "completed" ? null : completionEvidence(runDir, runStartedAtMs).summaryReason;
+    const { driverManifest: m, notes: finalNotes } = await finalizeRun({
       projectRoot,
       runDir,
       runId,
@@ -1212,6 +1219,8 @@ async function runDriver(args, deps) {
       for (const line of lastEnd.stderr_tail.trimEnd().split("\n").slice(-10)) warn(`    ${line}`);
       warn(`  full log: ${stderrLogPath}`);
     }
+    if (summaryWhy && existsSync(join(runDir, "SUMMARY.md"))) warn(`  SUMMARY.md does not count as the final report: ${summaryWhy}`);
+    for (const n of finalNotes) warn(`  ${n}`);
     if (m.pin_rejection) warn(`  the codex CLI rejected the pinned model or effort — ${m.pin_rejection}`);
     for (const w of m.codex_warnings ?? []) warn(`  codex warning: ${w}`);
     const atLeast = m.driver_turns_incomplete ? "at least " : "";

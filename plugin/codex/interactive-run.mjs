@@ -8,6 +8,8 @@ import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { ACCEPTED_STATUSES, codeWrittenSummary } from "../scripts/lib/run-summary.mjs";
+
 export const PLUGIN_ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
 export const RUN_JSON = "run.json";
 export const RUN_JSON_VERSION = 1;
@@ -15,7 +17,7 @@ export const ROUTE = "interactive";
 
 /** How a run in a session may end. `deliberate` matches run-record.mjs's OUTCOMES. */
 export const INTERACTIVE_OUTCOMES = {
-  completed: { deliberate: null, when: "Gate 4 is recorded as accepted and Phase 9 wrote SUMMARY.md" },
+  completed: { deliberate: null, when: "Gate 4 is recorded as accepted and Phase 9's command ran again with --status=accepted" },
   aborted: { deliberate: true, when: "a gate was answered abort, or the user stopped the run" },
   halted: { deliberate: true, when: "preflight returned ok: false, or a pre-check step failed" },
   refused: { deliberate: true, when: "the write guard refused a write and the run stopped" },
@@ -135,15 +137,22 @@ function gateNumber(value) {
 const GATE_4_ACCEPTED = new Set(["accepted", "accept", "approved", "auto-approved"]);
 
 /**
- * What a completed session run needs: SUMMARY.md, and the latest Gate 4 line
- * accepting it (a later reject sends the run back for changes).
+ * What a completed session run needs: the SUMMARY.md write-manifest.mjs wrote
+ * when Phase 9's command ran again with an accepted status, and the latest
+ * Gate 4 line accepting it (a later reject sends the run back for changes).
  */
 export function checkCompleted(runDir) {
-  const summary = existsSync(join(runDir, "SUMMARY.md"));
+  const exists = existsSync(join(runDir, "SUMMARY.md"));
+  const byCode = exists ? codeWrittenSummary(runDir) : null;
+  const summary = byCode?.ok === true && ACCEPTED_STATUSES.includes(byCode.status);
   const gate4 = gateLines(runDir).filter((g) => gateNumber(g.gate) === 4).at(-1) ?? null;
   const gate4Decision = gate4 ? String(gate4.decision ?? gate4.status ?? "").trim().toLowerCase() : null;
   const missing = [];
-  if (!summary) missing.push("SUMMARY.md in the run folder (Phase 9)");
+  if (!exists) missing.push("SUMMARY.md in the run folder (Phase 9)");
+  else if (!byCode.ok) missing.push(`a SUMMARY.md written by Phase 9's command (${byCode.reason})`);
+  else if (!summary) {
+    missing.push(`Phase 9's command run again with --status=accepted after Gate 4 (manifest.json's status is ${byCode.status})`);
+  }
   if (!gate4) missing.push("a Gate 4 line in gates.jsonl");
   else if (!GATE_4_ACCEPTED.has(gate4Decision)) missing.push(`Gate 4 accepted (the latest Gate 4 line says '${gate4Decision}')`);
   return { summary, gate4Decision, ok: missing.length === 0, missing };

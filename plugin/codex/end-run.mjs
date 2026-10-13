@@ -7,7 +7,8 @@
  * Usage:
  *   node end-run.mjs --run-dir=<path> --outcome=<outcome> [--reason=<one line>]
  *
- * Outcomes: completed (needs SUMMARY.md and an accepted Gate 4 line), aborted,
+ * Outcomes: completed (needs an accepted Gate 4 line and the SUMMARY.md that
+ * Phase 9's command wrote when it ran again with --status=accepted), aborted,
  * halted, refused, cost_cap, stopped, failed. Every outcome but completed
  * needs --reason.
  *
@@ -110,9 +111,10 @@ export async function main(argv = [], deps = {}) {
   }
   const { run, runDir, repeated } = recorded;
   let code = 0;
+  let notes = [];
   try {
     const { finalizeRun } = await (deps.loadFinalize ?? (() => import("./run-finalize.mjs")))();
-    await finalizeRun({
+    const out = await finalizeRun({
       route: ROUTE,
       projectRoot: run.project_root,
       runDir,
@@ -124,6 +126,7 @@ export async function main(argv = [], deps = {}) {
       policyName: run.policy,
       codeDir: run.code_dir,
     });
+    notes = Array.isArray(out?.notes) ? out.notes : [];
   } catch (err) {
     stderr.write(
       `end-run: the run's end is recorded, but a run-end step failed: ${err?.message ?? err}. Fix it and re-run the same command.\n`,
@@ -132,6 +135,7 @@ export async function main(argv = [], deps = {}) {
   }
   stdout.write(`run ${run.run_id}: ${run.outcome}${run.reason ? ` — ${run.reason}` : ""}\n`);
   if (repeated) stdout.write(`  already recorded at ${run.ended_at}; the record is kept and the run-end steps ran again\n`);
+  for (const n of notes) stderr.write(`  ${n}\n`);
   stdout.write(`  run folder:  ${runDir}\n`);
   const report = reportScript(pluginRoot);
   if (report) stdout.write(`  Cost report: node ${shellQuote(report)} ${shellQuote(runDir)} --markdown\n`);
