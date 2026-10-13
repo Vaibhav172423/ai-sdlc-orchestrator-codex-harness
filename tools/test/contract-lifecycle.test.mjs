@@ -51,7 +51,7 @@ function repo() {
       writeFileSync(path, JSON.stringify({ runDir: runDir(id), projectRoot: root, steps }));
       try { unlinkSync(`${path}.state`); } catch { /* first scenario */ }
     },
-    async run(argv) {
+    async run(argv, { signals = new EventEmitter() } = {}) {
       let out = "";
       let err = "";
       const code = await runMain(["--project-root", root, ...argv], {
@@ -59,7 +59,7 @@ function repo() {
         env: { ...process.env, CODEX_HOME: SESSION_HOME, FAKE_CODEX_SCENARIO: join(work, "scenario.json"), FAKE_CODEX_LOG: join(work, "fake.log") },
         spawnFn: fakeSpawn,
         stdin: { isTTY: false },
-        signals: new EventEmitter(),
+        signals,
         isGitRepo: () => true,
         stdout: { write: (s) => ((out += s), true) },
         stderr: { write: (s) => ((err += s), true) },
@@ -132,6 +132,32 @@ test("headless: a fresh brownfield run in a project another run holds is refused
     abandonRun({ projectRoot: p.root, runId: "held", reason: "test" });
     r = await p.run(["--run-id=b3", ...BROWNFIELD, "--dry-run"]);
     assert.equal(r.code, 0, r.err);
+  } finally { p.done(); }
+});
+
+test("headless: a signalled run ends its contract as interrupted, and --resume puts it back", async () => {
+  const p = repo();
+  try {
+    p.scenario("b6", [{ freeze: { allowlist: ["src/**"] }, sleepMs: 8000, sleepAfterTurn: true }]);
+    const signals = new EventEmitter();
+    const running = p.run(["--run-id=b6", ...BROWNFIELD], { signals });
+    const lockPath = join(p.runDir("b6"), "write-contract.lock.json");
+    for (let i = 0; i < 200 && !existsSync(lockPath); i++) await new Promise((r) => setTimeout(r, 25));
+    assert.ok(existsSync(lockPath), "the conductor froze the contract before the signal");
+    signals.emit("SIGTERM");
+    const r = await running;
+    assert.equal(r.code, 143, r.err);
+    const lock = p.lock("b6");
+    assert.equal(lock.end_outcome, "interrupted");
+    assert.ok(lock.ended_at);
+    assert.equal(p.contract().active, false);
+    assert.match(r.out, /^ {2}write contract: ended \(interrupted\), switched off$/m);
+
+    p.scenario("b6", [{ gates: [{ gate: 4, decision: "auto-approved" }], close: true, summary: true }]);
+    const again = await p.run(["--resume=b6"]);
+    assert.equal(again.code, 0, again.err);
+    assert.equal(p.lock("b6").reopened_at.length, 1);
+    assert.equal(p.lock("b6").end_outcome, "completed");
   } finally { p.done(); }
 });
 
