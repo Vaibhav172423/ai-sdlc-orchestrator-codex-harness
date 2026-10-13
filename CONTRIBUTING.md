@@ -41,6 +41,7 @@ All of the above open PRs targeting **`develop`**, never `main` directly.
    |---|---|
    | `tools/test/lib/stand-ins.mjs` | Preloaded by `npm test`. Puts stand-in `codex`, `gcloud` and `npm` first on `PATH` and points `CODEX_HOME` at a temporary directory, so your `~/.codex` is never read or written. |
    | `tools/test/lib/sandbox.mjs` | `codexSandbox()` gives a test its own temporary `HOME` and `CODEX_HOME`. The setup-wizard tests run inside one. |
+   | `tools/test/setup.test.mjs` | Runs the wizard's policy checks from a temporary copy of `tools/setup.mjs` and `plugin/`, so the policy a test pins never lands in your checkout's `.sdlc/project.json`. |
    | `tools/test/offline.test.mjs` | Fails when a root test runs `codex`, `gcloud` or a script that does, outside the stand-ins. |
    | `tools/test/node-floor.test.mjs` | Holds every `package.json` to one `engines.node` floor, CI to that Node major, and every locked package to that floor. |
 4. Run `node tools/setup.mjs` on a clean clone to verify it still passes. Unlike `npm test`, it uses your real `codex`: its last step registers the bridge in `~/.codex/config.toml`.

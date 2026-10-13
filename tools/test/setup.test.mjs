@@ -62,28 +62,41 @@ function inSandbox(fn, extraEnv = {}) {
 }
 
 /**
- * Pins the policy the wizard will resolve, then restores whatever was there.
- *
- * The wizard reads this clone's own `.sdlc/project.json` to decide whether a
- * missing OPENAI_API_KEY is a blocker — a metered policy needs one, the seat
- * policy does not. That file is gitignored and machine-local, so a developer
- * who has chosen the seat policy would otherwise see these tests fail while CI
- * (which has no such file) passed. Pin it rather than inherit it.
+ * A copy of the wizard and the plugin it reads, for a test that needs its own
+ * project state. `built` keeps the bridge's dist/, with an empty node_modules/
+ * when this checkout has one, so the copy's build step sees what this
+ * checkout's does.
+ */
+function wizardClone({ built = true } = {}) {
+  const clone = mkdtempSync(join(tmpdir(), "mmo-wizard-clone-"));
+  mkdirSync(join(clone, "tools"));
+  cpSync(join(REPO_ROOT, "tools", "setup.mjs"), join(clone, "tools", "setup.mjs"));
+  const skipped = built ? /[\\/](node_modules|\.venv)$/ : /[\\/](node_modules|dist|\.venv)$/;
+  cpSync(join(REPO_ROOT, "plugin"), join(clone, "plugin"), {
+    recursive: true,
+    preserveTimestamps: true,
+    filter: (src) => !skipped.test(src),
+  });
+  if (built && existsSync(join(SERVER_DIR, "node_modules"))) {
+    mkdirSync(join(clone, "plugin", "mcp", "model-dispatch", "node_modules"));
+  }
+  return clone;
+}
+
+/**
+ * Runs `fn(clone)` with a wizard clone whose `.sdlc/project.json` names the
+ * policy. The wizard reads that file to decide whether a missing
+ * OPENAI_API_KEY blocks setup. In this checkout it is the developer's own
+ * choice, and two test runs at once would read each other's pin.
  */
 function withPolicy(name, fn) {
-  const dir = join(REPO_ROOT, ".sdlc");
-  const path = join(dir, "project.json");
-  const had = existsSync(path) ? readFileSync(path, "utf8") : null;
-  const madeDir = !existsSync(dir);
+  const clone = wizardClone();
   try {
-    mkdirSync(dir, { recursive: true });
-    const base = had ? JSON.parse(had) : {};
-    writeFileSync(path, JSON.stringify({ ...base, default_policy: name }, null, 2));
-    return fn();
+    mkdirSync(join(clone, ".sdlc"));
+    writeFileSync(join(clone, ".sdlc", "project.json"), JSON.stringify({ default_policy: name }, null, 2));
+    return fn(clone);
   } finally {
-    if (had !== null) writeFileSync(path, had);
-    else if (madeDir) rmSync(dir, { recursive: true, force: true });
-    else rmSync(path, { force: true });
+    rmSync(clone, { recursive: true, force: true });
   }
 }
 
@@ -105,7 +118,7 @@ test("every question falls through to a documented default when non-interactive"
 test("a blocked setup reports its verdict through the exit code, not just on screen", () => {
   // Pinned to the metered policy so the block is real and not machine-dependent:
   // no key + a policy that bills one is a genuine blocker.
-  const r = withPolicy("gpt-plus-flash", () => inSandbox((sb) => runWizard(sb, { OPENAI_API_KEY: "" })));
+  const r = withPolicy("gpt-plus-flash", (clone) => inSandbox((sb) => runWizard(sb, { OPENAI_API_KEY: "" }, clone)));
   assert.match(r.stdout, /Setup incomplete/);
   assert.equal(r.status, 1, "a caller checking only the exit code must see the block");
 });
@@ -113,18 +126,17 @@ test("a blocked setup reports its verdict through the exit code, not just on scr
 test("the same install is NOT blocked once the policy is one that needs no key", () => {
   // The other half of the same rule — a wizard that blocks here is telling a
   // ChatGPT-seat user to buy a key they will never use.
-  const r = withPolicy("gpt-seat-plus-flash", () => inSandbox((sb) => runWizard(sb, { OPENAI_API_KEY: "" })));
+  const r = withPolicy("gpt-seat-plus-flash", (clone) => inSandbox((sb) => runWizard(sb, { OPENAI_API_KEY: "" }, clone)));
   assert.match(r.stdout, /does not need one/);
   assert.ok(!/Setup incomplete/.test(r.stdout), `must not block: ${r.stdout}`);
   assert.equal(r.status, 0);
 });
 
 test("the wizard blames the policy for the key requirement, and names the keyless alternative", () => {
-  // This repo has no .sdlc/project.json, so the wizard resolves the default
-  // metered policy — which really does bill the key, so the block is correct.
-  // What it must not do is present the key as unconditional: a ChatGPT seat
-  // plus gpt-seat-plus-flash runs the same models without one.
-  const r = withPolicy("gpt-plus-flash", () => inSandbox((sb) => runWizard(sb, { OPENAI_API_KEY: "" })));
+  // Pinned to the metered policy, which really does bill the key, so the block
+  // is correct. What it must not do is present the key as unconditional: a
+  // ChatGPT seat plus gpt-seat-plus-flash runs the same models without one.
+  const r = withPolicy("gpt-plus-flash", (clone) => inSandbox((sb) => runWizard(sb, { OPENAI_API_KEY: "" }, clone)));
   assert.match(r.stdout, /OPENAI_API_KEY is not set/);
   assert.match(r.stdout, /policy 'gpt-plus-flash' bills it/, "the reason must name the policy");
   assert.match(r.stdout, /gpt-seat-plus-flash/, "the way out must be on screen, not only in the docs");
@@ -132,6 +144,18 @@ test("the wizard blames the policy for the key requirement, and names the keyles
     !/no in-session fallback/i.test(r.stdout),
     "the old claim that nothing covers the judgment tier is false since the seat policy landed",
   );
+});
+
+test("pinning a policy for the wizard leaves this checkout's .sdlc/project.json as it was", () => {
+  const dir = join(REPO_ROOT, ".sdlc");
+  const path = join(dir, "project.json");
+  const state = () => ({ dir: existsSync(dir), file: existsSync(path) ? readFileSync(path, "utf8") : null });
+  const before = state();
+  withPolicy("gpt-seat-plus-flash", (clone) => {
+    assert.deepEqual(state(), before, "the pin was written into the developer's own clone");
+    assert.equal(JSON.parse(readFileSync(join(clone, ".sdlc", "project.json"), "utf8")).default_policy, "gpt-seat-plus-flash");
+  });
+  assert.deepEqual(state(), before);
 });
 
 test("a codex that is not logged in blocks setup, through the exit code", () => {
@@ -213,14 +237,8 @@ test("the wizard does not run npm when the bridge is already built", {
 });
 
 test("on a clone whose bridge is not built, the wizard's npm ci and build reach only the stand-in", () => {
-  const clone = mkdtempSync(join(tmpdir(), "mmo-unbuilt-clone-"));
+  const clone = wizardClone({ built: false });
   try {
-    mkdirSync(join(clone, "tools"));
-    cpSync(join(REPO_ROOT, "tools", "setup.mjs"), join(clone, "tools", "setup.mjs"));
-    cpSync(join(REPO_ROOT, "plugin"), join(clone, "plugin"), {
-      recursive: true,
-      filter: (src) => !/[\\/](node_modules|dist|\.venv)$/.test(src),
-    });
     inSandbox((sb) => {
       const r = runWizard(sb, {}, clone);
       assert.match(r.stdout, /installing dependencies/, r.stdout + r.stderr);
