@@ -324,6 +324,28 @@ value) and inherit codex's own environment. `plugin/codex/session-model.mjs` rea
 interactive session against the driver pin, and `start-run.mjs` starts no run unless they match.
 The rollout records the model requested, not proof of the model that answered.
 
+## The plugin's write hook, wired both ways (codex 0.160.1, 2026-10-13)
+
+Run against a localhost mock provider, at $0, with a temporary `CODEX_HOME` whose path has a space
+in it. The plugin was installed with `codex plugin add mmo-codex@tilicho-ai-labs` from a local
+marketplace whose path also has a space, so the hook ran from
+`<CODEX_HOME>/plugins/cache/tilicho-ai-labs/mmo-codex/0.2.0`. Each mock turn asked for an
+`apply_patch` Add File of `.env.local` (refused in every session) and a shell `ls`.
+
+| Wiring | `codex exec` flags | Result |
+|---|---|---|
+| The installed plugin alone (the interactive shape) | `--dangerously-bypass-hook-trust -c features.hooks=true` | Refused; one `guard-decisions.jsonl` row, `wired_by: plugin`. `${PLUGIN_ROOT}` in `hooks.json` resolved to the cache path with its space. |
+| `run.mjs`'s `hookArgs(<install root>)` | session wiring, `hooks.state` switch-off, `features.hooks=true` | Refused; one row, `wired_by: run`. The plugin's copy did not fire. |
+| The bridge's nested worker | `-c hooks.state={"mmo-codex@tilicho-ai-labs:hooks/hooks.json:pre_tool_use:0:0"={enabled=false}}` | No hook ran; no row. |
+| Gate 0's guard check through the plugin hook | the plugin alone, after `write-contract.mjs --freeze` | `--assert-guard-live` found the row its own call left (`allow`, `wired_by: plugin`, the run's id) and passed. |
+
+A second check drove this branch's `run.mjs` (brownfield, `--gates=auto-approve`,
+`--max-turns=1`) against the same mock. The conductor froze the contract, passed the guard check,
+had a write outside the allowlist refused and one inside it allowed. The run ended `refused`, and
+its end switched the contract off (`end_outcome: refused`). `--resume` reopened it, an allowed write
+landed under it, and the run end at `max_turns` switched it off again. `provenance.json` held both
+written files, recorded by the hook.
+
 ## Pins chosen (Document B §8, Document A P1′ exit criterion)
 
 Selected 2026-08-31 after check 7 (reasoning effort) and the sandbox/approval probes below, all
