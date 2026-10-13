@@ -368,8 +368,10 @@ takes up the step again under the new `--gates`. For example, `--gates=auto-abor
 Gate 1 so you can read `requirements.md`, and `--resume=pass1 --gates=auto-approve` then goes on.
 
 `--resume` also takes the codex thread id from the run's `driver-events.jsonl`. A thread id that
-no folder under `.sdlc/runs/` (or the `--output-dir` you pass) records starts a new run folder:
-its first turn is priced at the thread's whole running total and flagged `baseline_unknown`.
+no folder under `.sdlc/runs/` (or the `--output-dir` you pass) records starts a new run folder.
+Its first turn is priced from the thread's earlier total in codex's session file under
+`$CODEX_HOME/sessions/` when that file is there, and otherwise at the thread's whole running
+total, flagged `baseline_unknown`.
 
 **Stopping a run.** Press Ctrl-C, `kill <pid>` the driver, or close its terminal. It forwards the
 signal to codex, kills codex after 10 seconds if it has not stopped, records the interrupted turn,
