@@ -209,6 +209,30 @@ test("a shell removal and an apply_patch delete of the same always-off-limits fi
   } finally { cleanup(dir); }
 });
 
+test("a removal glob is judged by every always-off-limits name it may match, with or without a contract", () => {
+  const live = project({ live: true });
+  const plain = project({ live: false });
+  for (const dir of [live, plain]) {
+    for (const d of [".git/objects", ".codex", ".agents/skills", "pkg/.git", "dist", "node_modules/.bin"]) mkdirSync(join(dir, d), { recursive: true });
+    for (const f of [".env.production", ".env.test", ".codex/config.toml", ".cache"]) writeFileSync(join(dir, f), "x\n");
+  }
+  try {
+    const refused = [
+      "rm -rf .git/*", "rm -rf .git/objects/*", "rm -f .git/*.lock", "rm -f .codex/*", "rm -rf .agents/*", "git rm -rf '.git/*'",
+      "rm -f .env.prod*", "rm -f .env.t*", "rm -f .*.production", "rm -rf .gi?/hooks", "rm -rf */.git", "rm -rf {.git,src}/*",
+    ];
+    const allowed = ["rm -rf dist/* node_modules/*", "rm -rf node_modules/.bin/*", "rm -f src/*.ts *.log", "rm -rf .cache/*", "rm -f .DS_Store */.DS_Store"];
+    for (const dir of [live, plain]) {
+      for (const command of refused) {
+        const out = decideCall({ cwd: dir, ...bash(command) });
+        assert.equal(out.decision, "deny", `${command} (${dir === live ? "live contract" : "no contract"})`);
+        assert.match(out.reason, /always-off-limits pattern .*never written or removed by a tool call/, command);
+      }
+      for (const command of allowed) assert.equal(decideCall({ cwd: dir, ...bash(command) }).decision, "allow", command);
+    }
+  } finally { cleanup(live); cleanup(plain); }
+});
+
 test("a removal is judged by the name it removes: a link to .env goes, a path through a link into .git does not", () => {
   const dir = project({ live: true });
   try {

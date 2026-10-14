@@ -628,28 +628,66 @@ function checkRemoval(target, cwd, sessionRoot, session) {
   return { bound };
 }
 
-/** Names a dot glob in a removal is tried as: each is, or holds, an always-off-limits file. */
-const HARD_NAMES = [".env", ".env.local", ".mcp.json", ".git", ".agents", ".codex"];
+/** Folders a glob in a removal is tried as: one of them anywhere on the path holds always-off-limits files. */
+const HARD_FOLDERS = [".git", ".agents", ".codex"];
+/** Names a glob in a removal is tried as: each is, or holds, an always-off-limits file. */
+const HARD_NAMES = [...HARD_FOLDERS, ".env", ".env.local", ".mcp.json", ...HARD_FILE_NAMES];
+
+/** A name the glob matches, each `*`, `?` and class filled in, or null. */
+function sampleName(glob) {
+  let s = "";
+  for (let i = 0; i < glob.length; i++) {
+    const close = glob[i] === "[" ? glob.indexOf("]", i + 2) : -1;
+    if (glob[i] === "*" || glob[i] === "?") s += "x";
+    else if (close !== -1) {
+      const body = glob.slice(i + 1, close);
+      s += body[0] === "!" || body[0] === "^" ? "_" : body[0];
+      i = close;
+    } else s += glob[i];
+  }
+  return nameRegex(glob).test(s) ? s : null;
+}
+
+function listNames(dir) {
+  try { return readdirSync(dir).slice(0, MAX_LISTED); } catch { return []; }
+}
 
 /**
- * The paths a removal word may name, for the always-off-limits list. A glob takes a dot name only when its own name
- * starts with a dot, as the shell's globbing does; a variable or substitution is left out.
+ * The names a glob name is tried as: each of `names` it matches, each always-off-limits name in the folder `inside`
+ * it matches, and one name of its own (`.env.p*` as `.env.px`). A glob takes a dot name only when it starts with a
+ * dot, as the shell's globbing does.
  */
-function removalForms(word) {
+function globNames(glob, names, inside = null) {
+  const re = nameRegex(glob);
+  const takes = (n) => (glob.startsWith(".") || !n.startsWith(".")) && re.test(n);
+  const hard = (n) => n.startsWith(".") && (!!hardcodedHit(n) || HARD_FOLDERS.includes(n.toLowerCase()));
+  const present = inside && glob.startsWith(".") ? listNames(inside).filter(hard) : [];
+  return [...new Set([...names, ...present].filter(takes).concat(sampleName(glob) ?? []))];
+}
+
+/**
+ * The paths a removal word may name, for the always-off-limits list; a variable or substitution is left out. A glob
+ * folder on the way takes the first of HARD_FOLDERS it matches, since one is enough for a hit.
+ */
+function removalForms(word, cwd) {
   if (isLiteralWord(word)) return [word];
   const out = [];
   for (const { path } of wordForms(word, { open: false })) {
-    const cut = path.lastIndexOf("/");
-    const last = path.slice(cut + 1);
-    if (!GLOB_CHARS.test(last)) out.push(path);
-    else if (last.startsWith(".")) out.push(...HARD_NAMES.filter((n) => nameRegex(last).test(n)).map((n) => path.slice(0, cut + 1) + n));
+    const parts = path.split("/");
+    const last = parts.pop();
+    if (!GLOB_CHARS.test(path)) { out.push(path); continue; }
+    const dirs = parts.map((p) => (GLOB_CHARS.test(p) ? globNames(p, HARD_FOLDERS)[0] ?? p : p));
+    const prefix = path.slice(0, path.length - last.length);
+    const inside = parts.some((p) => GLOB_CHARS.test(p)) ? null : joinRaw(cwd, prefix || ".");
+    const lasts = GLOB_CHARS.test(last) ? globNames(last, HARD_NAMES, inside) : [last];
+    for (const n of lasts) out.push([...dirs, n].join("/"));
   }
   return out;
 }
 
 /** The always-off-limits pattern a removal hits, by the name itself or a file in the folder it removes, or null. */
 function hardRemoval(target, cwd) {
-  for (const form of removalForms(target)) {
+  for (const form of removalForms(target, cwd)) {
     const abs = joinRaw(cwd, form);
     // rm takes the name it is given, not what a link of that name points to.
     const at = join(realPath(dirname(abs)), basename(abs));
