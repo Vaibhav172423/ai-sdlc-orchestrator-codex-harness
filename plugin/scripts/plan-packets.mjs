@@ -9,12 +9,16 @@
  *   node plan-packets.mjs --accept=<result.json> --run-dir=<dir>
  *
  * --build writes <run-dir>/tp-plan-<n>.json and prints it with the --out path its dispatch writes. --inputs is a JSON
- * array of {path, reason, content?}; a missing or empty content is read from disk. --previous names the refused
- * plan's result: its problems and the refused plan go into the new packet, and it counts as an attempt.
+ * array of {path, reason, content?}; a missing or empty content is read from disk. Once a plan in this session is
+ * refused, the next --build takes --previous=<that result>: its problems and the refused plan go into the new packet.
  * --accept reads a dispatch result (dispatch.mjs --out) and writes <run-dir>/packets.json.
  *
- * Exit codes: 0 done; 1 the plan was refused (numbered problems on stderr, nothing written) or the planner has had
- * its attempts; 2 usage, or a run record, instruction or inputs file this script cannot use.
+ * A session (one driver process, or one start-run session) builds at most PLAN_ATTEMPTS planner packets that reach
+ * the planner, and stops after MAX_DISPATCH_FAILURES dispatches that bring back no reply. A resumed run is a new
+ * session.
+ *
+ * Exit codes: 0 done; 1 the plan was refused or its dispatch failed (problems on stderr, nothing written), or the
+ * session has had its attempts; 2 usage, or a run record, instruction or inputs file this script cannot use.
  */
 import { existsSync, lstatSync, readdirSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs";
 import { basename, dirname, isAbsolute, join, posix, resolve } from "node:path";
@@ -30,9 +34,11 @@ import { scan } from "./dispatch-sanitize.mjs";
 import { isMain } from "./lib/is-main.mjs";
 import { exitAfterFlush } from "./lib/exit.mjs";
 
-const PLUGIN_ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
+const SCRIPT = fileURLToPath(import.meta.url);
+const PLUGIN_ROOT = dirname(dirname(SCRIPT));
 
 export const PLAN_ATTEMPTS = 3;
+export const MAX_DISPATCH_FAILURES = 2;
 export const PLAN_SCHEMA_FILES = Object.freeze({
   greenfield: "plan-packets.greenfield.json",
   brownfield: "plan-packets.brownfield.json",
@@ -76,7 +82,7 @@ const childProperties = (schema) => schema.properties.packets.items.properties;
 // ── the run ─────────────────────────────────────────────────────────────────
 
 /** run-folder.mjs reads driver-events.jsonl through the built bridge, which only a headless run's folder needs. */
-async function headlessSettings(runDir) {
+async function headlessRecords(runDir) {
   let folder;
   try {
     folder = await import("../codex/run-folder.mjs");
@@ -84,7 +90,31 @@ async function headlessSettings(runDir) {
     if (err?.code !== "ERR_MODULE_NOT_FOUND") throw err;
     throw new UsageError(`the dispatch bridge is not built (${err.message}); run verify-setup.mjs --fix first.`);
   }
-  return folder.runSettings(folder.readRunRecords(runDir));
+  const records = folder.readRunRecords(runDir);
+  return { settings: folder.runSettings(records), records };
+}
+
+/**
+ * When the latest driver process began. Its first invocation_start opens it: the first after a run_end, or one a
+ * different driver_pid wrote, so a driver killed before its run_end still ends its session.
+ */
+export function driverSessionStart(records) {
+  let start = 0;
+  let open = false;
+  let pid;
+  for (const r of records) {
+    if (r.legacy) continue;
+    if (r.kind === "run_end") {
+      open = false;
+      continue;
+    }
+    if (r.kind !== "invocation_start") continue;
+    const otherDriver = pid !== undefined && r.driver_pid !== undefined && r.driver_pid !== pid;
+    if (!open || otherDriver) start = Date.parse(r.at ?? "") || 0;
+    open = true;
+    pid = r.driver_pid;
+  }
+  return start;
 }
 
 function readJsonFile(path, maxBytes = 1024 * 1024) {
@@ -115,12 +145,18 @@ export async function readRunFacts(runDirArg, { pluginRoot = PLUGIN_ROOT } = {})
   if (!existsSync(runDir) || !statSync(runDir).isDirectory()) throw new UsageError(`--run-dir=${runDirArg} is not a folder.`);
 
   let rec = null;
+  let sessionStartMs = 0;
   const session = readRunJson(runDir);
   if (session) {
     rec = session;
+    const starts = Array.isArray(session.starts) ? session.starts : [];
+    sessionStartMs = Date.parse(starts.at(-1)?.at ?? "") || 0;
   } else {
-    const s = await headlessSettings(runDir);
-    if (s) rec = { ...s, mode: s.run_mode === "greenfield" ? "greenfield" : "brownfield", project_root: s.cwd };
+    const { settings: s, records } = await headlessRecords(runDir);
+    if (s) {
+      rec = { ...s, mode: s.run_mode === "greenfield" ? "greenfield" : "brownfield", project_root: s.cwd };
+      sessionStartMs = driverSessionStart(records);
+    }
   }
   if (!rec) {
     throw new UsageError(`${runDir} holds no run record (run.json or driver-events.jsonl): Phase 4 runs inside a run start-run.mjs or run.mjs started.`);
@@ -152,6 +188,7 @@ export async function readRunFacts(runDirArg, { pluginRoot = PLUGIN_ROOT } = {})
     contract: null,
     offLimits: [],
     briefTaskType: null,
+    sessionStartMs,
   };
 
   if (mode === "brownfield") {
@@ -429,13 +466,17 @@ export function readDispatchResult(path) {
   return { path: abs, result: parsed };
 }
 
+/** A dispatch that brought back no reply: nothing in it is the planner's to fix. A cut-off reply is the planner's. */
+export function dispatchFailure(result) {
+  const r = result.result;
+  if (r.success === true || String(r.terminal_reason ?? "").startsWith("output_cap")) return null;
+  return { terminal_reason: String(r.terminal_reason ?? "unknown"), error: firstLine(r.error ?? "no error recorded").trim().replace(/\.+$/, "") };
+}
+
 function planValue(result) {
   const r = result.result;
   if (r.success !== true) {
-    if (String(r.terminal_reason ?? "").startsWith("output_cap")) {
-      return { problem: "The reply was cut off at its output ceiling before the plan was complete. Plan fewer packets, or shorter instructions." };
-    }
-    return { problem: `The plan dispatch did not succeed (terminal_reason ${r.terminal_reason ?? "unknown"}): ${firstLine(r.error ?? "no error recorded")}.` };
+    return { problem: "The reply was cut off at its output ceiling before the plan was complete. Plan fewer packets, or shorter instructions." };
   }
   let value = r.result;
   if (typeof value === "string") {
@@ -450,17 +491,23 @@ function planValue(result) {
   return { value };
 }
 
-/** The plan in a dispatch result: `packets` in the canonical shape when it passes, else `problems`. */
+/**
+ * The plan in a dispatch result: `packets` in the canonical shape when it passes, else `problems`. A dispatch that
+ * failed also sets `failure`, and its one problem says so.
+ */
 export function judgePlan(facts, result) {
   const events = Array.isArray(result.events) ? result.events.filter(isObject) : [];
   const event = events[0] ?? null;
   if (event?.phase && event.phase !== "plan_task_packets") throw new UsageError(`that result is a ${event.phase} dispatch, not a plan.`);
   if (event?.pass && event.pass !== facts.runId) throw new UsageError(`that result is from run ${event.pass}, not run ${facts.runId}.`);
-  const attempt = Number.isInteger(event?.retry_count) && event.retry_count >= 0 ? event.retry_count + 1 : 1;
 
   const problems = [];
   const warnings = [];
-  const out = { attempt, problems, warnings, packets: null, value: undefined };
+  const out = { problems, warnings, packets: null, value: undefined, failure: dispatchFailure(result) };
+  if (out.failure) {
+    problems.push(`The plan dispatch failed (terminal_reason ${out.failure.terminal_reason}): ${out.failure.error}.`);
+    return out;
+  }
   const got = planValue(result);
   if (got.problem) {
     problems.push(got.problem);
@@ -753,6 +800,53 @@ function nextPlanSeq(runDir) {
   return String(max + 1).padStart(3, "0");
 }
 
+/** The packet number a result answers: its task id, else its file name. */
+function resultSeq(result, path) {
+  const id = Array.isArray(result.events) && isObject(result.events[0]) ? result.events[0].task_id : null;
+  const m = (typeof id === "string" && /^tp_plan_(\d+)$/.exec(id)) || /^tp-plan-(\d+)-result\.json$/.exec(basename(path));
+  return m ? Number(m[1]) : null;
+}
+
+function resultState(facts, path) {
+  if (!existsSync(path)) return { state: "pending" };
+  let judged;
+  try {
+    judged = judgePlan(facts, readDispatchResult(path).result);
+  } catch {
+    return { state: "unreadable" };
+  }
+  if (judged.failure) return { state: "failed", failure: judged.failure };
+  return { state: judged.problems.length > 0 ? "refused" : "passes" };
+}
+
+/**
+ * The planner packets this session built, oldest first, each with what its dispatch brought back. A packet file
+ * older than the session belongs to an earlier one: --build writes each packet once, and a resumed run starts its
+ * attempts again.
+ */
+export function planHistory(facts) {
+  const out = [];
+  for (const name of readdirSync(facts.runDir)) {
+    const m = /^tp-plan-(\d+)\.json$/.exec(name);
+    if (!m) continue;
+    let st;
+    try {
+      st = statSync(join(facts.runDir, name));
+    } catch {
+      continue;
+    }
+    if (!st.isFile() || st.mtimeMs < facts.sessionStartMs) continue;
+    const resultPath = join(facts.runDir, `tp-plan-${m[1]}-result.json`);
+    out.push({ seq: Number(m[1]), resultPath, ...resultState(facts, resultPath) });
+  }
+  return out.sort((a, b) => a.seq - b.seq);
+}
+
+/** Every packet that reached the planner, or may have: all but a dispatch that brought back no reply. */
+const attemptsIn = (history) => history.filter((e) => e.state !== "failed");
+const lastRefused = (history) => history.findLast((e) => e.state === "refused") ?? null;
+const samePath = (a, b) => realPath(a) === realPath(b);
+
 /** A problem here is the conductor's command, not the planner's, so it exits 2 and is not an attempt. */
 function conductorInputs(facts, path) {
   if (!path) return [];
@@ -807,28 +901,44 @@ const numbered = (items) => {
   return shown.join("\n");
 };
 
-export function buildPlanPacket(facts, { instruction, inputs = [], previous = null, seq = "001" }) {
-  let attempt = 1;
+/**
+ * The next planner packet, or `{stop}` when this session may build no more. `history` is planHistory's; once a plan
+ * in it is refused, `previous` must be that result, so its problems reach the planner. A `previous` from an earlier
+ * session (a resumed run) is carried the same way.
+ */
+export function buildPlanPacket(facts, { instruction, inputs = [], previous = null, seq = "001", history = [] }) {
+  const failed = history.filter((e) => e.state === "failed");
+  if (failed.length >= MAX_DISPATCH_FAILURES) return { stop: failureStop(failed.length, failed.at(-1).failure) };
+  const passing = history.find((e) => e.state === "passes");
+  if (passing) throw new UsageError(`${passing.resultPath} holds a plan that passes: run --accept on it instead of planning again.`);
+  const used = attemptsIn(history);
+  const refused = lastRefused(history);
+  if (used.length >= PLAN_ATTEMPTS) return { stop: limitStop(facts, (refused ?? used.at(-1)).resultPath) };
+  const judged = previous ? judgePlan(facts, previous.result) : null;
+  if (judged?.failure) throw new UsageError(`${previous.path} is a dispatch that failed, with no plan in it for the planner to correct: drop --previous.`);
+  if (judged && judged.problems.length === 0) throw new UsageError(`${previous.path} holds a plan that passes: run --accept on it instead of planning again.`);
+  if (refused && !(previous && samePath(previous.path, refused.resultPath))) {
+    throw new UsageError(
+      previous
+        ? `--previous names ${previous.path}, but this session's last refused plan is ${refused.resultPath}: pass --previous='${refused.resultPath}'.`
+        : `the planner's last plan, ${refused.resultPath}, was refused: add --previous='${refused.resultPath}' so the next packet carries its problems.`,
+    );
+  }
+  const attempt = used.length + 1;
   const parts = [instruction.trim(), "", planRules(facts)];
   const slices = [...inputs];
-  if (previous) {
-    const judged = judgePlan(facts, previous.result);
-    if (judged.problems.length === 0) {
-      throw new UsageError(`${previous.path} holds a plan that passes: run --accept on it instead of planning again.`);
-    }
-    if (judged.attempt >= PLAN_ATTEMPTS) return { limit: true, attempt: judged.attempt };
-    attempt = judged.attempt + 1;
+  if (judged) {
     parts.push(
       "",
       "## Your previous plan was refused",
       "Return a corrected plan. Fix every problem below; keep what was not named.",
       numbered(judged.problems),
     );
-    const refused = judged.value === undefined ? null : JSON.stringify(judged.value, null, 2);
-    if (refused && Buffer.byteLength(refused) <= MAX_INPUT_BYTES) {
+    const plan = judged.value === undefined ? null : JSON.stringify(judged.value, null, 2);
+    if (plan && Buffer.byteLength(plan) <= MAX_INPUT_BYTES) {
       slices.push({
         path: insidePath(facts.projectRoot, previous.path) ?? previous.path,
-        content: refused,
+        content: plan,
         reason: "The plan you returned last time, refused for the problems listed in the instruction.",
       });
     }
@@ -862,19 +972,35 @@ function writeAtomic(path, text) {
   renameSync(tmp, path);
 }
 
-function stopRecord(resultPath) {
-  return JSON.stringify({
-    reason: `Phase 4: the planner returned no plan that passes plan-packets.mjs in ${PLAN_ATTEMPTS} attempts.`,
-    needs:
-      `Read the problems plan-packets.mjs --accept prints for ${resultPath}, then narrow or correct the plan ` +
-      "instruction (the design sections and the files each packet changes) and resume the run from Phase 4.",
-  });
+function limitStop(facts, resultPath) {
+  const wider = facts.mode === "brownfield" ? " A file the job needs outside the frozen allowlist takes a new run, whose Gate 0 confirms the wider scope." : "";
+  return {
+    head: `plan-packets: the planner has had its ${PLAN_ATTEMPTS} attempts in this session and no plan passed. Do not dispatch another plan.`,
+    record: {
+      reason: `Phase 4: the planner returned no plan that passes plan-packets.mjs in ${PLAN_ATTEMPTS} attempts.`,
+      needs:
+        `See why with node '${SCRIPT}' --accept='${resultPath}' --run-dir='${facts.runDir}'. To steer the next plan, edit ` +
+        `${join(facts.runDir, "plan-instruction.md")} (the files each packet changes, and the design sections they come from), ` +
+        `then resume the run: Phase 4 plans again from that file, with ${PLAN_ATTEMPTS} new attempts.${wider}`,
+    },
+  };
 }
 
-function limitMessage(facts, resultPath) {
+function failureStop(count, failure) {
+  return {
+    head: `plan-packets: the plan dispatch failed ${count} times in this session. Do not dispatch another plan.`,
+    record: {
+      reason: `Phase 4: the plan dispatch failed ${count} times (terminal_reason ${failure.terminal_reason}): ${failure.error}.`,
+      needs:
+        `The planner's model sent no reply: ${failure.error}. Fix what that names (a usage limit, an API key, the network), ` +
+        "then resume the run: Phase 4 plans again.",
+    },
+  };
+}
+
+function stopMessage(facts, stop) {
   return (
-    `plan-packets: the planner has had its ${PLAN_ATTEMPTS} attempts and no plan passed. Do not dispatch another plan.\n` +
-    `Stop the run. On the run.mjs route write ${join(facts.runDir, "stop.json")}:\n${stopRecord(resultPath)}\n` +
+    `${stop.head}\nStop the run. On the run.mjs route write ${join(facts.runDir, "stop.json")}:\n${JSON.stringify(stop.record)}\n` +
     "In a session, tell the user why and record the end with --outcome=stopped.\n"
   );
 }
@@ -906,9 +1032,9 @@ export async function main(argv = [], deps = {}) {
       const inputs = conductorInputs(facts, args.inputs);
       const previous = args.previous !== undefined ? readDispatchResult(args.previous) : null;
       const seq = nextPlanSeq(facts.runDir);
-      const built = buildPlanPacket(facts, { instruction, inputs, previous, seq });
-      if (built.limit) {
-        stderr.write(limitMessage(facts, previous.path));
+      const built = buildPlanPacket(facts, { instruction, inputs, previous, seq, history: planHistory(facts) });
+      if (built.stop) {
+        stderr.write(stopMessage(facts, built.stop));
         return 1;
       }
       const packetPath = join(facts.runDir, `tp-plan-${seq}.json`);
@@ -919,15 +1045,35 @@ export async function main(argv = [], deps = {}) {
 
     const { path, result } = readDispatchResult(args.accept);
     const judged = judgePlan(facts, result);
+    const history = planHistory(facts);
     for (const w of judged.warnings) stderr.write(`warning: ${w}\n`);
+    if (judged.failure) {
+      const known = history.some((e) => e.state === "failed" && samePath(e.resultPath, path));
+      const failures = history.filter((e) => e.state === "failed").length + (known ? 0 : 1);
+      const f = judged.failure;
+      stderr.write(`plan-packets: the plan dispatch in ${path} failed (terminal_reason ${f.terminal_reason}): ${f.error}. Nothing was written.\n`);
+      if (failures >= MAX_DISPATCH_FAILURES) {
+        stderr.write(stopMessage(facts, failureStop(failures, f)));
+      } else {
+        const refused = lastRefused(history);
+        stderr.write(
+          `The planner sent no reply, so this is not one of its ${PLAN_ATTEMPTS} attempts and nothing goes back to it. ` +
+            `Next: run the --build command again${refused ? ` with --previous='${refused.resultPath}'` : ""} and dispatch the new packet; ` +
+            `failed dispatch number ${MAX_DISPATCH_FAILURES} in this session stops the run.\n`,
+        );
+      }
+      return 1;
+    }
     if (judged.problems.length > 0) {
+      const seq = resultSeq(result, path);
+      const attempt = attemptsIn(history).filter((e) => !samePath(e.resultPath, path) && (seq === null || e.seq < seq)).length + 1;
       stderr.write(
-        `plan-packets: the plan in ${path} was refused (attempt ${judged.attempt} of ${PLAN_ATTEMPTS}). Nothing was written.\n` +
+        `plan-packets: the plan in ${path} was refused (attempt ${attempt} of ${PLAN_ATTEMPTS}). Nothing was written.\n` +
           `${numbered(judged.problems)}\n`,
       );
       stderr.write(
-        judged.attempt >= PLAN_ATTEMPTS
-          ? limitMessage(facts, path)
+        attempt >= PLAN_ATTEMPTS
+          ? stopMessage(facts, limitStop(facts, path))
           : `Next: run the --build command again with --previous='${path}' added; it hands these problems to the planner.\n`,
       );
       return 1;

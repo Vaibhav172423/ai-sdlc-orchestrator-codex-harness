@@ -162,23 +162,28 @@ The planner is a dispatched worker: it sees only the packet you send it, so the 
 yours to write. `plan-packets.mjs` builds the planner's packet around the shipped plan schema
 (`{{PLUGIN_ROOT}}/config/schemas/`), then checks the plan that comes back and writes
 `{{OUTPUT_DIR}}/packets.json`, one TaskPacket per file-sized unit of work. You write only the
-planner's instruction and the list of files it reads. Never write the plan packet, its
-`outputSchema`, a child packet or `packets.json` yourself, and never edit a plan the script refused.
+planner's instruction and the list of files it reads. Never write the planner's packet or its
+`outputSchema`, never write or edit `packets.json`, and never add, drop or reshape a packet of the
+plan, nor edit a plan the script refused. Phase 5's work on the plan stays yours: copying a packet
+out of `packets.json` into its own file to dispatch it, filling its empty inputs, and building a
+refined packet when a result fails validation.
 
 1. **The instruction.** Write `{{OUTPUT_DIR}}/plan-instruction.md`: what to plan, and from what.
    Name the design sections the work comes from (`design.md`, or in brownfield `change_plan.md` or
    `requirements.md`), each file a packet changes or adds and why, and the packet kinds below that
    this run needs (in brownfield, the intent matrix's Phase 4 cell). Leave out field names, the run
    id and path rules: the script appends the plan rules from the run's own record (dependency order,
-   one packet per file, this run's allowlist and off-limits, where notes go).
+   one packet per file, this run's allowlist and off-limits, where notes go). On a resumed run that
+   stopped in Phase 4 the file is already there: keep it as it is, since the person may have edited
+   it to steer the next plan, and go on to step 2.
 2. **What the planner reads.** Write `{{OUTPUT_DIR}}/plan-inputs.json`, a JSON list of
-   `{"path": "<path>", "reason": "<why the planner needs it>"}`, each path relative to the project
-   root: the run's `requirements.md` and `design.md` or `change_plan.md` (under
-   `.sdlc/runs/{{RUN_ID}}/`), and the source files the work touches. In brownfield, add
-   `.sdlc/baseline/stack-profile.md` when discovery wrote one, and the detected stack's guide by its
-   absolute path, `{{PLUGIN_ROOT}}/skills/pipeline/stacks/<stack>.md`; the profile wins where they
-   disagree. The script reads each file from disk, up to 128 KB, and refuses an off-limits one or
-   one that holds a secret-shaped string.
+   `{"path": "<path>", "reason": "<why the planner needs it>"}`: the run's records by their absolute
+   paths, `{{OUTPUT_DIR}}/requirements.md` and `{{OUTPUT_DIR}}/design.md` or
+   `{{OUTPUT_DIR}}/change_plan.md`, and the source files the work touches, relative to the project
+   root. In brownfield, add `.sdlc/baseline/stack-profile.md` when discovery wrote one, and the
+   detected stack's guide by its absolute path, `{{PLUGIN_ROOT}}/skills/pipeline/stacks/<stack>.md`;
+   the profile wins where they disagree. The script reads each file from disk, up to 128 KB, and
+   refuses an off-limits one or one that holds a secret-shaped string.
 3. **Build the planner's packet.**
 
    ```bash
@@ -197,16 +202,24 @@ planner's instruction and the list of files it reads. Never write the plan packe
 
    - **Exit 0.** `packets.json` holds the plan in the canonical shape below, each packet's `id`,
      `pass_id`, `retry_count` and (brownfield) `intent` filled in by the script. Go on to Phase 5.
-   - **Exit 1.** The plan was refused: stderr lists each problem, numbered, and nothing was
+   - **Exit 1, the plan was refused.** stderr lists each problem, numbered, and nothing was
      written. Run step 3's command again with `--previous='<the result: path>'` added. The new
      packet carries those problems and the refused plan to the planner, and counts the attempt.
      Dispatch it and accept again.
+   - **Exit 1, the dispatch failed.** The planner sent no reply (a timeout, a usage limit, a vendor
+     error). It is not an attempt, and nothing goes back to the planner. Run step 3's command again
+     with the `--previous` the message names, if any, and dispatch the new packet.
    - **Exit 2.** Your command or `plan-inputs.json` is wrong. Fix what the message names and run it
-     again; it is not an attempt.
-5. **Three attempts at most.** When the third plan is refused, or `--build` exits 1 because the
-   planner has had its attempts, do not dispatch another plan: stop the run. On the `run.mjs` route,
-   write the `stop.json` the message prints, `needs` included, and end your turn. In a session, tell
-   the user what the message says and record the end (`--outcome=stopped`, see "Run logging").
+     again; it is not an attempt. Once a plan in this session was refused, step 3 needs
+     `--previous='<that result>'`, and exits 2 without it.
+5. **Three attempts at most.** A session (one `run.mjs` driver process, or one `start-run.mjs`
+   session) builds three planner packets that reach the planner, and stops at its second failed
+   dispatch. When the message says the session has had its attempts, or its failed dispatches,
+   do not dispatch another plan: stop the run. On the `run.mjs` route, write the `stop.json` the
+   message prints, `needs` included, and end your turn. In a session, tell the user what the
+   message says and record the end (`--outcome=stopped`, see "Run logging"). A resumed run is a
+   new session with three new attempts: start at step 3, adding `--previous='<the last refused
+   result>'` from before the stop when there is one, so the planner sees why that plan was refused.
 
 The packet kinds the instruction asks for, one packet per:
 

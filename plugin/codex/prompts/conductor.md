@@ -150,14 +150,16 @@ generate another run id: the write contract's `run_id` and every packet's `pass_
 | `budget` | object | `{ maxInputTokens, maxOutputTokens }` — both required |
 | `retry_count` | number | Optional, `0` when omitted. A refined packet carries the failed one's `retry_count + 1`; from `2` on, the policy routes it to the premium tier |
 | `pass_id` | string | This run's id: `{{RUN_ID}}` |
-| `artifact_path` | string | Optional; brownfield only — the repo-relative path this packet writes |
+| `artifact_path` | string | The project-relative path this packet writes. Every brownfield packet sets it; a greenfield one leaves it out only when it writes no file |
 
 The bridge validates these on entry and refuses a malformed packet with a clear message rather
 than failing downstream. If you get such a refusal, fix the packet — do not route around it.
 
 Phase 4's plan packet is the one you do not write. `plan-packets.mjs` builds it around the shipped
-plan schema and turns the planner's reply into `packets.json`, as `pipeline.md` says; never write a
-plan schema, a child packet or `packets.json` yourself.
+plan schema and turns the planner's reply into `packets.json`, as `pipeline.md` says. Never write
+the planner's packet or a plan schema, never write or edit `packets.json`, and never add, drop or
+reshape a packet of the plan. Copying a packet out of `packets.json` into its own file to dispatch
+it, filling its empty inputs, and building a refined packet in Phase 5 stay yours.
 
 ## Approval gates
 
@@ -242,7 +244,7 @@ higher than the packet that failed, and dispatch that. The policy moves a packet
 `retry_count` 2 or more to the premium tier, so leave the count honest rather than resetting it.
 Workers are stateless by design; a follow-up message to one is not a thing this architecture has.
 A refused plan is the exception: `plan-packets.mjs --build --previous=<result>` builds the fresh
-plan packet, with the refusal in it and the count kept, and allows three attempts in all.
+plan packet, with the refusal in it and the count kept, and allows three attempts a session.
 
 ## Search
 

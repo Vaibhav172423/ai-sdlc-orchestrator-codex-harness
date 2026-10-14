@@ -8,14 +8,14 @@ import "./lib/stand-ins.mjs";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import {
-  buildPlanPacket, childSchemaProblem, judgePlan, loadPlanSchema, main, MAX_INPUT_BYTES, PLAN_ATTEMPTS, PLAN_FLAGS,
-  readRunFacts, relPath,
+  buildPlanPacket, childSchemaProblem, driverSessionStart, judgePlan, loadPlanSchema, main, MAX_DISPATCH_FAILURES,
+  MAX_INPUT_BYTES, PLAN_ATTEMPTS, PLAN_FLAGS, readRunFacts, relPath,
 } from "../../plugin/scripts/plan-packets.mjs";
 import { renderedSkillPath, renderSkills } from "../../plugin/codex/render.mjs";
 import { strictSchemaProblems } from "../../plugin/mcp/model-dispatch/dist/adapters/strictSchema.js";
@@ -285,6 +285,28 @@ test("packets carry the intent Gate 0 confirmed, from provenance.json, over the 
   const r = await accept(runDir, dispatchResult({ packets: [child()] }));
   assert.equal(r.code, 0, r.err);
   assert.equal(JSON.parse(readFileSync(join(runDir, "packets.json"), "utf8"))[0].intent, "feature-extend");
+});
+
+test("the bf5 run folder, resumed by a new driver, plans again from attempt 1 beside the eight packets it built by hand", async () => {
+  const { runDir } = brownfieldRun({ headless: true });
+  const longAgo = new Date(Date.now() - 3_600_000);
+  REPLIES.forEach((a, i) => {
+    const seq = String(i + 1).padStart(3, "0");
+    writeFileSync(join(runDir, `tp-plan-${seq}.json`), JSON.stringify({ id: `tp_plan_${seq}`, phase: "plan_task_packets", outputSchema: { type: "array", items: { type: "object" } } }));
+    writeFileSync(join(runDir, `tp-plan-${seq}-result.json`), JSON.stringify(dispatchResult(a.reply, { retry: i, taskId: `tp_plan_${seq}` })));
+    for (const f of [`tp-plan-${seq}.json`, `tp-plan-${seq}-result.json`]) utimesSync(join(runDir, f), longAgo, longAgo);
+  });
+  const events = join(runDir, "driver-events.jsonl");
+  const [first] = readFileSync(events, "utf8").trim().split("\n").map((l) => JSON.parse(l));
+  const lines = [
+    { ...first, at: new Date(Date.now() - 7_200_000).toISOString(), driver_pid: 40368 },
+    { v: 1, kind: "run_end", invocation: 1, at: new Date(Date.now() - 5_400_000).toISOString(), outcome: "stopped", deliberate: true },
+    { ...first, invocation: 2, mode: "resume", at: new Date(Date.now() - 60_000).toISOString(), driver_pid: 51234 },
+  ];
+  writeFileSync(events, lines.map((l) => JSON.stringify(l)).join("\n") + "\n");
+  const built = await buildPacket(runDir);
+  assert.equal(built.code, 0, built.err);
+  assert.match(built.out, /tp-plan-009\.json\n.*\nattempt: 1 of 3/);
 });
 
 // ── every drift the bf5 run recorded ────────────────────────────────────────
@@ -766,9 +788,6 @@ test("a result from another phase or run, or a dispatch that failed, is not take
   assert.equal(run2.code, 2);
   assert.match(run2.err, /that result is from run another-run/);
 
-  await assertRefused(await accept(runDir, dispatchResult(null, { success: false, terminal: "vendor_error" })), runDir, [
-    "The plan dispatch did not succeed (terminal_reason vendor_error): codex-cli timeout after 840s.",
-  ]);
   await assertRefused(await accept(runDir, dispatchResult({ raw: '{"packets": [', _truncated: true }, { success: false, terminal: "output_cap_at_model_absolute" })), runDir, [
     "The reply was cut off at its output ceiling",
   ]);
@@ -856,46 +875,151 @@ test("--build refuses conductor inputs that name an off-limits or outside file, 
   }
 });
 
+/** --build as Phase 4 step 3 runs it; `packet` and `result` are the paths it printed. */
+async function buildPacket(runDir, previous = null) {
+  const argv = writeConductorFiles(runDir, []);
+  const r = await run(previous ? [...argv, `--previous=${previous}`] : argv);
+  const packet = /^packet: (.*)$/m.exec(r.out)?.[1] ?? null;
+  return { ...r, packet, result: /^result: (.*)$/m.exec(r.out)?.[1] ?? null };
+}
+
+/** The dispatch of a built packet, its result where --build said, then --accept on it. */
+async function answer(built, reply, over = {}) {
+  const packet = JSON.parse(readFileSync(built.packet, "utf8"));
+  writeFileSync(built.result, JSON.stringify(dispatchResult(reply, { retry: packet.retry_count, taskId: packet.id, ...over })));
+  return run(["--accept", built.result, `--run-dir=${dirname(built.packet)}`]);
+}
+
+const stopOf = (err) => JSON.parse(err.split("\n").find((l) => l.startsWith("{")));
+
 test("--previous carries the refusal and the refused plan into the next packet, and counts the attempt", async () => {
   const { runDir } = brownfieldRun();
-  const argv = writeConductorFiles(runDir, []);
-  const first = join(runDir, "tp-plan-001-result.json");
-  writeFileSync(first, JSON.stringify(dispatchResult(wrapped(8), { retry: 0 })));
-  const r = await run([...argv, `--previous=${first}`]);
-  assert.equal(r.code, 0, r.err);
-  assert.match(r.out, /tp-plan-002\.json\n.*tp-plan-002-result\.json\nattempt: 2 of 3/);
-  const p = JSON.parse(readFileSync(join(runDir, "tp-plan-002.json"), "utf8"));
+  const first = await buildPacket(runDir);
+  assert.match(first.out, /attempt: 1 of 3/);
+  const refused = await answer(first, wrapped(8));
+  assert.equal(refused.code, 1);
+  assert.match(refused.err, /refused \(attempt 1 of 3\)/);
+  assert.ok(refused.err.includes(`Next: run the --build command again with --previous='${first.result}' added`));
+
+  const second = await buildPacket(runDir, first.result);
+  assert.equal(second.code, 0, second.err);
+  assert.match(second.out, /tp-plan-002\.json\n.*tp-plan-002-result\.json\nattempt: 2 of 3/);
+  const p = JSON.parse(readFileSync(second.packet, "utf8"));
   assert.equal(p.id, "tp_plan_002");
   assert.equal(p.retry_count, 1);
   assert.match(p.instruction, /## Your previous plan was refused\n.*\n1\. packets\[0\] has a field "outputSchema"/);
   assert.ok(p.instruction.includes('packets[0].phase "run" is not a phase a planned packet takes.'));
-  const refused = p.inputs.find((i) => i.path === `.sdlc/runs/${RUN_ID}/tp-plan-001-result.json`);
-  assert.deepEqual(JSON.parse(refused.content), wrapped(8));
+  const plan = p.inputs.find((i) => i.path === `.sdlc/runs/${RUN_ID}/tp-plan-001-result.json`);
+  assert.deepEqual(JSON.parse(plan.content), wrapped(8));
 
-  writeFileSync(first, JSON.stringify(dispatchResult({ packets: [child()] })));
-  const passing = await run([...argv, `--previous=${first}`]);
+  assert.equal((await answer(second, { packets: [child()] })).code, 0);
+  const passing = await buildPacket(runDir, second.result);
   assert.equal(passing.code, 2);
   assert.match(passing.err, /holds a plan that passes: run --accept on it/);
 });
 
-test(`after ${PLAN_ATTEMPTS} refused plans the script stops the run instead of building another`, async () => {
+test("once a plan is refused, the next --build must carry it: no --previous, or an older one, is a usage error", async () => {
   const { runDir } = brownfieldRun();
-  const third = join(runDir, "tp-plan-003-result.json");
-  writeFileSync(third, JSON.stringify(dispatchResult(wrapped(8), { retry: PLAN_ATTEMPTS - 1 })));
+  const first = await buildPacket(runDir);
+  await answer(first, wrapped(3));
+  const bare = await buildPacket(runDir);
+  assert.equal(bare.code, 2);
+  assert.ok(bare.err.includes(`the planner's last plan, ${first.result}, was refused: add --previous='${first.result}'`), bare.err);
+  const second = await buildPacket(runDir, first.result);
+  await answer(second, wrapped(8));
+  const older = await buildPacket(runDir, first.result);
+  assert.equal(older.code, 2);
+  assert.ok(older.err.includes(`this session's last refused plan is ${second.result}`), older.err);
+  assert.deepEqual(readdirSync(runDir).filter((f) => /^tp-plan-\d+\.json$/.test(f)), ["tp-plan-001.json", "tp-plan-002.json"], "neither wrote a packet");
+});
 
-  const refused = await run(["--accept", third, `--run-dir=${runDir}`]);
-  assert.equal(refused.code, 1);
-  assert.match(refused.err, /refused \(attempt 3 of 3\)/);
-  assert.match(refused.err, /no plan passed\. Do not dispatch another plan\./);
+test(`a session builds ${PLAN_ATTEMPTS} planner packets at most, however --build is called, then the run stops`, async () => {
+  const { runDir } = brownfieldRun();
+  let previous = null;
+  for (let n = 1; n <= PLAN_ATTEMPTS; n++) {
+    const b = await buildPacket(runDir, previous);
+    assert.match(b.out, new RegExp(`attempt: ${n} of 3`), b.err);
+    const a = await answer(b, wrapped(8));
+    assert.match(a.err, new RegExp(`refused \\(attempt ${n} of 3\\)`));
+    previous = b.result;
+  }
+  const last = await run(["--accept", previous, `--run-dir=${runDir}`]);
+  assert.equal(last.code, 1);
+  assert.match(last.err, /the planner has had its 3 attempts in this session and no plan passed\. Do not dispatch another plan\./);
 
-  const r = await run([...writeConductorFiles(runDir, []), `--previous=${third}`]);
-  assert.equal(r.code, 1);
-  assert.deepEqual(readdirSync(runDir).filter((f) => /^tp-plan-\d+\.json$/.test(f)), [], "no packet is built");
-  assert.ok(r.err.includes(join(runDir, "stop.json")));
-  const stop = JSON.parse(r.err.split("\n").find((l) => l.startsWith("{")));
-  assert.match(stop.reason, /no plan that passes plan-packets\.mjs in 3 attempts/);
-  assert.match(stop.needs, /resume the run from Phase 4/);
+  for (const r of [await buildPacket(runDir, previous), await buildPacket(runDir)]) {
+    assert.equal(r.code, 1, r.err);
+    assert.ok(r.err.includes(join(runDir, "stop.json")));
+    const stop = stopOf(r.err);
+    assert.match(stop.reason, /no plan that passes plan-packets\.mjs in 3 attempts/);
+    assert.ok(stop.needs.includes(`--accept='${previous}'`), "it names the refusal to read");
+    assert.ok(stop.needs.includes(`edit ${join(runDir, "plan-instruction.md")}`), "it names what the person can change");
+    assert.match(stop.needs, /then resume the run: Phase 4 plans again from that file, with 3 new attempts\. A file the job needs outside the frozen allowlist takes a new run/);
+  }
+  assert.equal(readdirSync(runDir).filter((f) => /^tp-plan-\d+\.json$/.test(f)).length, PLAN_ATTEMPTS, "no fourth packet is built");
   assert.equal(existsSync(join(runDir, "stop.json")), false, "the conductor writes stop.json, not the script");
+});
+
+test("a resumed run is a new session: packets an earlier session built do not count, and --previous may carry its last refusal", async () => {
+  const { runDir } = brownfieldRun();
+  let previous = null;
+  for (let n = 1; n <= PLAN_ATTEMPTS; n++) {
+    const b = await buildPacket(runDir, previous);
+    await answer(b, wrapped(8));
+    previous = b.result;
+  }
+  assert.equal((await buildPacket(runDir, previous)).code, 1);
+  const before = new Date(Date.now() - 60_000);
+  for (const f of readdirSync(runDir)) utimesSync(join(runDir, f), before, before);
+  const record = JSON.parse(readFileSync(join(runDir, "run.json"), "utf8"));
+  writeFileSync(join(runDir, "run.json"), JSON.stringify({ ...record, starts: [{ at: new Date(Date.now() - 120_000).toISOString() }, { at: new Date(Date.now() - 30_000).toISOString(), resume: true }] }));
+
+  const fresh = await buildPacket(runDir, previous);
+  assert.equal(fresh.code, 0, fresh.err);
+  assert.match(fresh.out, /tp-plan-004\.json\n.*\nattempt: 1 of 3/);
+  assert.match(JSON.parse(readFileSync(fresh.packet, "utf8")).instruction, /## Your previous plan was refused/);
+  assert.equal((await answer(fresh, { packets: [child()] })).code, 0);
+});
+
+test("the headless session is the latest driver process: a run_end, or another driver pid, starts a new one", () => {
+  const start = (at, pid = 7) => ({ v: 1, kind: "invocation_start", at, driver_pid: pid });
+  const end = { v: 1, kind: "run_end", at: "2026-10-14T10:38:26.689Z" };
+  assert.equal(driverSessionStart([]), 0);
+  assert.equal(driverSessionStart([start("2026-10-14T10:12:56.677Z"), start("2026-10-14T10:20:00.000Z")]), Date.parse("2026-10-14T10:12:56.677Z"), "a gate answer or a context re-spawn is the same driver");
+  assert.equal(driverSessionStart([start("2026-10-14T10:12:56.677Z"), end]), Date.parse("2026-10-14T10:12:56.677Z"), "an ended driver is still the latest session");
+  assert.equal(driverSessionStart([start("2026-10-14T10:12:56.677Z"), end, start("2026-10-14T11:00:00.000Z", 8)]), Date.parse("2026-10-14T11:00:00.000Z"));
+  assert.equal(driverSessionStart([start("2026-10-14T10:12:56.677Z", 7), start("2026-10-14T11:00:00.000Z", 9)]), Date.parse("2026-10-14T11:00:00.000Z"), "a driver killed before its run_end");
+});
+
+test(`a failed plan dispatch is not an attempt and goes to no planner; failure ${MAX_DISPATCH_FAILURES} stops the run, naming it`, async () => {
+  const { runDir } = brownfieldRun();
+  const first = await buildPacket(runDir);
+  await answer(first, wrapped(8));
+  const second = await buildPacket(runDir, first.result);
+  const quota = "codex-cli: You've hit your usage limit. Try again later.";
+  const failed = await answer(second, null, { success: false, terminal: "vendor_error", error: quota });
+  assert.equal(failed.code, 1);
+  assert.ok(failed.err.includes(`the plan dispatch in ${second.result} failed (terminal_reason vendor_error): codex-cli: You've hit your usage limit. Try again later. Nothing was written.`), failed.err);
+  assert.doesNotMatch(failed.err, /\.\./, "one full stop");
+  assert.doesNotMatch(failed.err, /was refused/);
+  assert.ok(failed.err.includes(`Next: run the --build command again with --previous='${first.result}'`), "the refusal still goes to the next packet");
+
+  const third = await buildPacket(runDir, first.result);
+  assert.match(third.out, /attempt: 2 of 3/, "the failed dispatch did not count");
+  assert.doesNotMatch(JSON.parse(readFileSync(third.packet, "utf8")).instruction, /usage limit/, "a vendor error is not the planner's to fix");
+  const usedAsPrevious = await buildPacket(runDir, second.result);
+  assert.equal(usedAsPrevious.code, 2);
+  assert.match(usedAsPrevious.err, /is a dispatch that failed, with no plan in it for the planner to correct/);
+
+  const again = await answer(third, null, { success: false, terminal: "vendor_error", error: quota });
+  assert.equal(again.code, 1);
+  const stop = stopOf(again.err);
+  assert.match(stop.reason, /^Phase 4: the plan dispatch failed 2 times \(terminal_reason vendor_error\): codex-cli: You've hit your usage limit/);
+  assert.match(stop.needs, /The planner's model sent no reply: codex-cli: You've hit your usage limit\. Try again later\. Fix what that names/);
+  assert.doesNotMatch(stop.needs, /plan-instruction/, "the instruction is not the cause");
+  const blocked = await buildPacket(runDir, first.result);
+  assert.equal(blocked.code, 1);
+  assert.match(stopOf(blocked.err).reason, /the plan dispatch failed 2 times/);
 });
 
 test("readRunFacts and buildPlanPacket agree with the CLI for a greenfield run", async () => {
@@ -958,6 +1082,50 @@ test("Phase 4 uses only placeholders both start routes render, and only flags th
   assert.equal(PLAN_ATTEMPTS, 3);
   assert.match(section, /`stop\.json`/);
   assert.doesNotMatch(section, /"type":\s*"array"|Run metadata is yours/, "no guidance left that has the conductor write the plan's shape");
+});
+
+test("Phase 4 says what a resumed run does, names the run records by the run folder, and scopes the ban to the plan", () => {
+  const section = phase4(readFileSync(join(PLUGIN, "skills", "pipeline", "SKILL.md"), "utf8")).replace(/\s+/g, " ");
+  const step2 = section.slice(section.indexOf("2. **What the planner reads.**"), section.indexOf("3. **Build the planner's packet.**"));
+  for (const record of ["requirements.md", "design.md", "change_plan.md"]) assert.ok(step2.includes(`\`{{OUTPUT_DIR}}/${record}\``), record);
+  assert.doesNotMatch(step2, /\.sdlc\/runs\/\{\{RUN_ID\}\}/, "a greenfield --output-dir run keeps its records elsewhere");
+  assert.match(section, /On a resumed run that stopped in Phase 4 the file is already there: keep it as it is/);
+  assert.match(section, /A resumed run is a new session with three new attempts: start at step 3, adding `--previous='<the last refused result>'`/);
+  assert.match(section, /\*\*Exit 1, the dispatch failed\.\*\* The planner sent no reply/);
+  assert.match(section, /Phase 5's work on the plan stays yours: copying a packet out of `packets\.json` into its own file/);
+
+  const conductor = readFileSync(join(PLUGIN, "codex", "prompts", "conductor.md"), "utf8").replace(/\s+/g, " ");
+  assert.doesNotMatch(conductor, /a child packet or `packets\.json` yourself/, "Phase 5 writes child packets");
+  assert.match(conductor, /Copying a packet out of `packets\.json` into its own file to dispatch it, filling its empty inputs, and building a refined packet in Phase 5 stay yours\./);
+  assert.doesNotMatch(conductor, /brownfield only — the repo-relative path/, "greenfield packets carry artifact_path too");
+});
+
+test("step 2's run records resolve for a greenfield run whose --output-dir is not under .sdlc/runs", async () => {
+  const root = tempDir("plan-packets-gf-out-");
+  const runId = "gf-20261014-000000";
+  const outDir = join(root, "out dir");
+  mkdirSync(join(root, "src"), { recursive: true });
+  mkdirSync(outDir);
+  writeFileSync(join(outDir, "design.md"), "# Design\n");
+  writeFileSync(join(outDir, "requirements.md"), "# Requirements\n");
+  writeFileSync(join(outDir, "run.json"), JSON.stringify({
+    schema_version: 1, run_id: runId, route: "interactive", mode: "greenfield", intent: null, project_root: root,
+    code_dir: join(root, "src"), brief_path: join(root, "brief.md"),
+  }));
+  const rendered = tempDir("plan-packets-render-gf-");
+  renderSkills(rendered, {
+    PLUGIN_ROOT: PLUGIN, PROJECT_ROOT: root, OUTPUT_DIR: outDir, CODE_DIR: join(root, "src"), BRIEF_PATH: join(root, "brief.md"),
+    POLICY: "gpt-seat-plus-flash", RUN_ID: runId,
+  }, PLUGIN);
+  const text = phase4(readFileSync(renderedSkillPath(rendered, "pipeline"), "utf8"));
+  const step2 = text.slice(text.indexOf("2. **What the planner reads.**"), text.indexOf("3. **Build the planner's packet.**"));
+  const named = [...step2.matchAll(/`([^`]+\.md)`/g)].map((m) => m[1]).filter((p) => p.startsWith(outDir) && existsSync(p));
+  assert.deepEqual(named.sort(), [join(outDir, "design.md"), join(outDir, "requirements.md")]);
+  writeFileSync(join(outDir, "plan-instruction.md"), "Plan the ping service.\n");
+  writeFileSync(join(outDir, "plan-inputs.json"), JSON.stringify(named.map((path) => ({ path, reason: "The run's records." }))));
+  const r = await run(["--build", `--run-dir=${outDir}`, `--instruction=${join(outDir, "plan-instruction.md")}`, `--inputs=${join(outDir, "plan-inputs.json")}`]);
+  assert.equal(r.code, 0, r.err);
+  assert.deepEqual(JSON.parse(readFileSync(join(outDir, "tp-plan-001.json"), "utf8")).inputs.map((i) => i.path).sort(), ["out dir/design.md", "out dir/requirements.md"]);
 });
 
 test("the rendered Phase 4 build command builds the planner's packet", () => {
