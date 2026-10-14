@@ -5,9 +5,9 @@
  *
  * `scanShell` returns effects in command order: `{kind: "write", path, tight}` (a redirect, `tee`, `touch`; `tight`
  * when no blank comes before the operator), `{kind: "copy", tool, flags, args}` (`cp`, `mv`, `git mv`),
- * `{kind: "remove", path}` (`rm`, `unlink`, `git rm`, `mv` sources) and `{kind: "patch", text}` (an `apply_patch`
- * run through the shell). Paths are shell words with quotes and backslashes resolved; `$`, globs and braces stay in
- * them, and a command substitution reads `$*`.
+ * `{kind: "remove", path}` (`rm`, `unlink`, `git rm`, `mv` sources) and `{kind: "patch", text}` (the text an
+ * `apply_patch` run through the shell is given or piped). Paths are shell words with quotes and backslashes resolved;
+ * `$`, globs and braces stay in them, and a command substitution reads `$*`.
  */
 
 /** Past this depth of substitutions and nested shells, the inner text is not read. */
@@ -426,11 +426,22 @@ function split(tokens) {
   return cmds;
 }
 
-function readsStdinAsShell(cmd) {
-  if (!cmd) return false;
+const PATCH_TOOLS = new Set(["apply_patch", "applypatch"]);
+
+/** What the command a pipe feeds does with its stdin: "shell" reads it as a script, "patch" applies it, or null. */
+function stdinUse(cmd) {
+  if (!cmd) return null;
   const at = commandAt(cmd.words);
-  if (at === -1 || !SHELLS.has(commandName(cmd.words[at].v))) return false;
-  return !!shellMode(cmd.words.slice(at + 1).map((w) => w.v)).stdin;
+  const name = at === -1 ? null : commandName(cmd.words[at].v);
+  if (PATCH_TOOLS.has(name)) return "patch";
+  if (!SHELLS.has(name)) return null;
+  return shellMode(cmd.words.slice(at + 1).map((w) => w.v)).stdin ? "shell" : null;
+}
+
+/** Patch text as apply_patch may read it: printf and zsh's echo turn a `\n` into a line break. */
+function patchTexts(text) {
+  const lines = text.replace(/\\n/g, "\n");
+  return lines === text ? [text] : [text, lines];
 }
 
 function add(out, effect) {
@@ -466,12 +477,14 @@ function find(words, out, depth) {
     if (!/^-(?:exec|execdir|ok|okdir)$/.test(words[k].v)) continue;
     let e = k + 1;
     while (e < words.length && words[e].v !== ";" && words[e].v !== "+") e++;
-    simple({ words: words.slice(k + 1, e), redirs: [] }, out, depth, false);
+    simple({ words: words.slice(k + 1, e), redirs: [] }, out, depth, null);
     k = e;
   }
 }
 
-function simple(cmd, out, depth, feedsShell) {
+/** One simple command's effects. `feeds`: what the next command of a pipeline does with this one's output (stdinUse). */
+function simple(cmd, out, depth, feeds) {
+  const feedsShell = feeds === "shell";
   const { words, redirs } = cmd;
   const at = commandAt(words);
   const name = at === -1 ? null : commandName(words[at].v);
@@ -486,7 +499,12 @@ function simple(cmd, out, depth, feedsShell) {
   }
   const docs = redirs.filter((r) => r.doc).map((r) => r.doc);
   const strings = redirs.filter((r) => r.op === "<<<" && r.target !== null).map((r) => r.target);
-  if (name === "apply_patch" || name === "applypatch") {
+  if (feeds === "patch") {
+    for (const text of [...docs.map((d) => d.body), ...strings, ...vals]) {
+      for (const t of patchTexts(text)) out.push({ kind: "patch", text: t });
+    }
+  }
+  if (PATCH_TOOLS.has(name)) {
     // Codex applies a shell apply_patch itself: its text is a patch, never shell.
     for (const text of [...docs.map((d) => d.body), ...strings, ...vals]) out.push({ kind: "patch", text });
     return;
@@ -512,7 +530,7 @@ function simple(cmd, out, depth, feedsShell) {
 
 function run(tokens, out, depth) {
   const cmds = split(tokens);
-  cmds.forEach((cmd, n) => simple(cmd, out, depth, cmd.pipeOut && readsStdinAsShell(cmds[n + 1])));
+  cmds.forEach((cmd, n) => simple(cmd, out, depth, cmd.pipeOut ? stdinUse(cmds[n + 1]) : null));
 }
 
 function runSubs(ctx, out) {

@@ -81,6 +81,13 @@ const CASES = [
   ["echo x &> .env", "deny", "deny", ".env"],
   ["echo x >! .env", "deny", "deny", ".env"],
   ["echo x >| src/a.ts", "allow", "allow"],
+  // Patch text piped into a shell apply_patch is judged by its file headers.
+  ["cat <<'EOF' | apply_patch\n*** Begin Patch\n*** Add File: .env\n+x\n*** End Patch\nEOF", "deny", "deny", ".env"],
+  ["printf '%s' '*** Begin Patch\n*** Add File: .env\n+x\n*** End Patch' | apply_patch", "deny", "deny", ".env"],
+  ["printf '*** Begin Patch\\n*** Add File: .env\\n+x\\n*** End Patch\\n' | apply_patch", "deny", "deny", ".env"],
+  ["cat <<'EOF' | apply_patch\n*** Begin Patch\n*** Add File: docs/a.md\n+x\n*** End Patch\nEOF", "deny", "allow", "docs/a.md"],
+  ["echo '*** Begin Patch\n*** Add File: docs/b.md\n+x\n*** End Patch' | sudo apply_patch", "deny", "allow", "docs/b.md"],
+  ["cat <<'EOF' | apply_patch\n*** Begin Patch\n*** Update File: src/a.ts\n@@\n-a > b\n+a >> b\n*** End Patch\nEOF", "allow", "allow"],
   // A shell removal meets the always-off-limits list, as an apply_patch Delete File does.
   ["rm -rf .git", "deny", "deny", ".git"],
   ["rm .env", "deny", "deny", ".env"],
@@ -121,8 +128,10 @@ test("the hook replies the same way for a commit message and a here-document hol
       assert.equal(r.status, 0, r.stderr);
       assert.equal(r.stdout, "", `allowed: ${command}\n${r.stderr}`);
     }
-    const r = ask("echo x >| .env");
-    assert.equal(JSON.parse(r.stdout).hookSpecificOutput.permissionDecision, "deny");
+    for (const command of ["echo x >| .env", "cat <<'EOF' | apply_patch\n*** Begin Patch\n*** Add File: docs/a.md\n+x\n*** End Patch\nEOF"]) {
+      const r = ask(command);
+      assert.equal(JSON.parse(r.stdout).hookSpecificOutput.permissionDecision, "deny", command);
+    }
   } finally { cleanup(dir); }
 });
 
