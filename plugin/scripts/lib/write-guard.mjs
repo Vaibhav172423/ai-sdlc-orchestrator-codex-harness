@@ -11,6 +11,7 @@ import {
   readContractBytes, readLock,
 } from "./contract-lock.mjs";
 import { isRunId } from "./run-id.mjs";
+import { scanShell } from "./shell-scan.mjs";
 
 export const WIRED_BY_RUN_FLAG = "--wired-by=run";
 
@@ -32,186 +33,28 @@ export function extractApplyPatchTargets(command) {
   return targets;
 }
 
-// ── shell words ────────────────────────────────────────────────────────────
+// ── what a shell command writes ────────────────────────────────────────────
 
-/** Past this many quoted strings inside quoted strings, a string is scanned as it stands. */
-const MAX_NESTING = 8;
-const METACHAR = /[\s;&|()<>]/;
-
-/** Index of the quote that closes the one at `i`, or text.length. A `"` string and a `$'…'` one (`ansi`) take `\` escapes. */
-function closingQuote(text, i, ansi = false) {
-  const q = text[i];
-  for (let j = i + 1; j < text.length; j++) {
-    if (text[j] === "\\" && (q === '"' || ansi)) j++;
-    else if (text[j] === q) return j;
-  }
-  return text.length;
+/** The patch or shell text a call carries. */
+export function callCommand(call) {
+  const c = call?.tool_input?.command;
+  return typeof c === "string" ? c : null;
 }
 
-const unescapeDouble = (s) => s.replace(/\\([$`"\\\n])/g, (_, c) => (c === "\n" ? "" : c));
-const unescapeAnsi = (s) => s.replace(/\\([\s\S])/g, "$1");
-
-/** A shell word as the command receives it: quotes and backslashes resolved; `$`, globs and braces kept for wordForms. */
-function dequote(word) {
-  let out = "";
-  for (let i = 0; i < word.length; i++) {
-    const c = word[i];
-    if (c === "\\") {
-      if (word[i + 1] !== "\n") out += word[i + 1] ?? "";
-      i++;
-    } else if (c === "'" || c === '"' || (c === "$" && word[i + 1] === "'")) {
-      const open = c === "$" ? i + 1 : i;
-      const close = closingQuote(word, open, c === "$");
-      const body = word.slice(open + 1, close);
-      out += c === "$" ? `$${unescapeAnsi(body)}` : c === '"' ? unescapeDouble(body) : body;
-      i = close;
-    } else out += c;
-  }
-  return out;
+let lastScan = { raw: null, effects: [] };
+function effects(raw) {
+  if (typeof raw !== "string") return [];
+  if (lastScan.raw !== raw) lastScan = { raw, effects: scanShell(raw) };
+  return lastScan.effects;
 }
-
-/** The here-document delimiter word after a `<<` that ends at `j`, or null. */
-function heredocAt(text, j) {
-  let k = j;
-  const strip = text[k] === "-";
-  if (strip) k++;
-  while (text[k] === " " || text[k] === "\t") k++;
-  const from = k;
-  while (k < text.length && !METACHAR.test(text[k])) {
-    if (text[k] === "\\") k += 2;
-    else if (text[k] === "'" || text[k] === '"') k = closingQuote(text, k) + 1;
-    else k++;
-  }
-  const to = Math.min(k, text.length);
-  const delim = dequote(text.slice(from, to));
-  return delim ? { delim, strip, from, to } : null;
-}
-
-/** Where a here-document body that starts at `at` ends, and where its delimiter line ends. */
-function heredocBody(text, at, { delim, strip }) {
-  for (let line = at; line < text.length;) {
-    const nl = text.indexOf("\n", line);
-    const end = nl === -1 ? text.length : nl;
-    const l = text.slice(line, end);
-    if ((strip ? l.replace(/^\t+/, "") : l) === delim) return { bodyEnd: line, next: end };
-    line = end + 1;
-  }
-  return { bodyEnd: text.length, next: text.length };
-}
-
-/**
- * `text` lexed for the scan. `masked` keeps every index: a quoted string or backslash escape is covered with `_`, so
- * it stays part of its word with any space in it; an unquoted newline, a comment and a here-document body become `;`,
- * so an argument list ends there. `inner` is what was covered, since `sh -c '…'` or `bash <<EOF` runs it as shell.
- */
-function lexShell(text) {
-  const m = text.split("");
-  const inner = [];
-  const pending = [];
-  const cover = (from, to, ch) => { for (let k = from; k < to; k++) m[k] = ch; };
-  let atWord = true;
-  for (let i = 0; i < text.length; i++) {
-    const c = text[i];
-    if (c === "\\") {
-      cover(i, Math.min(i + 2, text.length), "_");
-      i++;
-      atWord = false;
-    } else if (c === "'" || c === '"' || (c === "$" && text[i + 1] === "'")) {
-      const open = c === "$" ? i + 1 : i;
-      const close = closingQuote(text, open, c === "$");
-      const body = text.slice(open + 1, close);
-      inner.push({ text: c === '"' ? unescapeDouble(body) : c === "$" ? unescapeAnsi(body) : body, quoted: true });
-      cover(i, Math.min(close + 1, text.length), "_");
-      i = close;
-      atWord = false;
-    } else if (c === "#" && atWord) {
-      const nl = text.indexOf("\n", i);
-      const end = nl === -1 ? text.length : nl;
-      inner.push({ text: text.slice(i + 1, end), quoted: true });
-      cover(i, end, ";");
-      i = end - 1;
-    } else if (c === "<" && text[i + 1] === "<" && text[i + 2] === "<") {
-      i += 2;
-      atWord = true;
-    } else if (c === "<" && text[i + 1] === "<") {
-      const doc = heredocAt(text, i + 2);
-      if (doc) {
-        pending.push(doc);
-        cover(doc.from, doc.to, "_");
-        i = doc.to - 1;
-        atWord = false;
-      } else {
-        i++;
-        atWord = true;
-      }
-    } else if (c === "\n") {
-      m[i] = ";";
-      atWord = true;
-      let at = i + 1;
-      while (pending.length) {
-        const { bodyEnd, next } = heredocBody(text, at, pending.shift());
-        inner.push({ text: text.slice(at, bodyEnd), quoted: false });
-        cover(at, next, ";");
-        at = next;
-      }
-      i = at - 1;
-    } else {
-      atWord = METACHAR.test(c);
-    }
-  }
-  return { masked: m.join(""), inner };
-}
-
-/** `command` and every quoted string, comment and here-document body in it, each lexed; `quoted` marks a string. */
-function shellTexts(command) {
-  const out = [];
-  const visit = (text, quoted, depth) => {
-    if (depth >= MAX_NESTING) { out.push({ text, masked: text, quoted }); return; }
-    const { masked, inner } = lexShell(text);
-    out.push({ text, masked, quoted });
-    for (const t of inner) if (t.text) visit(t.text, t.quoted, depth + 1);
-  };
-  visit(command, false, 0);
-  return out;
-}
-
-// An fd number before a redirect (`cp a b 2>/dev/null`) is not an argument.
-const ARGS = String.raw`((?:-{1,2}[A-Za-z-]*\s+)*(?:(?!\d+>)[^\s;&|()<>-][^\s;&|()<>]*\s*)+)`;
-const REDIRECT = String.raw`\d*>{1,2}\s*([^\s;&|()<>]+)`;
-// A `>` that opens a quoted string (`printf '> a quote'`) is read as a redirect written with no space before it.
-const SPACED_REDIRECT_RE = { code: new RegExp(String.raw`(?:^|[\s;&|(])${REDIRECT}`, "dg"), quoted: new RegExp(String.raw`[\s;&|(]${REDIRECT}`, "dg") };
-const TIGHT_REDIRECT_RE = { code: new RegExp(String.raw`[^-=<>\s;&|(]${REDIRECT}`, "dg"), quoted: new RegExp(String.raw`(?:^|[^-=<>\s;&|(])${REDIRECT}`, "dg") };
-const TEE_RE = new RegExp(String.raw`\btee\s+${ARGS}`, "dg");
-const TOUCH_RE = new RegExp(String.raw`\btouch\s+${ARGS}`, "dg");
-const CP_MV_RE = new RegExp(String.raw`\b(cp|mv)\s+${ARGS}`, "dg");
-const RM_RE = new RegExp(String.raw`\b(?:rm|unlink)\s+${ARGS}`, "dg");
-const MV_RE = new RegExp(String.raw`\bmv\s+${ARGS}`, "dg");
-const redirectRe = (set, t) => (t.quoted ? set.quoted : set.code);
-
-/** A match whose last word runs into a `(` (a zsh glob group, `$(`): the scan stops there, so the rest is any text. */
-const gluedParen = (masked, m) => masked[m.index + m[0].length] === "(" && !/\s$/.test(m[0]);
-
-/** The words of group `g` of a match in lexed text `t`, quotes resolved, the last one marked open when it runs into a `(`. */
-function wordsAt(t, m, g = 1) {
-  const [from, to] = m.indices[g];
-  const words = [];
-  for (const w of t.masked.slice(from, to).matchAll(/\S+/g)) {
-    const word = dequote(t.text.slice(from + w.index, from + w.index + w[0].length));
-    if (word) words.push(word);
-  }
-  if (words.length && gluedParen(t.masked, m)) words[words.length - 1] += "*";
-  return words;
-}
-
-const notFlag = (a) => !a.startsWith("-");
 
 /** Device files a redirect writes to without touching the project (`2>/dev/null`). */
 const DEVICE_RE = /^\/dev\/(?:null|stdout|stderr|tty|fd\/\d+)$/;
 
 /**
  * Write targets of a shell command: redirects, `tee`, `touch`, each file a `cp`/`mv` lands on, and the file headers of
- * an `apply_patch` run through the shell (Codex applies it itself and hands the hook a Bash call). A heuristic, not a
- * shell parser: a form it misses is allowed. A quoted or escaped word is one target, its spaces kept. With `cwd`, an
+ * an `apply_patch` run through the shell (Codex applies it itself and hands the hook a Bash call). The command is
+ * split as the shell splits it (plugin/scripts/lib/shell-scan.mjs); a form the scan misses is allowed. With `cwd`, an
  * existing folder named as a `cp`/`mv` destination or source is seen as one.
  */
 export function extractBashTargets(command, cwd = null) {
@@ -223,17 +66,9 @@ export function extractBashFolders(command, cwd = null) {
   return bashWriteTargets(command, cwd).folders;
 }
 
-const SHELL_PATCH_RE = /(?:^|[\s;&|(])(?:apply_patch|applypatch)(?=$|[\s;&|)<'"])/;
-
 /** The file headers of an `apply_patch` run through the shell: literal paths, not shell words. */
 export function shellPatchTargets(command) {
-  return typeof command === "string" && SHELL_PATCH_RE.test(command) ? extractApplyPatchTargets(command) : [];
-}
-
-/** The command with a shell `apply_patch`'s patch text taken out: its lines are file content, not shell. */
-function shellOnly(command) {
-  if (typeof command !== "string") return command;
-  return SHELL_PATCH_RE.test(command) ? command.replace(/\*\*\*\s*Begin Patch[\s\S]*?\*\*\*\s*End Patch/g, " ") : command;
+  return effects(command).filter((e) => e.kind === "patch").flatMap((e) => extractApplyPatchTargets(e.text));
 }
 
 const CP_RECURSIVE_RE = /^-[A-Za-z]*[rRa]|^--(?:recursive|archive)$/;
@@ -266,10 +101,9 @@ function listFiles(dir, limit = MAX_LISTED) {
  * places are judged. A folder source's own files are listed and judged one by one; one the hook cannot list goes to
  * `folders`.
  */
-function copyTargets(tool, words, cwd) {
-  const args = words.filter((a) => !a.startsWith("-"));
+function copyTargets(tool, flags, args, cwd) {
   if (args.length < 2) return { files: args, folders: [] };
-  const recursive = tool === "mv" || words.some((a) => CP_RECURSIVE_RE.test(a));
+  const recursive = tool === "mv" || flags.some((a) => CP_RECURSIVE_RE.test(a));
   const dest = args[args.length - 1];
   const sources = args.slice(0, -1);
   const into = sources.length > 1 || folderish(dest) || (!!cwd && isLiteralWord(dest) && isDir(joinRaw(cwd, dest)));
@@ -296,73 +130,53 @@ function copyTargets(tool, words, cwd) {
 }
 
 function bashWriteTargets(raw, cwd = null) {
-  if (typeof raw !== "string") return { files: [], folders: [] };
-  const targets = shellPatchTargets(raw);
+  const files = [];
   const folders = [];
-  for (const t of shellTexts(shellOnly(raw))) {
-    for (const m of t.masked.matchAll(redirectRe(SPACED_REDIRECT_RE, t))) {
-      const [target] = wordsAt(t, m);
-      if (target && !/^&\d+$/.test(target)) targets.push(target);
-    }
-    for (const m of t.masked.matchAll(TEE_RE)) targets.push(...wordsAt(t, m).filter(notFlag));
-    for (const m of t.masked.matchAll(TOUCH_RE)) targets.push(...wordsAt(t, m).filter(notFlag));
-    for (const m of t.masked.matchAll(CP_MV_RE)) {
-      const copied = copyTargets(m[1], wordsAt(t, m, 2), cwd);
-      targets.push(...copied.files);
+  for (const e of effects(raw)) {
+    if (e.kind === "patch") files.push(...extractApplyPatchTargets(e.text));
+    else if (e.kind === "write" && !e.tight) files.push(e.path);
+    else if (e.kind === "copy") {
+      const copied = copyTargets(e.tool, e.flags, e.args, cwd);
+      files.push(...copied.files);
       folders.push(...copied.folders);
     }
   }
-  return { files: targets, folders };
+  return { files, folders };
 }
 
 /**
- * Redirects written with no space before the `>` (`echo hi>.env`). Code such as `a>b` reads the same way, so these are
- * judged against the always-off-limits list and the guarded set only.
+ * Redirects written with no space before the operator (`echo hi>.env`). Unquoted code such as `x=$(f)>y` reads the
+ * same way, so these are judged against the always-off-limits list and the guarded set only.
  */
 export function extractBashTightRedirects(raw) {
-  if (typeof raw !== "string") return [];
-  const out = [];
-  for (const t of shellTexts(shellOnly(raw))) {
-    for (const m of t.masked.matchAll(redirectRe(TIGHT_REDIRECT_RE, t))) {
-      const [target] = wordsAt(t, m);
-      if (target && !/^&\d+$/.test(target) && !DEVICE_RE.test(target)) out.push(target);
-    }
-  }
-  return out;
+  return effects(raw).filter((e) => e.kind === "write" && e.tight && !DEVICE_RE.test(e.path)).map((e) => e.path);
 }
 
-/** Paths a shell command removes or moves away: `rm`/`unlink` arguments and `mv` sources. Judged for the guarded set only. */
+/** Paths a shell command removes or moves away: `rm`/`unlink`/`git rm` arguments and `mv` sources. */
 export function extractBashRemovals(raw) {
-  if (typeof raw !== "string") return [];
-  const out = [];
-  for (const t of shellTexts(shellOnly(raw))) {
-    for (const m of t.masked.matchAll(RM_RE)) out.push(...wordsAt(t, m).filter(notFlag));
-    for (const m of t.masked.matchAll(MV_RE)) out.push(...wordsAt(t, m).filter(notFlag).slice(0, -1));
-  }
-  return out;
+  return effects(raw).filter((e) => e.kind === "remove").map((e) => e.path);
 }
 
 /** Every write target the call names. A structured `file_path` is accepted for tools that carry one. */
 export function extractTargets(call, cwd = call?.cwd ?? null) {
-  const command = call?.tool_input?.command;
-  if (call?.tool_name === "apply_patch") return extractApplyPatchTargets(command);
-  if (call?.tool_name === "Bash") return extractBashTargets(command, cwd);
+  if (call?.tool_name === "apply_patch") return extractApplyPatchTargets(callCommand(call));
+  if (call?.tool_name === "Bash") return extractBashTargets(callCommand(call), cwd);
   const structured = call?.tool_input?.file_path ?? call?.tool_input?.path ?? call?.input?.file_path;
   return typeof structured === "string" && structured.length > 0 ? [structured] : [];
 }
 
 export function extractFolderTargets(call, cwd = call?.cwd ?? null) {
-  return call?.tool_name === "Bash" ? extractBashFolders(call?.tool_input?.command, cwd) : [];
+  return call?.tool_name === "Bash" ? extractBashFolders(callCommand(call), cwd) : [];
 }
 
 export function extractNarrowTargets(call, cwd = call?.cwd ?? null, strict = extractTargets(call, cwd)) {
   if (call?.tool_name !== "Bash") return [];
   const full = new Set(strict);
-  return extractBashTightRedirects(call?.tool_input?.command).filter((t) => !full.has(t));
+  return extractBashTightRedirects(callCommand(call)).filter((t) => !full.has(t));
 }
 
 export function extractRemovals(call) {
-  return call?.tool_name === "Bash" ? extractBashRemovals(call?.tool_input?.command) : [];
+  return call?.tool_name === "Bash" ? extractBashRemovals(callCommand(call)) : [];
 }
 
 // ── paths through links ────────────────────────────────────────────────────
@@ -611,7 +425,7 @@ const absent = (p) => { try { lstatSync(p); return false; } catch (e) { return e
 function mayCreateWhenAbsent(call, target, cwd) {
   if (!isLiteralWord(target)) return false;
   if (call?.tool_name === "apply_patch") {
-    return addFileTargets(call?.tool_input?.command).includes(target) && absent(joinRaw(cwd, target));
+    return addFileTargets(callCommand(call)).includes(target) && absent(joinRaw(cwd, target));
   }
   return call?.tool_name === "Bash" && isAbsolute(target) && absent(target);
 }
@@ -801,10 +615,10 @@ export function decideCall(call, { wiredBy = "plugin" } = {}) {
   const session = sessionRoot ? projectState(sessionRoot) : null;
   const toolName = typeof call?.tool_name === "string" ? call.tool_name : null;
   // One scan of a shell command: a folder copy lists the folder's files.
-  const shell = toolName === "Bash" ? bashWriteTargets(call?.tool_input?.command, cwd) : null;
+  const shell = toolName === "Bash" ? bashWriteTargets(callCommand(call), cwd) : null;
   const targets = shell ? shell.files.filter((t) => !DEVICE_RE.test(t)) : extractTargets(call, cwd);
   const folderTargets = shell?.folders ?? [];
-  const patched = new Set(shell ? shellPatchTargets(call?.tool_input?.command) : []);
+  const patched = new Set(shell ? shellPatchTargets(callCommand(call)) : []);
   const row = (decision, extra) => ({ decision, tool_name: toolName, wired_by: wiredBy, ...extra });
 
   const warnings = [];
