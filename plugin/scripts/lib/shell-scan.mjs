@@ -4,12 +4,12 @@
  * string `sh -c`, `eval` or `trap` runs, the here-document or piped text a shell reads as its script, and the
  * commands whose output a shell runs (`bash -c "$(cat <<EOF …)"`, `source <(…)`).
  *
- * `scanShell` returns effects in command order: `{kind: "write", path, tight}` (a redirect, `tee`, `touch`; `tight`
- * when no blank comes before the operator), `{kind: "copy", tool, flags, args}` (`cp`, `mv`, `git mv`),
- * `{kind: "remove", path}` (`rm`, `unlink`, `git rm`, `mv` sources) and `{kind: "patch", text}` (the text an
- * `apply_patch` run through the shell is given or piped). Paths are shell words with quotes and backslashes resolved;
- * `$`, globs and braces stay in them, and a command substitution reads `$*`. `{kind: "unread"}` marks text nested
- * past MAX_DEPTH, which the scan does not read.
+ * `scanShell` returns effects, a command's own before those of the substitutions in it: `{kind: "write", path,
+ * tight}` (a redirect, `tee`, `touch`; `tight` when no blank comes before the operator), `{kind: "copy", tool,
+ * flags, args}` (`cp`, `mv`, `git mv`), `{kind: "remove", path}` (`rm`, `unlink`, `git rm`, `mv` sources) and
+ * `{kind: "patch", text}` (the text an `apply_patch` run through the shell is given or piped). Paths are shell
+ * words with quotes and backslashes resolved; `$`, globs and braces stay in them, and a command substitution reads
+ * `$*`. `{kind: "unread"}` marks text nested past MAX_DEPTH, which the scan does not read.
  */
 
 /** Past this depth of substitutions and nested shells, the inner text is not read. */
@@ -570,7 +570,7 @@ function find(words, out, depth) {
   }
 }
 
-/** One simple command's effects. `feeds`: what the next command of a pipeline does with this one's output (stdinUse). */
+/** One simple command's effects. `feeds`: what is done with its output: "shell" runs it as a script, "patch" applies it. */
 function simple(cmd, out, depth, feeds) {
   const feedsShell = feeds === "shell";
   const { words, redirs } = cmd;
