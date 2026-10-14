@@ -4,6 +4,7 @@
  */
 import test from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 
 import { OpenAIAdapter } from "../dist/adapters/OpenAIAdapter.js";
 
@@ -390,4 +391,65 @@ test("aborting the dispatch aborts the request in flight", async () => {
   assert.equal(out.success, false);
   assert.match(out.error, /aborted/);
   assert.doesNotMatch(out.error, /deadline/, "the caller's abort is not the deadline");
+});
+
+// ── strict structured output ─────────────────────────────────────────
+
+const STRICT_SCHEMA = {
+  type: "object",
+  properties: { ok: { type: "boolean" } },
+  required: ["ok"],
+  additionalProperties: false,
+};
+const planSchema = (mode) =>
+  JSON.parse(readFileSync(new URL(`../../../config/schemas/plan-packets.${mode}.json`, import.meta.url), "utf8"));
+const USAGE = { input_tokens: 1000, input_tokens_details: { cached_tokens: 400 }, output_tokens: 50, output_tokens_details: { reasoning_tokens: 20 } };
+const answer = (value) => () => ({ status: "completed", output_text: JSON.stringify(value), incomplete_details: null, usage: USAGE });
+
+test("a schema strict mode accepts goes as strict structured output, named after the phase", async () => {
+  const client = fakeClient(answer({ ok: true }));
+  const out = await new OpenAIAdapter(BASE_CONFIG, { client }).execute({ ...PACKET, outputSchema: STRICT_SCHEMA });
+  assert.deepEqual(client.calls[0].text, {
+    format: { type: "json_schema", name: "requirements_analysis", schema: STRICT_SCHEMA, strict: true },
+  });
+  assert.deepEqual(out.result, { ok: true });
+});
+
+test("a schema strict mode would refuse sends no text format, as before", async () => {
+  for (const outputSchema of [PACKET.outputSchema, { type: "array", items: { type: "object" } }, { __free_text__: true }]) {
+    const client = fakeClient(answer({ ok: true }));
+    const out = await new OpenAIAdapter(BASE_CONFIG, { client }).execute({ ...PACKET, outputSchema });
+    assert.equal("text" in client.calls[0], false, JSON.stringify(outputSchema));
+    assert.equal(out.success, true);
+  }
+});
+
+test("the shipped plan schemas go as strict structured output, priced as any other reply", async () => {
+  const plan = { packets: [] };
+  const loose = fakeClient(answer(plan));
+  const looseOut = await new OpenAIAdapter(BASE_CONFIG, { client: loose }).execute(PACKET);
+  for (const mode of ["greenfield", "brownfield"]) {
+    const schema = planSchema(mode);
+    const client = fakeClient(answer(plan));
+    const out = await new OpenAIAdapter(BASE_CONFIG, { client }).execute({ ...PACKET, phase: "plan_task_packets", outputSchema: schema });
+    assert.deepEqual(client.calls[0].text, { format: { type: "json_schema", name: "plan_task_packets", schema, strict: true } }, mode);
+    assert.deepEqual(out.result, plan);
+    assert.equal(out.cost_usd, looseOut.cost_usd, "the format changes no usage or pricing");
+    assert.deepEqual(out.tokens, looseOut.tokens);
+    assert.deepEqual(out.attempts[0].tokens, looseOut.attempts[0].tokens);
+  }
+});
+
+test("strict structured output rides every attempt of the output-cap doubling", async () => {
+  let call = 0;
+  const client = fakeClient((req) => {
+    call += 1;
+    return call === 1
+      ? { status: "incomplete", output_text: "", incomplete_details: { reason: "max_output_tokens" }, usage: { ...USAGE, output_tokens: req.max_output_tokens } }
+      : answer({ ok: true })();
+  });
+  const out = await new OpenAIAdapter(BASE_CONFIG, { client }).execute({ ...PACKET, outputSchema: STRICT_SCHEMA, budget: { maxInputTokens: 8000, maxOutputTokens: 500 } });
+  assert.equal(client.calls.length, 2);
+  for (const req of client.calls) assert.equal(req.text.format.strict, true);
+  assert.equal(out.success, true);
 });

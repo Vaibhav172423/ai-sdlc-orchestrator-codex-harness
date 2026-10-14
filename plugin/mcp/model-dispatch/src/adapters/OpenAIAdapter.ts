@@ -11,6 +11,11 @@
  * `incomplete_details.reason === "max_output_tokens"` where Anthropic
  * reports `stop_reason === "max_tokens"`, and cached/reasoning token counts
  * live under `usage.input_tokens_details` / `usage.output_tokens_details`.
+ *
+ * A packet whose outputSchema OpenAI strict mode accepts (strictSchema.ts) is
+ * sent as strict structured output, so the reply is held to the schema; any
+ * other schema is only described in the prompt, since strict mode would refuse
+ * the whole request over it.
  */
 
 import OpenAI from "openai";
@@ -22,6 +27,7 @@ import { log } from "../log.js";
 import { DispatchPricer, priceFields, refusedResult, type Clock } from "./dispatchPricer.js";
 import { answeredWithError, describeVendorFailure, neverSent, type VendorFailure } from "./vendorFailure.js";
 import { dispatchTimeoutMs, startDeadline, type Deadline } from "./deadline.js";
+import { strictSchemaProblems } from "./strictSchema.js";
 
 // No published absolute output-token ceiling is pinned for gpt-5.6-terra as
 // of this port; the official codex policy sets max_output_tokens_absolute
@@ -105,6 +111,7 @@ export class OpenAIAdapter implements ModelAdapter {
     const dispatchDate = this.pricer.now();
     const listed = this.pricer.price(dispatchDate);
     if (listed.unpriced) return refusedResult(this.modelConfig, dispatchDate, listed.reason, ceiling);
+    const format = strictFormat(packet);
 
     for (;;) {
       const attemptNumber = attempts.length + 1;
@@ -119,6 +126,7 @@ export class OpenAIAdapter implements ModelAdapter {
         // confirmed in docs/verification/p1-codex-runtime.md check 7) accepts
         // a wider live enum. "high" — this port's pin — is valid either way.
         reasoning: effort ? ({ effort } as OpenAI.Reasoning) : undefined,
+        ...(format ? { text: { format } } : {}),
       };
 
       log("debug", "api.openai.request", {
@@ -128,6 +136,7 @@ export class OpenAIAdapter implements ModelAdapter {
         reasoning_effort: effort,
         instructions_bytes: stableBlock ? Buffer.byteLength(stableBlock) : 0,
         input_bytes: Buffer.byteLength(userPrompt),
+        output_format: format ? "json_schema" : "none",
       });
 
       let resp: OpenAI.Responses.Response;
@@ -299,6 +308,17 @@ export class OpenAIAdapter implements ModelAdapter {
       ...(usedEstimate ? { cost_provenance: "estimated" as const } : {}),
     };
   }
+}
+
+/** Strict structured output for a schema strict mode accepts, else undefined: the request goes as it always has. */
+export function strictFormat(packet: TaskPacket): OpenAI.Responses.ResponseFormatTextJSONSchemaConfig | undefined {
+  if (strictSchemaProblems(packet.outputSchema).length > 0) return undefined;
+  return {
+    type: "json_schema",
+    name: /^[A-Za-z0-9_-]{1,64}$/.test(packet.phase) ? packet.phase : "packet_output",
+    schema: packet.outputSchema,
+    strict: true,
+  };
 }
 
 /**
