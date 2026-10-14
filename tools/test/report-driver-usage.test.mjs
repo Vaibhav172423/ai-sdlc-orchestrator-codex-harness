@@ -233,3 +233,15 @@ test("a difference that carries forward differs only on the invocation where it 
   assert.ok(md.includes("| invocation 3 | equal | input | 5000 | 5000 | 0 |"), md);
   assert.ok(md.includes("| thread `019a0000-0000-7000-8000-0000000000a1` | mismatch | input | 8500 | 9000 | +500 |"), md);
 });
+
+test("an equal thread whose invocation also counts an earlier unreported one says so, and names it on the row", () => {
+  const note = "the running total also counts invocation 1, which reported no usage";
+  const dir = withCrossCheck("headless-equal", (cc) => ({
+    ...cc,
+    invocations: cc.invocations.map((i, k) => (k === 1 ? { ...i, status: "equal_with_explained_gap", reason: note } : i)),
+  }));
+  const out = report(dir).stdout;
+  assert.match(out, /Cross-check\s+verified: equal; 1 invocation also counts the turns of an earlier one that reported no usage/);
+  assert.ok(out.includes(`— ${note}`), out);
+  assert.ok(report(dir, ["--markdown"]).stdout.includes(`- Invocation 2 (equal_with_explained_gap): ${note}.`));
+});
