@@ -49,9 +49,9 @@ models:
     pricing_last_verified: 2026-10-13
     # No auth block: the codex CLI's own seat login backs this call.
     # TODO(ceiling): no published absolute output-token ceiling confirmed for
-    # gpt-5.6-terra as of this port. 32000 is a placeholder matching the
-    # carried Anthropic policies' Opus ceiling, not a researched GPT-5.6
-    # figure — confirm before P5 and correct here.
+    # gpt-5.6-terra as of this port. 32000 is a placeholder carried over from
+    # the Claude harness's judgment tier, not a researched GPT-5.6 figure —
+    # confirm before P5 and correct here.
     max_output_tokens_absolute: 32000
 
   # Gemini 3.7 Flash as a MODEL. One completion call per packet.

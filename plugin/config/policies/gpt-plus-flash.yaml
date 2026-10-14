@@ -1,11 +1,10 @@
 # The official codex harness policy (D9): GPT for judgment phases, Gemini 3.7
 # Flash for mechanical. Same rule grammar, select-slot shape, and cost cap as
-# the carried opus-plus-flash-v37.yaml this is modeled on — only the judgment
-# tier's adapter and model changed. This is the default, and one of four
-# policies the terminal picker offers alongside gpt-plus-flash-38,
-# gpt-seat-plus-flash and flash-agsdk-only. The opus-* presets name an Anthropic adapter and are
-# carried as non-selectable replay fixtures (no Anthropic credential exists
-# in this harness's setup).
+# the Claude harness policy it is ported from; only the judgment tier's
+# adapter and model changed. This is the default, and one of the four
+# policies this plugin ships, alongside gpt-plus-flash-38, gpt-seat-plus-flash
+# and flash-agsdk-only. Every one runs here: no shipped policy names an
+# Anthropic adapter or model.
 #
 # The mechanical tier has two doors to the same model, chosen per run via the
 # `select:` block below: `flash-completion` (one call per packet) or
@@ -40,9 +39,9 @@ models:
     pricing_last_verified: 2026-10-13
     auth: { env: OPENAI_API_KEY }
     # TODO(ceiling): no published absolute output-token ceiling confirmed for
-    # gpt-5.6-terra as of this port. 32000 is a placeholder matching the
-    # carried Anthropic policies' Opus ceiling, not a researched GPT-5.6
-    # figure — confirm before P5 and correct here.
+    # gpt-5.6-terra as of this port. 32000 is a placeholder carried over from
+    # the Claude harness's judgment tier, not a researched GPT-5.6 figure —
+    # confirm before P5 and correct here.
     max_output_tokens_absolute: 32000
 
   # Gemini 3.7 Flash as a MODEL. One completion call per packet.

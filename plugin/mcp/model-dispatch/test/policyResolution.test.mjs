@@ -19,6 +19,7 @@ import {
 } from "../dist/policy.js";
 import { REGISTERED_ADAPTER_IDS } from "../dist/adapters/index.js";
 import { connectBridge } from "../dist/driverClient.js";
+import { claudePolicyPath } from "./fixtures/claudePolicies.mjs";
 import {
   observePolicy,
   DEFAULT_POLICY as VERIFY_DEFAULT_POLICY,
@@ -152,9 +153,17 @@ test("a default_policy naming a missing preset lists the runnable presets read f
   });
 });
 
-test("shippedPresetNames leaves the replay fixtures out", () => {
-  const names = shippedPresetNames();
-  assert.deepEqual(names, ["flash-agsdk-only", "gpt-plus-flash", "gpt-plus-flash-38", "gpt-seat-plus-flash"]);
+test("shippedPresetNames is the four runnable policies, and leaves out one this harness cannot run", () => {
+  assert.deepEqual(shippedPresetNames(), ["flash-agsdk-only", "gpt-plus-flash", "gpt-plus-flash-38", "gpt-seat-plus-flash"]);
+  const dir = mkdtempSync(join(tmpdir(), "mmo-presets-"));
+  try {
+    writeFileSync(join(dir, "gpt-plus-flash.yaml"), readFileSync(SHIPPED));
+    writeFileSync(join(dir, "opus-plus-flash.yaml"), readFileSync(claudePolicyPath("opus-plus-flash")));
+    writeFileSync(join(dir, "claude-driver.yaml"), readFileSync(SHIPPED, "utf-8").replace(/^(driver:\n  model_name: ).*$/m, "$1claude-opus-5"));
+    assert.deepEqual(shippedPresetNames(dir), ["gpt-plus-flash"]);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 test("a policy name that is a path or an unrendered placeholder is refused", () => {

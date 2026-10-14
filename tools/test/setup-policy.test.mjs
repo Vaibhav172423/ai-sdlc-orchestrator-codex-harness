@@ -19,6 +19,8 @@ import { fileURLToPath } from "node:url";
 import "./lib/stand-ins.mjs";
 
 const SCRIPT = resolve(fileURLToPath(import.meta.url), "..", "..", "..", "plugin", "scripts", "setup-policy.mjs");
+const CLAUDE_POLICIES = resolve(fileURLToPath(import.meta.url), "..", "fixtures", "policies", "claude");
+const RUNNABLE = ["flash-agsdk-only", "gpt-plus-flash", "gpt-plus-flash-38", "gpt-seat-plus-flash"];
 
 function run(cwd, args, extraEnv = {}) {
   const r = spawnSync("node", [SCRIPT, ...args], {
@@ -57,12 +59,12 @@ test("--print-only tolerates a folder without git — does not fail", () => {
 test("--policy=<name> writes to .sdlc/project.json in a non-git folder (with a git-fallback note)", () => {
   const dir = newTmpDir();
   try {
-    const r = run(dir, ["--policy=opus-only"]);
+    const r = run(dir, ["--policy=gpt-seat-plus-flash"]);
     assert.equal(r.code, 0);
     const path = join(dir, ".sdlc", "project.json");
     assert.ok(existsSync(path), "must create .sdlc/project.json");
     const parsed = JSON.parse(readFileSync(path, "utf8"));
-    assert.equal(parsed.default_policy, "opus-only");
+    assert.equal(parsed.default_policy, "gpt-seat-plus-flash");
     assert.match(r.stderr, /not inside a git repository/i, "must surface the git-fallback note");
   } finally { cleanup(dir); }
 });
@@ -70,10 +72,10 @@ test("--policy=<name> writes to .sdlc/project.json in a non-git folder (with a g
 test("--print-only reads back what --policy just wrote", () => {
   const dir = newTmpDir();
   try {
-    run(dir, ["--policy=opus-plus-flash"]);
+    run(dir, ["--policy=gpt-plus-flash-38"]);
     const r = run(dir, ["--print-only"]);
     assert.equal(r.code, 0);
-    assert.equal(r.stdout.trim(), "opus-plus-flash", "round-trip must preserve the name");
+    assert.equal(r.stdout.trim(), "gpt-plus-flash-38", "round-trip must preserve the name");
   } finally { cleanup(dir); }
 });
 
@@ -83,17 +85,31 @@ test("--policy rejects an unknown policy name (fail-loud)", () => {
     const r = run(dir, ["--policy=nonexistent-policy-xyz"]);
     assert.notEqual(r.code, 0, "unknown policy must fail");
     assert.match(r.stderr, /not found/i, "must name the failure");
+    assert.match(r.stderr, new RegExp(`Available: ${RUNNABLE.join(", ")}\\n`));
   } finally { cleanup(dir); }
+});
+
+test("--policy finds none of the Claude harness policies, and refuses one placed in the policy dir", () => {
+  const dir = newTmpDir();
+  const policiesDir = newTmpDir();
+  try {
+    assert.match(run(dir, ["--policy=opus-only"]).stderr, /policy "opus-only" not found/);
+    writeFileSync(join(policiesDir, "opus-only.yaml"), readFileSync(join(CLAUDE_POLICIES, "opus-only.yaml"), "utf8"));
+    const r = run(dir, ["--policy=opus-only"], { SDLC_POLICIES_DIR_FOR_TESTS: policiesDir });
+    assert.notEqual(r.code, 0);
+    assert.match(r.stderr, /policy "opus-only" names an Anthropic adapter \(builtin-anthropic\), and this harness runs no Anthropic model/);
+    assert.equal(existsSync(join(dir, ".sdlc", "project.json")), false, "nothing is written");
+  } finally { cleanup(policiesDir); cleanup(dir); }
 });
 
 test("--policy is idempotent — running twice with the same name is safe", () => {
   const dir = newTmpDir();
   try {
-    run(dir, ["--policy=opus-only"]);
-    const r = run(dir, ["--policy=opus-only"]);
+    run(dir, ["--policy=gpt-plus-flash"]);
+    const r = run(dir, ["--policy=gpt-plus-flash"]);
     assert.equal(r.code, 0, "second run must succeed");
     const parsed = JSON.parse(readFileSync(join(dir, ".sdlc", "project.json"), "utf8"));
-    assert.equal(parsed.default_policy, "opus-only");
+    assert.equal(parsed.default_policy, "gpt-plus-flash");
   } finally { cleanup(dir); }
 });
 
@@ -107,34 +123,29 @@ test("--policy preserves other fields in an existing project.json", () => {
       join(sdlcDir, "project.json"),
       JSON.stringify({ schema_version: 1, stacks: ["nest"], test_command: "npm test" }),
     );
-    run(dir, ["--policy=opus-only"]);
+    run(dir, ["--policy=gpt-plus-flash"]);
     const parsed = JSON.parse(readFileSync(join(sdlcDir, "project.json"), "utf8"));
     assert.deepEqual(parsed.stacks, ["nest"], "must preserve pre-existing stacks");
     assert.equal(parsed.test_command, "npm test", "must preserve pre-existing test_command");
-    assert.equal(parsed.default_policy, "opus-only", "must add the new field");
+    assert.equal(parsed.default_policy, "gpt-plus-flash", "must add the new field");
   } finally { cleanup(dir); }
 });
 
 // ── terminal picker helpers (--list-json / --check-creds / --guard-active-run) ─────
 
-test("--list-json on the shipped policies dir returns correctly-shaped JSON entries", () => {
+test("--list-json on the shipped policies dir lists the four runnable policies, correctly shaped", () => {
   const dir = newTmpDir();
   try {
     const r = run(dir, ["--list-json"]);
     assert.equal(r.code, 0);
     const list = JSON.parse(r.stdout);
     assert.ok(Array.isArray(list), "must be an array");
-    assert.ok(list.length >= 2, "must include the shipped presets");
-    const opusPlusFlash = list.find((p) => p.name === "opus-plus-flash");
-    assert.ok(opusPlusFlash, "must include opus-plus-flash");
-    assert.ok(Array.isArray(opusPlusFlash.adapters), "adapters array");
-    assert.ok(Array.isArray(opusPlusFlash.required_env), "required_env array");
-    assert.equal(typeof opusPlusFlash.requires_vertex_adc, "boolean");
-    assert.equal(typeof opusPlusFlash.requires_claude_cli, "boolean");
-    // opus-plus-flash uses builtin-anthropic + mcp:model-dispatch + antigravity-worker
-    assert.ok(opusPlusFlash.required_env.includes("ANTHROPIC_API_KEY"));
-    assert.ok(opusPlusFlash.required_env.includes("GEMINI_API_KEY"));
-    assert.equal(opusPlusFlash.requires_vertex_adc, true, "antigravity-worker → vertex ADC");
+    assert.deepEqual(list.map((p) => p.name).sort(), RUNNABLE);
+    for (const p of list) assert.deepEqual(p.anthropic_adapters, [], p.name);
+    const gptPlusFlash = list.find((p) => p.name === "gpt-plus-flash");
+    assert.deepEqual(gptPlusFlash.adapters, ["antigravity-worker", "mcp:model-dispatch", "openai"]);
+    assert.deepEqual(gptPlusFlash.required_env, ["GEMINI_API_KEY", "OPENAI_API_KEY"]);
+    assert.equal(gptPlusFlash.requires_vertex_adc, true, "antigravity-worker → vertex ADC");
   } finally { cleanup(dir); }
 });
 
@@ -147,10 +158,10 @@ test("--list-json includes malformed YAML as { name, error } entry", () => {
       "version: 1",
       "name: good",
       "models:",
-      "  - id: opus",
-      "    adapter: builtin-anthropic",
-      "    model_name: claude-opus-4-7",
-      "    auth: { env: ANTHROPIC_API_KEY }",
+      "  - id: gpt",
+      "    adapter: openai",
+      "    model_name: gpt-5.6-terra",
+      "    auth: { env: OPENAI_API_KEY }",
       "",
     ].join("\n"));
     writeFileSync(join(policiesDir, "malformed.yaml"), "this is not a policy at all\n");
@@ -164,8 +175,8 @@ test("--list-json includes malformed YAML as { name, error } entry", () => {
     const good = list.find((p) => p.name === "good");
     assert.ok(good, "good entry must be present");
     assert.ok(!good.error, "good entry must not carry an error");
-    assert.deepEqual(good.adapters, ["builtin-anthropic"]);
-    assert.deepEqual(good.required_env, ["ANTHROPIC_API_KEY"]);
+    assert.deepEqual(good.adapters, ["openai"]);
+    assert.deepEqual(good.required_env, ["OPENAI_API_KEY"]);
   } finally { cleanup(policiesDir); cleanup(dir); }
 });
 
@@ -261,15 +272,33 @@ function checkCreds(policy, { home, policiesDir, env = {}, emptyPath = false } =
 test("--check-creds reports missing env vars with fix strings", () => {
   const home = homeWithoutAdc();
   try {
-    const parsed = checkCreds("opus-plus-flash", { home });
+    const parsed = checkCreds("gpt-plus-flash", { home, env: { OPENAI_API_KEY: "" } });
     assert.equal(parsed.ok, false, "missing creds → ok:false");
     const missingNames = parsed.missing.filter((m) => m.kind === "env").map((m) => m.name);
-    assert.ok(missingNames.includes("ANTHROPIC_API_KEY"), "must flag ANTHROPIC_API_KEY");
+    assert.ok(missingNames.includes("OPENAI_API_KEY"), "must flag OPENAI_API_KEY");
     assert.ok(missingNames.includes("GEMINI_API_KEY"), "must flag GEMINI_API_KEY");
     for (const m of parsed.missing) {
       assert.ok(m.fix, `missing entry must carry a fix string: ${JSON.stringify(m)}`);
     }
   } finally { cleanup(home); }
+});
+
+test("--check-creds refuses a policy that names an Anthropic adapter, and asks for no Anthropic credential", () => {
+  const home = homeWithoutAdc();
+  const policiesDir = newTmpDir();
+  try {
+    for (const name of ["opus-plus-flash", "opus-plus-sonnet-max"]) {
+      writeFileSync(join(policiesDir, `${name}.yaml`), readFileSync(join(CLAUDE_POLICIES, `${name}.yaml`), "utf8"));
+    }
+    for (const [name, adapters] of [["opus-plus-flash", "builtin-anthropic"], ["opus-plus-sonnet-max", "builtin-anthropic, claude-cli"]]) {
+      const parsed = checkCreds(name, { home, policiesDir });
+      assert.equal(parsed.ok, false, name);
+      assert.equal(parsed.missing.length, 1, JSON.stringify(parsed));
+      assert.equal(parsed.missing[0].kind, "policy");
+      assert.ok(parsed.missing[0].fix.includes(`names an Anthropic adapter (${adapters}), and this harness runs no Anthropic model`), parsed.missing[0].fix);
+      assert.doesNotMatch(JSON.stringify(parsed), /ANTHROPIC_API_KEY|Claude Code CLI/);
+    }
+  } finally { cleanup(policiesDir); cleanup(home); }
 });
 
 test("--check-creds accepts Vertex ADC in place of GEMINI_API_KEY — two doors, not one", () => {
@@ -353,20 +382,13 @@ test("--check-creds asks the offline gcloud stand-in, never a real gcloud", () =
 });
 
 test("--check-creds returns ok:true when required env vars are present", () => {
-  const dir = newTmpDir();
+  const home = homeWithAdc();
+  const policiesDir = seedPolicies();
   try {
-    // Use a policy that only needs ANTHROPIC_API_KEY (opus-only).
-    const scrubbed = { ...process.env, ANTHROPIC_API_KEY: "sk-ant-test-value" };
-    const r = spawnSync("node", [SCRIPT, "--check-creds", "--policy=opus-only"], {
-      cwd: dir,
-      encoding: "utf8",
-      env: scrubbed,
-    });
-    assert.equal(r.status, 0);
-    const parsed = JSON.parse(r.stdout);
-    // opus-only doesn't need vertex/claude-cli, so ok should be true.
+    // gemini-plus-openai has no agent leaf: the key and the ADC door satisfy it.
+    const parsed = checkCreds("gemini-plus-openai", { home, policiesDir, env: { OPENAI_API_KEY: "sk-test-dummy-not-a-real-key" } });
     assert.equal(parsed.ok, true, `expected ok:true, got ${JSON.stringify(parsed)}`);
-  } finally { cleanup(dir); }
+  } finally { cleanup(policiesDir); cleanup(home); }
 });
 
 test("--check-creds refuses when --policy is missing", () => {

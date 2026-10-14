@@ -10,6 +10,7 @@ import { loadPolicy, loadPolicyFromPath } from "../dist/policy.js";
 import { effectivePricing, lookupEntry } from "../dist/prices.js";
 import { assessPricing } from "../dist/preflight.js";
 import { connectBridge } from "../dist/driverClient.js";
+import { CLAUDE_POLICY_DIR } from "./fixtures/claudePolicies.mjs";
 
 const POLICIES_DIR = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "..", "config", "policies");
 const FILES = readdirSync(POLICIES_DIR).filter((f) => f.endsWith(".yaml"));
@@ -18,9 +19,9 @@ const SHIPPED = FILES.map((f) => f.replace(/\.yaml$/, ""));
 // 3.7/3.8 blocks stop matching and this fails until they are re-pinned.
 const TODAY = new Date().toISOString().slice(0, 10);
 
-function shippedLeaves() {
-  return FILES.flatMap((file) => {
-    const parsed = parseYaml(readFileSync(join(POLICIES_DIR, file), "utf-8"));
+function leavesIn(dir, files) {
+  return files.flatMap((file) => {
+    const parsed = parseYaml(readFileSync(join(dir, file), "utf-8"));
     const leaves = (parsed.models ?? []).map((m) => ({ where: `${file} models[${m.id}] (${m.model_name})`, m }));
     // The driver block carries a card too, and it must not drift from the list either.
     if (parsed.driver) leaves.push({ where: `${file} driver (${parsed.driver.model_name})`, m: parsed.driver });
@@ -28,11 +29,13 @@ function shippedLeaves() {
   });
 }
 
+const shippedLeaves = () => leavesIn(POLICIES_DIR, FILES);
+
 // ── shipped policy blocks equal the list ────────────────────────────────
 
 test("every shipped policy model is priced by the list today", () => {
   const leaves = shippedLeaves();
-  assert.ok(leaves.length >= 20, `expected every shipped leaf, found ${leaves.length}`);
+  assert.ok(leaves.length >= 14, `expected every shipped leaf, found ${leaves.length}`);
   const problems = [];
   for (const { where, m } of leaves) {
     const r = effectivePricing(m, TODAY);
@@ -79,7 +82,7 @@ test("every shipped block cites its list entry's source and carries that entry's
     }
   }
   assert.deepEqual(problems, []);
-  assert.ok(checked >= 20, `checked ${checked}`);
+  assert.ok(checked >= 14, `checked ${checked}`);
 });
 
 test("no shipped policy cites the doubled docs/en/docs Anthropic path", () => {
@@ -88,8 +91,9 @@ test("no shipped policy cites the doubled docs/en/docs Anthropic path", () => {
   }
 });
 
-test("both Sonnet 5 leaves carry Anthropic's 2.00/0.20/10.00 card", () => {
-  const sonnet = shippedLeaves().filter(({ m }) => m.model_name === "claude-sonnet-5");
+test("both Sonnet 5 leaves in the Claude harness fixtures carry Anthropic's 2.00/0.20/10.00 card", () => {
+  const fixtures = readdirSync(CLAUDE_POLICY_DIR).filter((f) => f.endsWith(".yaml"));
+  const sonnet = leavesIn(CLAUDE_POLICY_DIR, fixtures).filter(({ m }) => m.model_name === "claude-sonnet-5");
   assert.equal(sonnet.length, 2);
   for (const { where, m } of sonnet) assert.deepEqual(m.pricing, { input: 2, input_cached: 0.2, output: 10 }, where);
 });

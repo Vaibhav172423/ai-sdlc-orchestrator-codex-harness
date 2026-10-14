@@ -4,7 +4,8 @@ import { mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "n
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { PLUGIN_POLICY_DIR, isReplayFixture, loadPolicy, loadPolicyFromPath, resolvePolicy, shippedPresetNames } from "../dist/policy.js";
+import { PLUGIN_POLICY_DIR, loadPolicy, loadPolicyFromPath, resolvePolicy, shippedPresetNames } from "../dist/policy.js";
+import { CLAUDE_POLICY_DIR } from "./fixtures/claudePolicies.mjs";
 
 const SHIPPED = join(PLUGIN_POLICY_DIR, "gpt-plus-flash.yaml");
 
@@ -33,32 +34,33 @@ test("a driver block is validated when present", () => {
   }
 });
 
-function shippedPolicies() {
-  return readdirSync(PLUGIN_POLICY_DIR)
+function policiesIn(dir) {
+  return readdirSync(dir)
     .filter((f) => f.endsWith(".yaml"))
     .map((f) => f.replace(/\.yaml$/, ""))
     .sort()
-    .map((name) => ({ file: `${name}.yaml`, name, policy: loadPolicyFromPath(join(PLUGIN_POLICY_DIR, `${name}.yaml`)) }));
+    .map((name) => ({ file: `${name}.yaml`, name, policy: loadPolicyFromPath(join(dir, `${name}.yaml`)) }));
 }
 
-test("every runnable shipped policy carries the same driver block; replay fixtures carry none", () => {
+test("every shipped policy carries the same driver block", () => {
   const reference = loadPolicy({ policyName: "gpt-plus-flash" }).driver;
   assert.deepEqual(
     { model_name: reference.model_name, effort: reference.reasoning.effort },
     { model_name: "gpt-5.6-terra", effort: "high" },
   );
-  const all = shippedPolicies();
-  const runnable = all.filter((p) => !isReplayFixture(p.policy));
-  const fixtures = all.filter((p) => isReplayFixture(p.policy));
-  assert.ok(runnable.length > 1 && fixtures.length > 0, "the policy directory holds both kinds");
-  assert.deepEqual(runnable.map((p) => p.name), shippedPresetNames(), "the presets a run is offered are the runnable files");
-  for (const { file, name, policy } of runnable) {
+  const shipped = policiesIn(PLUGIN_POLICY_DIR);
+  assert.ok(shipped.length > 1);
+  assert.deepEqual(shipped.map((p) => p.name), shippedPresetNames(), "the presets a run is offered are every shipped file");
+  for (const { file, name, policy } of shipped) {
     assert.equal(policy.name, name, `${file}: name matches the file name, so --policy=${name} finds it`);
     assert.deepEqual(policy.driver, reference, file);
     const gpt = policy.models.find((m) => m.id === "gpt");
     if (gpt) assert.deepEqual(policy.driver.pricing, gpt.pricing, `${file}: driver rates equal the gpt entry's`);
   }
-  for (const { file, policy } of fixtures) {
-    assert.equal(policy.driver, undefined, file);
-  }
+});
+
+test("the Claude harness policies kept as test fixtures carry no driver block", () => {
+  const fixtures = policiesIn(CLAUDE_POLICY_DIR);
+  assert.ok(fixtures.length > 0);
+  for (const { file, policy } of fixtures) assert.equal(policy.driver, undefined, file);
 });

@@ -26,7 +26,7 @@ try {
 }
 
 function bridgePolicy() {
-  if (bridge?.resolvePolicy && bridge?.isReplayFixture && bridge?.driverPriceRecord) return bridge;
+  if (bridge?.resolvePolicy && bridge?.anthropicAdapters && bridge?.isGptModel && bridge?.driverPriceRecord) return bridge;
   const why = bridgeLoadError?.message ?? "it has no resolvePolicy export, so it was built from an older checkout";
   throw new RunRefusal(
     `run: cannot load the policy resolver from ${fileURLToPath(DIST_POLICY)} (${why}). ` +
@@ -53,12 +53,12 @@ function refuseWith(err) {
   return new RunRefusal(message.startsWith("run:") ? message : `run: ${message}`);
 }
 
-function replayAdvice(resolved, projectRoot, presets) {
+function notRunnableAdvice(resolved, projectRoot, presets, edit) {
   const runnable = `Runnable presets: ${presets.join(", ")}.`;
   if (resolved.source === "project-override") {
     return (
       `It comes from ${resolved.path}, which every run in this project uses whatever --policy names: ` +
-      `edit it to route through GPT and Gemini adapters, or move it aside. ${runnable}`
+      `${edit}, or move it aside. ${runnable}`
     );
   }
   if (resolved.source === "project-default") {
@@ -73,12 +73,13 @@ function replayAdvice(resolved, projectRoot, presets) {
 /**
  * Resolves the run's policy (routing-policy.yaml, then --policy, then the
  * project.json default, then the built-in default) and reads its driver pin
- * and the price list entry for it on `now`. Refuses a replay fixture, a
- * conductor model nothing prices, and a name the dispatch command line
- * cannot carry unquoted.
+ * and the price list entry for it on `now`. Refuses a policy with an
+ * Anthropic adapter, a conductor pin that is not a GPT model, a conductor
+ * model nothing prices, and a name the dispatch command line cannot carry
+ * unquoted.
  */
 export function resolveRunPolicy({ projectRoot, policyArg = null, warn = stderrWarn, now = new Date() } = {}) {
-  const { resolvePolicy, isReplayFixture, shippedPresetNames, POLICY_NAME_RE, driverPriceRecord } = bridgePolicy();
+  const { resolvePolicy, anthropicAdapters, isGptModel, shippedPresetNames, POLICY_NAME_RE, driverPriceRecord } = bridgePolicy();
   const requested = typeof policyArg === "string" && policyArg.length > 0 ? policyArg : null;
   let resolved;
   try {
@@ -87,10 +88,12 @@ export function resolveRunPolicy({ projectRoot, policyArg = null, warn = stderrW
     throw refuseWith(err);
   }
   const { policy } = resolved;
-  if (isReplayFixture(policy)) {
+  const anthropic = anthropicAdapters(policy);
+  if (anthropic.length > 0) {
+    const advice = notRunnableAdvice(resolved, projectRoot, shippedPresetNames(), "edit it to route through GPT and Gemini adapters");
     throw new RunRefusal(
-      `run: policy '${policy.name}' (${resolved.path}) is a replay fixture: it names an Anthropic adapter, ` +
-        `and this harness runs no Anthropic model. ${replayAdvice(resolved, projectRoot, shippedPresetNames())}`,
+      `run: policy '${policy.name}' (${resolved.path}) names an Anthropic adapter (${anthropic.join(", ")}), ` +
+        `and this harness runs no Anthropic model. ${advice}`,
     );
   }
   if (!POLICY_NAME_RE.test(policy.name)) {
@@ -104,6 +107,13 @@ export function resolveRunPolicy({ projectRoot, policyArg = null, warn = stderrW
     driver = readDriver(policy, { warn });
   } catch (err) {
     throw refuseWith(err);
+  }
+  if (!isGptModel(driver.pin.model)) {
+    const advice = notRunnableAdvice(resolved, projectRoot, shippedPresetNames(), "set its driver: model_name to gpt-5.6-terra");
+    throw new RunRefusal(
+      `run: policy '${policy.name}' (${resolved.path}) pins the conductor to '${driver.pin.model}', which is not a GPT model: ` +
+        `this harness runs its conductor in codex on a GPT model only. ${advice}`,
+    );
   }
   const price = driverPriceRecord(policy, driver.pin.model, now);
   if (price.unpriced_reason) {

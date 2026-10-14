@@ -114,7 +114,7 @@ export function resolvePolicySource(opts: PolicyQuery): PolicyLocation {
   return { source: "builtin-default", path: presetPath(DEFAULT_POLICY_NAME, "built-in default"), requestedName: null };
 }
 
-/** Preset names in the plugin's policy directory that a run can use (replay fixtures left out). */
+/** Preset names in the plugin's policy directory that a run can use: no Anthropic adapter, and a GPT driver when one is named. */
 export function shippedPresetNames(dir: string = PLUGIN_POLICY_DIR): string[] {
   let files: string[];
   try {
@@ -126,7 +126,8 @@ export function shippedPresetNames(dir: string = PLUGIN_POLICY_DIR): string[] {
     .filter((f) => {
       try {
         const raw = parseYaml(readFileSync(join(dir, f), "utf-8"));
-        return Array.isArray(raw?.models) && !raw.models.some((m: any) => ANTHROPIC_ADAPTER_IDS.has(m?.adapter));
+        if (!Array.isArray(raw?.models) || anthropicAdapters(raw).length > 0) return false;
+        return raw.driver === undefined || isGptModel(raw.driver?.model_name);
       } catch {
         return false;
       }
@@ -175,9 +176,16 @@ export function loadPolicyFromPath(path: string): Policy {
   return resolvePolicy({ policyPath: path }).policy;
 }
 
-/** True when a model names an Anthropic adapter: a replay fixture in this harness. */
-export function isReplayFixture(policy: Policy): boolean {
-  return policy.models.some((m) => ANTHROPIC_ADAPTER_IDS.has(m.adapter));
+/** The Anthropic adapters a policy's models name, sorted. This harness runs none. */
+export function anthropicAdapters(policy: { models?: unknown }): string[] {
+  const models: any[] = Array.isArray(policy?.models) ? policy.models : [];
+  const ids = models.map((m) => m?.adapter).filter((a): a is string => typeof a === "string" && ANTHROPIC_ADAPTER_IDS.has(a));
+  return [...new Set(ids)].sort();
+}
+
+/** The conductor runs in codex, and this harness pins it to a GPT model. */
+export function isGptModel(name: unknown): boolean {
+  return typeof name === "string" && /^gpt-/.test(name);
 }
 
 function validatePolicy(raw: any): Policy {

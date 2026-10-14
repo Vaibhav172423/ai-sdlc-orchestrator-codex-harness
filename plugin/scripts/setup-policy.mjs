@@ -303,8 +303,8 @@ function waitForPolicySave(before, timeoutMs) {
 //
 // --list-json / --check-creds need three signals per policy:
 //   1. every model's auth.env
-//   2. any model uses adapter: antigravity-worker  → requires_vertex_adc
-//   3. any model uses adapter: claude-cli          → requires_claude_cli
+//   2. any model uses adapter: antigravity-worker          → requires_vertex_adc
+//   3. any model uses adapter: builtin-anthropic/claude-cli → anthropic_adapters
 //
 // Bringing in the `yaml` package would work but the plugin cache doesn't
 // have a top-level node_modules — only plugin/policy-console does, and only
@@ -342,8 +342,29 @@ function introspectPolicy(name, path) {
     adapters: [...adapters].sort(),
     required_env: [...envVars].sort(),
     requires_vertex_adc: adapters.has("antigravity-worker"),
-    requires_claude_cli: adapters.has("claude-cli"),
+    anthropic_adapters: anthropicAdapters(adapters),
   };
+}
+
+// This harness runs no Anthropic model (D9), so a policy naming one of these cannot run here.
+const ANTHROPIC_ADAPTERS = ["builtin-anthropic", "claude-cli"];
+
+function anthropicAdapters(adapters) {
+  return ANTHROPIC_ADAPTERS.filter((a) => adapters.has(a));
+}
+
+function runnablePolicyNames() {
+  return introspectAllPolicies()
+    .filter((p) => !p.error && p.anthropic_adapters.length === 0)
+    .map((p) => p.name)
+    .sort();
+}
+
+function anthropicRefusal(info) {
+  return (
+    `policy "${info.name}" names an Anthropic adapter (${info.anthropic_adapters.join(", ")}), and this harness ` +
+    `runs no Anthropic model. Runnable policies: ${runnablePolicyNames().join(", ")}.`
+  );
 }
 
 function introspectAllPolicies() {
@@ -383,25 +404,13 @@ function probeVertexAdc() {
   }
 }
 
-function probeClaudeCli() {
-  try {
-    const r = spawnSync("claude", ["--version"], { encoding: "utf8", stdio: "pipe" });
-    if (r.error) return { ok: false, reason: r.error.code === "ENOENT" ? "claude binary not found" : r.error.message };
-    if (r.status !== 0) return { ok: false, reason: (r.stderr || "").trim().split("\n")[0] || `claude --version exit ${r.status}` };
-    return { ok: true };
-  } catch (e) {
-    return { ok: false, reason: e?.message ?? String(e) };
-  }
-}
-
 function envFix(name) {
   if (name === "OPENAI_API_KEY") return "export OPENAI_API_KEY=...  (get one from platform.openai.com/api-keys)";
   if (name === "GEMINI_API_KEY") return "export GEMINI_API_KEY=...  (get one from aistudio.google.com/apikey)";
-  // Deliberately no ANTHROPIC_API_KEY branch (D9). The carried Anthropic
-  // policies are non-selectable replay fixtures, so this should be
-  // unreachable for them — but if one is ever picked by hand, the generic
-  // line below is the right answer. Telling someone to go obtain an
-  // Anthropic key is the one thing codex setup must never do.
+  // Deliberately no ANTHROPIC_API_KEY branch (D9): a policy naming an
+  // Anthropic adapter is refused before its env vars are read, and telling
+  // someone to go obtain an Anthropic key is the one thing codex setup must
+  // never do.
   return `export ${name}=...`;
 }
 
@@ -488,7 +497,6 @@ function reachableInfo(info, path, tools, selectSpec) {
     adapters: [...adapters].sort(),
     required_env: [...env].sort(),
     requires_vertex_adc: adapters.has("antigravity-worker"),
-    requires_claude_cli: adapters.has("claude-cli"),
     skipped_models: [...skipped].sort(),
   };
 }
@@ -532,6 +540,9 @@ async function checkCredsForFile({ name: policyName, path }, projectRoot) {
   const lineInfo = introspectPolicy(policyName, path);
   if (lineInfo.error) {
     return { ok: false, missing: [{ kind: "policy", name: policyName, fix: lineInfo.error }] };
+  }
+  if (lineInfo.anthropic_adapters.length > 0) {
+    return { ok: false, missing: [{ kind: "policy", name: policyName, fix: anthropicRefusal(lineInfo) }] };
   }
   // The order a dispatch sees: bridgeEnv injects the stored file whenever MMO_SELECT is unset.
   const selectSpec = process.env.MMO_SELECT || readMmoSelectFile(projectRoot) || process.env.SDLC_SELECT;
@@ -586,10 +597,6 @@ async function checkCredsForFile({ name: policyName, path }, projectRoot) {
       }
     }
   }
-  if (info.requires_claude_cli) {
-    const p = probeClaudeCli();
-    if (!p.ok) missing.push({ kind: "claude_cli", fix: "install Claude Code CLI and log in with your Max account", reason: p.reason });
-  }
   return missing.length === 0 ? { ok: true } : { ok: false, missing };
 }
 
@@ -614,8 +621,9 @@ function checkActiveRun(projectRoot) {
 async function scriptedFlow(policyName, resolved) {
   const existing = listPolicies();
   if (!existing.includes(policyName)) {
-    fail(`policy "${policyName}" not found in ${POLICIES_DIR}. Available: ${existing.join(", ")}`);
+    fail(`policy "${policyName}" not found in ${POLICIES_DIR}. Available: ${runnablePolicyNames().join(", ")}`);
   }
+  refuseAnthropic(policyName);
   if (!resolved.hasGit) noteGitFallback(resolved.root);
   const path = saveDefaultPolicy(resolved.root, policyName);
   log(`wrote default_policy="${policyName}" to ${path}`);
@@ -632,6 +640,11 @@ async function printOnlyFlow(resolved) {
         `which overrides default_policy and --policy.\n`,
     );
   }
+}
+
+function refuseAnthropic(policyName) {
+  const info = introspectPolicy(policyName, join(POLICIES_DIR, policyName + ".yaml"));
+  if (!info.error && info.anthropic_adapters.length > 0) fail(anthropicRefusal(info));
 }
 
 function noteGitFallback(root) {
@@ -696,7 +709,7 @@ async function interactiveFlow(resolved, args) {
 
   const { added, modified } = diffPolicies(before);
   // Strip the .yaml extension — `default_policy` in project.json is a policy
-  // *name* (`opus-only`, `opus-plus-flash`), not a filename. Downstream
+  // *name* (`gpt-plus-flash`, `flash-agsdk-only`), not a filename. Downstream
   // consumers (session-hydrate, MCP policy loader, $mmo-codex:policy print) all
   // treat it as the bare stem; the old single-candidate branch left the
   // extension on, producing `default_policy="foo.yaml"` and 404s downstream.
@@ -712,9 +725,9 @@ async function interactiveFlow(resolved, args) {
       cleanup();
       return;
     }
-    const existing = listPolicies();
+    const existing = runnablePolicyNames();
     process.stderr.write("\nNo new policy detected.\n");
-    process.stderr.write("Available on-disk policies:\n");
+    process.stderr.write("Runnable on-disk policies:\n");
     for (const name of existing) process.stderr.write(`  • ${name}\n`);
     const ans = await prompt(
       "\nType a policy name to use as this project's default, or press Enter to skip: ",

@@ -17,12 +17,13 @@ import {
 import { buildCodexArgs, spawnCodex } from "../../plugin/codex/run.mjs";
 import { runDispatch } from "../../plugin/codex/dispatch.mjs";
 import { argvPin } from "../../plugin/codex/telemetry/fairnessPin.mjs";
-import { isReplayFixture, loadPolicyFromPath, resolvePolicy } from "../../plugin/mcp/model-dispatch/dist/policy.js";
+import { resolvePolicy } from "../../plugin/mcp/model-dispatch/dist/policy.js";
 import "./lib/stand-ins.mjs";
 
 const REPO = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
 const RUN = join(REPO, "plugin", "codex", "run.mjs");
 const POLICIES = join(REPO, "plugin", "config", "policies");
+const CLAUDE_POLICIES = join(REPO, "tools", "test", "fixtures", "policies", "claude");
 const PIN = { model: "gpt-5.6-terra", effort: "high" };
 const silent = () => {};
 
@@ -40,6 +41,12 @@ function project({ override, defaultPolicy } = {}) {
 function shipped(name) {
   return readFileSync(join(POLICIES, `${name}.yaml`), "utf-8");
 }
+
+function claudePolicy(name) {
+  return readFileSync(join(CLAUDE_POLICIES, `${name}.yaml`), "utf-8");
+}
+
+const yamlNames = (dir) => readdirSync(dir).filter((f) => f.endsWith(".yaml")).map((f) => f.replace(/\.yaml$/, "")).sort();
 
 /** gpt-plus-flash renamed, with its own cap and its own driver rates. */
 function customOverride() {
@@ -213,33 +220,30 @@ test("the argv run.mjs builds carries the resolved pin", () => {
   });
 });
 
-// ── replay fixtures ───────────────────────────────────────────────────
+// ── policies this harness cannot run ──────────────────────────────────
 
-function shippedByKind() {
-  const names = readdirSync(POLICIES).filter((f) => f.endsWith(".yaml")).map((f) => f.replace(/\.yaml$/, "")).sort();
-  const fixture = (n) => isReplayFixture(loadPolicyFromPath(join(POLICIES, `${n}.yaml`)));
-  return { runnable: names.filter((n) => !fixture(n)), fixtures: names.filter(fixture) };
-}
-
-test("every shipped replay fixture is refused before spending", () => {
-  const { fixtures } = shippedByKind();
-  assert.ok(fixtures.length > 0);
-  within({}, (root) => {
-    for (const name of fixtures) {
-      assert.throws(() => resolveRunPolicy({ projectRoot: root, policyArg: name }), (err) => {
+test("every Claude harness policy, as a project's routing-policy.yaml, is refused before spending", () => {
+  const names = yamlNames(CLAUDE_POLICIES);
+  assert.ok(names.length > 0);
+  for (const name of names) {
+    within({ override: claudePolicy(name) }, (root) => {
+      assert.throws(() => resolveRunPolicy({ projectRoot: root }), (err) => {
         assert.equal(err.exitCode, 2, name);
-        assert.match(err.message, /is a replay fixture: it names an Anthropic adapter/, name);
+        assert.match(err.message, new RegExp(`policy '${name}' .* names an Anthropic adapter \\((builtin-anthropic|claude-cli)`), name);
+        assert.match(err.message, /runs no Anthropic model/, name);
+        assert.match(err.message, /edit it to route through GPT and Gemini adapters, or move it aside/, name);
+        assert.match(err.message, /Runnable presets: flash-agsdk-only, gpt-plus-flash, gpt-plus-flash-38, gpt-seat-plus-flash\./, name);
         return true;
       });
-    }
-  });
+    });
+  }
 });
 
-test("every shipped runnable policy resolves to the driver pin", () => {
-  const { runnable } = shippedByKind();
-  assert.ok(runnable.length > 1);
+test("every shipped policy resolves to the driver pin", () => {
+  const names = yamlNames(POLICIES);
+  assert.ok(names.length > 1);
   within({}, (root) => {
-    for (const name of runnable) {
+    for (const name of names) {
       const run = resolveRunPolicy({ projectRoot: root, policyArg: name });
       assert.equal(run.name, name);
       assert.deepEqual(run.driver.pin, PIN, name);
@@ -248,11 +252,31 @@ test("every shipped runnable policy resolves to the driver pin", () => {
   });
 });
 
-test("run.mjs refuses a replay fixture with exit code 2", () => {
+test("run.mjs refuses a routing-policy.yaml that names an Anthropic adapter with exit code 2", () => {
+  within({ override: claudePolicy("opus-plus-flash") }, (root) => {
+    const r = dryRun(root);
+    assert.equal(r.status, 2);
+    assert.match(r.stderr, /'opus-plus-flash'.*names an Anthropic adapter \(builtin-anthropic\).*runs no Anthropic model/);
+  });
+});
+
+test("--policy naming a Claude harness policy finds no preset, and lists the runnable ones", () => {
   within({}, (root) => {
     const r = dryRun(root, ["--policy=opus-plus-flash"]);
     assert.equal(r.status, 2);
-    assert.match(r.stderr, /'opus-plus-flash'.*is a replay fixture.*runs no Anthropic model/);
+    assert.match(r.stderr, /Policy 'opus-plus-flash' not found at .*Shipped presets: flash-agsdk-only, gpt-plus-flash, gpt-plus-flash-38, gpt-seat-plus-flash\./);
+  });
+});
+
+test("a policy whose driver is not a GPT model is refused before spending", () => {
+  const driver = shipped("gpt-plus-flash").replace(/^(driver:\n  model_name: ).*$/m, "$1claude-opus-5");
+  within({ override: driver }, (root) => {
+    assert.throws(() => resolveRunPolicy({ projectRoot: root }), (err) => {
+      assert.equal(err.exitCode, 2);
+      assert.match(err.message, /pins the conductor to 'claude-opus-5', which is not a GPT model/);
+      assert.match(err.message, /set its driver: model_name to gpt-5\.6-terra, or move it aside/);
+      return true;
+    });
   });
 });
 

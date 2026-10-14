@@ -12,6 +12,7 @@ import { sessionHome } from "./fixtures/session-home.mjs";
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
 const POLICIES = join(REPO_ROOT, "plugin", "config", "policies");
+const CLAUDE_POLICIES = join(REPO_ROOT, "tools", "test", "fixtures", "policies", "claude");
 const THREAD = "01a10f3e-4db6-7a70-8d73-a94d86244d4d";
 const NOW = Date.parse("2026-10-13T10:15:00Z");
 const homes = [];
@@ -88,7 +89,8 @@ test("a policy the bridge would refuse is refused before a run folder exists", a
   const cases = [
     [{}, ["--policy=no-such-policy"], /Policy 'no-such-policy' not found at/],
     [{}, ["--policy=../x"], /is not a policy name/],
-    [{}, ["--policy=opus-plus-flash"], /is a replay fixture/],
+    [{}, ["--policy=opus-plus-flash"], /Policy 'opus-plus-flash' not found at/],
+    [{ override: readFileSync(join(CLAUDE_POLICIES, "opus-plus-flash.yaml"), "utf-8") }, [], /names an Anthropic adapter \(builtin-anthropic\)/],
     [{ override: "version: 1\n" }, [], /routing-policy\.yaml/],
   ];
   for (const [setup, flags, re] of cases) {

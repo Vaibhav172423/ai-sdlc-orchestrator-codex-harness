@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -15,6 +15,7 @@ import {
 } from "../../plugin/codex/session-model.mjs";
 
 const SCRIPT = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "plugin", "codex", "session-model.mjs");
+const CLAUDE_POLICIES = join(dirname(fileURLToPath(import.meta.url)), "fixtures", "policies", "claude");
 const PIN = { model: "gpt-5.6-terra", effort: "high" };
 const THREAD = "01a134a6-254f-7181-884c-cadba051fc0c";
 const NOW = new Date(2026, 9, 13, 15, 0, 0);
@@ -212,8 +213,9 @@ test("sessionThreadId reads CODEX_THREAD_ID, then CODEX_SESSION_ID", () => {
   assert.equal(sessionThreadId({}), null);
 });
 
-function cli(h, args, env = {}) {
+function cli(h, args, env = {}, override = null) {
   const project = mkdtempSync(join(tmpdir(), "session-model-proj-"));
+  if (override !== null) writeFileSync(join(project, "routing-policy.yaml"), override);
   try {
     const clean = { ...process.env };
     delete clean.CODEX_THREAD_ID;
@@ -245,9 +247,9 @@ test("the CLI checks the project's policy against the session and exits 1 unless
     assert.match(unverified.stderr, /unverified \(CODEX_THREAD_ID is not set/);
     assert.match(unverified.stderr, /codex -s danger-full-access -m gpt-5\.6-terra -c model_reasoning_effort="high"/, "an unreadable session still says how to fix it");
 
-    const fixture = cli(h, ["--policy=opus-only"], { CODEX_THREAD_ID: THREAD });
-    assert.equal(fixture.status, 1);
-    assert.match(fixture.stderr, /unverified \(the policy could not be resolved/);
+    const claude = cli(h, [], { CODEX_THREAD_ID: THREAD }, readFileSync(join(CLAUDE_POLICIES, "opus-only.yaml"), "utf-8"));
+    assert.equal(claude.status, 1);
+    assert.match(claude.stderr, /unverified \(the policy could not be resolved: run: policy 'opus-only' .* names an Anthropic adapter/);
   });
 });
 
