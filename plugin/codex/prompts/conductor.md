@@ -155,6 +155,10 @@ generate another run id: the write contract's `run_id` and every packet's `pass_
 The bridge validates these on entry and refuses a malformed packet with a clear message rather
 than failing downstream. If you get such a refusal, fix the packet — do not route around it.
 
+Phase 4's plan packet is the one you do not write. `plan-packets.mjs` builds it around the shipped
+plan schema and turns the planner's reply into `packets.json`, as `pipeline.md` says; never write a
+plan schema, a child packet or `packets.json` yourself.
+
 ## Approval gates
 
 {{GATE_INSTRUCTION}}
@@ -237,6 +241,8 @@ If a dispatched result fails validation, do not continue a conversation with the
 higher than the packet that failed, and dispatch that. The policy moves a packet with
 `retry_count` 2 or more to the premium tier, so leave the count honest rather than resetting it.
 Workers are stateless by design; a follow-up message to one is not a thing this architecture has.
+A refused plan is the exception: `plan-packets.mjs --build --previous=<result>` builds the fresh
+plan packet, with the refusal in it and the count kept, and allows three attempts in all.
 
 ## Search
 

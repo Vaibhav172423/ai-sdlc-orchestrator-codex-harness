@@ -158,17 +158,57 @@ validation schema, `.env.example`, and `.env.test` — and the brownfield varian
 
 ### Phase 4 — plan_task_packets
 
-From `design.md`, emit `<output_dir>/packets.json` — a list of TaskPackets, one per file-sized unit of work.
+The planner is a dispatched worker: it sees only the packet you send it, so the plan's shape is not
+yours to write. `plan-packets.mjs` builds the planner's packet around the shipped plan schema
+(`{{PLUGIN_ROOT}}/config/schemas/`), then checks the plan that comes back and writes
+`{{OUTPUT_DIR}}/packets.json`, one TaskPacket per file-sized unit of work. You write only the
+planner's instruction and the list of files it reads. Never write the plan packet, its
+`outputSchema`, a child packet or `packets.json` yourself, and never edit a plan the script refused.
 
-**Run metadata is yours, not the planner's.** The plan packet's instruction names this run's id,
-`{{RUN_ID}}`, and its run folder, `.sdlc/runs/{{RUN_ID}}/` (repo-relative), so the planner can use
-them. When the plan comes back, set every child packet's `pass_id` to `{{RUN_ID}}`, and put every
-run-record artifact (a reproduce or diagnose note, anything that is not shipped code) under
-`.sdlc/runs/{{RUN_ID}}/`, before you write `packets.json`. Setting those two fields is not authoring
-content. Re-dispatch the plan only when its content is wrong: a code target outside the frozen
-allowlist, a missing target, a wrong phase or task type.
+1. **The instruction.** Write `{{OUTPUT_DIR}}/plan-instruction.md`: what to plan, and from what.
+   Name the design sections the work comes from (`design.md`, or in brownfield `change_plan.md` or
+   `requirements.md`), each file a packet changes or adds and why, and the packet kinds below that
+   this run needs (in brownfield, the intent matrix's Phase 4 cell). Leave out field names, the run
+   id and path rules: the script appends the plan rules from the run's own record (dependency order,
+   one packet per file, this run's allowlist and off-limits, where notes go).
+2. **What the planner reads.** Write `{{OUTPUT_DIR}}/plan-inputs.json`, a JSON list of
+   `{"path": "<path>", "reason": "<why the planner needs it>"}`, each path relative to the project
+   root: the run's `requirements.md` and `design.md` or `change_plan.md` (under
+   `.sdlc/runs/{{RUN_ID}}/`), and the source files the work touches. In brownfield, add
+   `.sdlc/baseline/stack-profile.md` when discovery wrote one, and the detected stack's guide by its
+   absolute path, `{{PLUGIN_ROOT}}/skills/pipeline/stacks/<stack>.md`; the profile wins where they
+   disagree. The script reads each file from disk, up to 128 KB, and refuses an off-limits one or
+   one that holds a secret-shaped string.
+3. **Build the planner's packet.**
 
-Suggested packet types and one packet per:
+   ```bash
+   node '{{PLUGIN_ROOT}}/scripts/plan-packets.mjs' --build --run-dir='{{OUTPUT_DIR}}' \
+     --instruction='{{OUTPUT_DIR}}/plan-instruction.md' --inputs='{{OUTPUT_DIR}}/plan-inputs.json'
+   ```
+
+   It writes the packet and prints three lines: `packet:` (the packet's path), `result:` (where its
+   dispatch writes) and `attempt:`. Dispatch it with the dispatch command above, `--packet=` the
+   `packet:` path and `--out=` the `result:` path.
+4. **Accept the plan.**
+
+   ```bash
+   node '{{PLUGIN_ROOT}}/scripts/plan-packets.mjs' --accept='<the result: path>' --run-dir='{{OUTPUT_DIR}}'
+   ```
+
+   - **Exit 0.** `packets.json` holds the plan in the canonical shape below, each packet's `id`,
+     `pass_id`, `retry_count` and (brownfield) `intent` filled in by the script. Go on to Phase 5.
+   - **Exit 1.** The plan was refused: stderr lists each problem, numbered, and nothing was
+     written. Run step 3's command again with `--previous='<the result: path>'` added. The new
+     packet carries those problems and the refused plan to the planner, and counts the attempt.
+     Dispatch it and accept again.
+   - **Exit 2.** Your command or `plan-inputs.json` is wrong. Fix what the message names and run it
+     again; it is not an attempt.
+5. **Three attempts at most.** When the third plan is refused, or `--build` exits 1 because the
+   planner has had its attempts, do not dispatch another plan: stop the run. On the `run.mjs` route,
+   write the `stop.json` the message prints, `needs` included, and end your turn. In a session, tell
+   the user what the message says and record the end (`--outcome=stopped`, see "Run logging").
+
+The packet kinds the instruction asks for, one packet per:
 
 | task_type | What |
 |---|---|
@@ -191,11 +231,16 @@ Suggested packet types and one packet per:
 | `env_docs` | `.env.example` — every required environment variable from `design.md` §6, no values |
 | `env_test_fixture` | `.env.test` — every required environment variable with a value that satisfies the schema declared in `design.md` §6 (e.g., a 32-char string where the schema demands `min(32)`, `file:./test.db` for the DB URL, a hex-encoded fake KEK). This file is what the test runner copies to `.env` before `npm test`. |
 
-When the app uses a validating `ConfigModule` (or Joi / Zod / envalid equivalent), packets for `env_docs` and `env_test_fixture` are **required** — omitting either is a senior-review blocker. The two files must be internally consistent: every key listed in `.env.example` must appear in `.env.test` with a schema-valid value.
+These greenfield types are suggestions: the greenfield plan schema takes any snake_case
+`task_type`, and a policy routes the codegen ones it names to the mechanical tier. When the app uses
+a validating `ConfigModule` (or Joi / Zod / envalid equivalent), the instruction asks for `env_docs`
+and `env_test_fixture` packets — omitting either is a senior-review blocker. The two files must be
+internally consistent: every key listed in `.env.example` must appear in `.env.test` with a
+schema-valid value.
 
 ### Brownfield-mode task types (v1)
 
-The table above is greenfield-Nest-centric. In brownfield mode (`mode: brownfield`), packets use a **stack-agnostic** base set of primitives plus an optional `subtype` hint that the loaded stack adapter (`{{PLUGIN_ROOT}}/skills/pipeline/stacks/*.md`) resolves to concrete codegen guidance.
+The table above is greenfield-Nest-centric. In brownfield mode (`mode: brownfield`), packets use a **stack-agnostic** base set of primitives plus an optional `subtype` hint that the loaded stack adapter (`{{PLUGIN_ROOT}}/skills/pipeline/stacks/*.md`) resolves to concrete codegen guidance. The brownfield plan schema takes these task types and no others.
 
 | task_type | Purpose | Common `subtype` values |
 |---|---|---|
@@ -214,21 +259,23 @@ The table above is greenfield-Nest-centric. In brownfield mode (`mode: brownfiel
 
 **Framework-owned wiring** — new controllers/routes/views usually need a corresponding
 registration edit in a wiring file (Nest module, Django urls.py, FastAPI main.py's
-include_router). Emit these as **paired packets**, the wiring packet listed right after the new
+include_router). Ask for these as **paired packets**, the wiring packet listed right after the new
 file it registers and naming it in its `acceptance` — atomic per-pair: if the wiring edit fails,
 roll back the new-file packet within the same pair.
 
-**Every brownfield packet MUST set `artifact_path`** (§7.1) so the write-contract validator can
-reject off-limits paths at dispatch time. Missing `artifact_path` is a planner bug.
+**Every brownfield packet sets `artifact_path`** (§7.1). The script refuses a packet without one,
+or with a target outside the frozen allowlist, off-limits, or in the run folder outside
+`.sdlc/runs/{{RUN_ID}}/notes/` (where a reproduce or diagnose note goes), so the write hook never
+meets a target it would refuse.
 
 **`doc_addition` vs `doc_update` — read from the brief, don't infer.** When `intent_brief.md`
 carries a "## Task type" heading (only present when the chosen intent declares `task_types` in
-`intents.json` — currently just `docs`), every packet you plan for this run uses that exact
-`task_type` value. Do not infer `doc_addition` vs `doc_update` from file existence or context —
-the user already chose it at brief-collection time (`brownfield-guide/SKILL.md` step 4b), and a
+`intents.json` — currently just `docs`), every packet for this run uses that exact `task_type`
+value: the script reads the heading, tells the planner, and refuses a plan that uses another. The
+user already chose it at brief-collection time (`brownfield-guide/SKILL.md` step 4b), and a
 per-project policy may route the two differently (an update is a smaller edit than fresh
 authoring, and might reasonably go to a cheaper model). When the heading is absent — every
-non-docs intent, and `docs` runs from before this existed — infer as before.
+non-docs intent, and `docs` runs from before this existed — the planner chooses.
 
 ### TaskPacket initial output-ceiling budgets
 
@@ -248,12 +295,13 @@ below. This is the phase with the most silence between pre-flight and Gate 1 oth
 every dispatch inside the loop below already logs itself via the bridge (`route.decide`,
 `dispatch.start`/`.end`), but nothing marks the loop's own boundaries without this call.
 
-For each packet, in dependency order:
+For each packet in `packets.json`, in order (the plan lists them in dependency order):
 
-Dispatch it with the command above. The bridge routes per policy — you do not choose the model.
-Validate the returned structured output against the schema; if invalid, construct a *refined*
-packet (new id, `retry_count+1`, with the validation error appended to instruction) and
-re-dispatch. After 2 mechanical-tier attempts fail, the policy sends the third (`retry_count: 2`)
+An input whose `content` is empty names a file an earlier packet wrote; put that file's content in
+before you dispatch. Dispatch it with the command above. The bridge routes per policy — you do not
+choose the model. Validate the returned structured output against the schema; if invalid,
+construct a *refined* packet (new id, `retry_count+1`, with the validation error appended to
+instruction) and re-dispatch. After 2 mechanical-tier attempts fail, the policy sends the third (`retry_count: 2`)
 to the premium tier automatically (a rule on `phase: [codegen, tests, docs]` with
 `retry_count: { gte: 2 }`, and one on `debug`) — the routing decision is the policy's, and the
 escalated packet dispatches exactly like every other one.
@@ -386,7 +434,9 @@ command has run again with `--status=accepted` (see Gate 4).
   budget: { maxInputTokens: 4000, maxOutputTokens: 3000 },  // codegen initial; adapter doubles on max_tokens truncation up to 3× (see below)
   retry_count: 0,
   pass_id: "{{RUN_ID}}",  // the run id, on every packet
-  intent: "docs" | "bugfix" | "feature-extend" | "feature-new" | "refactor" | "test" | "deps"  // brownfield only — omit entirely on greenfield packets
+  intent: "docs" | "bugfix" | "feature-extend" | "feature-new" | "refactor" | "test" | "deps",  // brownfield only — omit entirely on greenfield packets
+  subtype: "nest_controller" | ...,  // optional brownfield stack hint
+  artifact_path: "src/auth.js"  // the project-relative path the packet writes; required in brownfield
 }
 ```
 

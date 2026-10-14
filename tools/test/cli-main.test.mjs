@@ -25,6 +25,7 @@ const CLIS = [
   "scripts/collect-driver-usage.mjs",
   "scripts/credential-discovery.mjs",
   "scripts/dispatch-sanitize.mjs",
+  "scripts/plan-packets.mjs",
   "scripts/probe-agent-worker.mjs",
   "scripts/uninstall-cleanup.mjs",
 ];
@@ -55,6 +56,7 @@ test("a CLI started through a symlinked plugin folder runs its main", () => {
       ["codex/run.mjs", ["--bogus", "--codex-bin=/nonexistent"], 2, /run: unknown flag --bogus/],
       ["codex/dispatch.mjs", [], null, /--out=<path> is required/],
       ["scripts/collect-driver-usage.mjs", ["--bogus"], null, /unknown flag --bogus/],
+      ["scripts/plan-packets.mjs", ["--bogus"], 2, /plan-packets: unknown flag --bogus/],
     ];
     for (const [rel, args, code, re] of cases) {
       const r = spawnSync(process.execPath, [join(link, rel), ...args], { cwd: base, encoding: "utf-8" });

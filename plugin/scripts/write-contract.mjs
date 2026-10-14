@@ -96,7 +96,7 @@ function globList(value, flag) {
   return v;
 }
 
-function projectOffLimits(root) {
+export function projectOffLimits(root) {
   const bytes = readRegular(join(root, ".sdlc", "project.json"), 1024 * 1024);
   try {
     const list = JSON.parse(bytes?.toString("utf8") ?? "null")?.off_limits_default;
