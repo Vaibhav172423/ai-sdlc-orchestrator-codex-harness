@@ -1,7 +1,8 @@
 /**
  * What a shell command writes, removes and patches, read as sh, bash and zsh split it. Quoted text, comments and
  * here-document bodies are data. What the shell runs from them is read again as shell: a command substitution, the
- * string `sh -c`, `eval` or `trap` runs, and the here-document or piped text a shell reads as its script.
+ * string `sh -c`, `eval` or `trap` runs, the here-document or piped text a shell reads as its script, and the
+ * commands whose output a shell runs (`bash -c "$(cat <<EOF …)"`, `source <(…)`).
  *
  * `scanShell` returns effects in command order: `{kind: "write", path, tight}` (a redirect, `tee`, `touch`; `tight`
  * when no blank comes before the operator), `{kind: "copy", tool, flags, args}` (`cp`, `mv`, `git mv`),
@@ -258,6 +259,8 @@ function lex(text, from, stop, ctx, level) {
     last = { tok, end };
     if (tok.t !== "word") { commandPosition = tok.t === "op"; afterTime = false; }
   };
+  /** The substitutions queued since `s0` that a word holds itself, not those nested inside them. */
+  const own = (s0) => ctx.subs.slice(s0).filter((s) => s.depth === level + 1);
   const glued = (j) => !!last && last.end === j &&
     (last.tok.t === "word" || last.tok.v === ")" || (last.tok.t === "redir" && last.tok.target !== null));
 
@@ -269,7 +272,9 @@ function lex(text, from, stop, ctx, level) {
     while (text[k] === " " || text[k] === "\t") k++;
     const procSubTarget = (text[k] === "<" || text[k] === ">") && text[k + 1] === "(";
     if ((k < text.length && !WORD_END.has(text[k]) && text[k] !== "(") || procSubTarget) {
+      const s0 = ctx.subs.length;
       const w = lexWord(text, k, ctx, level);
+      tok.subs = own(s0);
       if (op === "<<" || op === "<<-") {
         tok.doc = { delim: w.value, strip: op === "<<-", quoted: !w.plain, body: "" };
         pending.push(tok.doc);
@@ -322,6 +327,7 @@ function lex(text, from, stop, ctx, level) {
       i += op.length;
       continue;
     }
+    const s0 = ctx.subs.length;
     const w = lexWord(text, i, ctx, level);
     if (w.end === i) { i++; continue; }
     if (/^\d+$/.test(w.raw) && (text[w.end] === "<" || text[w.end] === ">") && text[w.end + 1] !== "(") {
@@ -332,7 +338,7 @@ function lex(text, from, stop, ctx, level) {
     const atCommand = commandPosition;
     if (w.plain && w.value === "[[" && atCommand) test = true;
     else if (w.plain && w.value === "]]") test = false;
-    push({ t: "word", v: w.value, raw: w.raw, plain: w.plain }, w.end);
+    push({ t: "word", v: w.value, raw: w.raw, plain: w.plain, subs: own(s0) }, w.end);
     const timed = afterTime;
     afterTime = atCommand && w.plain && w.value === "time";
     commandPosition = atCommand && w.plain && (RESERVED.has(w.value) || afterTime || (timed && w.value === "-p"));
@@ -411,7 +417,7 @@ function operands(words, short = "", long = []) {
   return { flags, ops, values };
 }
 
-/** How a shell invocation gets its script: `{code}` for `-c`, `{file}`, or `{stdin}`. */
+/** How a shell invocation gets its script: `{code, at}` for `-c`, `{file, at}`, or `{stdin}`; `at` indexes `vals`. */
 function shellMode(vals) {
   let dashC = false;
   let dashS = false;
@@ -431,8 +437,8 @@ function shellMode(vals) {
     }
     break;
   }
-  if (dashC) return { code: vals[k] ?? "" };
-  return k < vals.length && !dashS ? { file: vals[k] } : { stdin: true };
+  if (dashC) return { code: vals[k] ?? "", at: k };
+  return k < vals.length && !dashS ? { file: vals[k], at: k } : { stdin: true };
 }
 
 function split(tokens) {
@@ -470,6 +476,11 @@ function stdinUse(cmd) {
 function patchTexts(text) {
   const lines = text.replace(/\\n/g, "\n");
   return lines === text ? [text] : [text, lines];
+}
+
+/** Marks the substitutions written in a word or redirect: the shell runs what they print as a script. */
+function runsOutput(tok) {
+  for (const s of tok?.subs ?? []) s.feeds = "shell";
 }
 
 function add(out, effect) {
@@ -537,15 +548,18 @@ function simple(cmd, out, depth, feeds) {
   }
   const mode = name && SHELLS.has(name) ? shellMode(vals) : null;
   if (mode?.code !== undefined) visit(mode.code, out, depth + 1);
+  if (mode?.at !== undefined) runsOutput(args[mode.at]);
   if (mode?.stdin || feedsShell) {
     for (const d of docs) visit(d.body, out, depth + 1);
     for (const s of strings) visit(s, out, depth + 1);
+    for (const r of redirs) if (r.op === "<" || r.op === "<<<") runsOutput(r);
   } else {
     for (const d of docs) if (!d.quoted) bodySubstitutions(d.body, out, depth + 1);
   }
-  if (feedsShell) for (const v of vals) visit(v, out, depth + 1);
-  if (name === "eval") visit(vals.join(" "), out, depth + 1);
-  if (name === "trap" && vals[0] && !vals[0].startsWith("-")) visit(vals[0], out, depth + 1);
+  if (feedsShell) for (const a of args) { visit(a.v, out, depth + 1); runsOutput(a); }
+  if (name === "eval") { visit(vals.join(" "), out, depth + 1); args.forEach(runsOutput); }
+  if (name === "trap" && vals[0] && !vals[0].startsWith("-")) { visit(vals[0], out, depth + 1); runsOutput(args[0]); }
+  if (name === "source" || name === ".") runsOutput(args[0]);
   if (name === "tee") for (const p of operands(args).ops) add(out, { kind: "write", path: p, tight: false });
   else if (name === "touch") for (const p of operands(args, "rtdA", ["--reference", "--date"]).ops) add(out, { kind: "write", path: p, tight: false });
   else if (name === "cp" || name === "mv") copy(name, args, out);
@@ -554,15 +568,17 @@ function simple(cmd, out, depth, feeds) {
   else if (name === "find") find(args, out, depth);
 }
 
-function run(tokens, out, depth) {
+/** `feeds`: what is done with the output of the commands that do not pipe it on (a substitution a shell runs). */
+function run(tokens, out, depth, feeds = null) {
   const cmds = split(tokens);
-  cmds.forEach((cmd, n) => simple(cmd, out, depth, cmd.pipeOut ? stdinUse(cmds[n + 1]) : null));
+  cmds.forEach((cmd, n) => simple(cmd, out, depth, cmd.pipeOut ? stdinUse(cmds[n + 1]) : feeds));
 }
 
+/** Runs the queued substitutions, outer ones first: running one marks the substitutions inside it whose output a shell runs. */
 function runSubs(ctx, out) {
-  for (const s of ctx.subs) {
-    if (s.tokens) run(s.tokens, out, s.depth);
-    else visit(s.text, out, s.depth);
+  for (const s of [...ctx.subs].sort((a, b) => a.depth - b.depth)) {
+    if (s.tokens) run(s.tokens, out, s.depth, s.feeds);
+    else visit(s.text, out, s.depth, s.feeds);
   }
 }
 
@@ -574,10 +590,10 @@ function bodySubstitutions(body, out, depth) {
   runSubs(ctx, out);
 }
 
-function visit(text, out, depth) {
+function visit(text, out, depth, feeds = null) {
   if (typeof text !== "string" || !text || depth > MAX_DEPTH) return;
   const ctx = { subs: [] };
-  run(lex(text, 0, null, ctx, depth).tokens, out, depth);
+  run(lex(text, 0, null, ctx, depth).tokens, out, depth, feeds);
   runSubs(ctx, out);
 }
 

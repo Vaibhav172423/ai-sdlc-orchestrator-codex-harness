@@ -85,6 +85,7 @@ const CASES = [
   ["npx --yes tsx script.ts | tee docs/a.md", "deny", "allow", "docs/a.md"],
   ['echo "$(echo x > docs/a.md)"', "deny", "allow", "docs/a.md"],
   ["cat <<'EOF' | bash\necho x > docs/a.md\nEOF", "deny", "allow", "docs/a.md"],
+  ["bash -c \"$(cat <<'EOF'\necho x > .env\nEOF\n)\"", "deny", "deny", ".env"],
   ["git status && cp src/a.ts docs/b.ts", "deny", "allow", "docs/b.ts"],
   ["env -C . FOO=1 cp src/a.ts docs/c.ts", "deny", "allow", "docs/c.ts"],
   // Clobber and both-stream redirects.
@@ -195,6 +196,19 @@ test("scan: what the shell runs from a string or a here-document is read as shel
   assert.deepEqual(targets("x=`cp a b`"), ["b"]);
   assert.deepEqual(targets("tee >(gzip > b.gz) < a"), ["b.gz"]);
   assert.deepEqual(targets("bash script.sh <<'EOF'\necho x > b\nEOF"), [], "a script's stdin is its data");
+  for (const command of [
+    "bash -c \"$(cat <<'EOF'\necho x > b\nEOF\n)\"", "eval \"$(cat <<'EOF'\necho x > b\nEOF\n)\"", "bash <(cat <<'EOF'\necho x > b\nEOF\n)",
+    "source <(echo 'echo x > b')", ". <(printf '%s\\n' 'echo x > b')", "bash < <(echo 'echo x > b')", "x=$(sh -c \"$(echo 'echo x > b')\")",
+    "trap \"$(echo 'echo x > b')\" EXIT", "echo \"$(echo 'echo x > b')\" | sh",
+  ]) {
+    assert.deepEqual(targets(command), ["b"], `what a substitution prints is the script here: ${command}`);
+  }
+  for (const command of [
+    "eval \"$(ssh-agent -s)\"", "eval \"$(/opt/homebrew/bin/brew shellenv)\"", "echo \"$(cat <<'EOF'\necho x > b\nEOF\n)\"",
+    "cat <(echo 'echo x > b')", "git commit -m \"$(cat <<'EOF'\nfix: a > b\nEOF\n)\"",
+  ]) {
+    assert.deepEqual(targets(command), [], `what a substitution prints is data here: ${command}`);
+  }
   assert.deepEqual(
     targets("apply_patch <<EOF\n*** Begin Patch\n*** Add File: src/a.ts\n+const s = `${a}`; $(rm x) > y\n*** End Patch\nEOF"),
     ["src/a.ts"], "Codex applies a shell apply_patch itself, so its text is never shell",
