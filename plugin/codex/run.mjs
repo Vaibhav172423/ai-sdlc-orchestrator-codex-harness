@@ -63,7 +63,7 @@ import { endWriteContract, finalizeRun, regenerateDriverFiles } from "./run-fina
 import { hookArgs } from "./hook-wiring.mjs";
 import { abandonCommand, ContractRefusal, finalEndRefusal, reopenRun } from "../scripts/write-contract.mjs";
 import { gitRoot, liveLock, readContract, readLock } from "../scripts/lib/contract-lock.mjs";
-import { renderPrompt, renderSkills } from "./render.mjs";
+import { renderPrompt, renderSkills, staleSkills } from "./render.mjs";
 import { listDriverPriceFn } from "../mcp/model-dispatch/dist/driverPricing.js";
 import { reportCommand } from "../scripts/report.mjs";
 import { gateLine } from "../scripts/lib/gate-record.mjs";
@@ -382,15 +382,29 @@ export function runFolderNote({ runDir, runId, from = null }) {
 }
 
 /**
+ * What a resumed session is told when the plugin changed since its playbooks
+ * were rendered: the session holds the old text, and the step it takes up may
+ * be one the change rewrote.
+ */
+export function playbooksNote({ runDir, names }) {
+  return (
+    `The plugin changed since this run's playbooks were rendered, so ${names.map((n) => `${n}.md`).join(", ")} in ` +
+    `'${join(runDir, "skills")}' were rendered again from it. Read the playbook for the step you take up again before ` +
+    "you act: where it differs from what you read before, in a playbook or in your first prompt, follow it."
+  );
+}
+
+/**
  * RESUME_PROMPT plus this invocation's gate mode, which may differ from the
  * first invocation's. `after` is the run_end of the driver process before
  * this one: when that stop was deliberate, the person resuming has chosen to
  * go past it, so the conductor takes up the step again instead of repeating
  * the stop from its old record. `folder` ({runDir, runId, from}) leads with
- * runFolderNote.
+ * runFolderNote; `playbooks` ({runDir, names}) adds playbooksNote.
  */
-export function resumePrompt(gateMode, after = null, folder = null) {
+export function resumePrompt(gateMode, after = null, folder = null, playbooks = null) {
   const parts = folder ? [runFolderNote(folder), RESUME_PROMPT] : [RESUME_PROMPT];
+  if (playbooks?.names?.length) parts.push(playbooksNote(playbooks));
   if (after?.outcome && isDeliberate(after.outcome)) {
     parts.push(
       `The run last stopped on purpose (${after.outcome}${after.reason ? `: ${after.reason}` : ""}). ` +
@@ -952,7 +966,12 @@ async function runDriver(args, deps) {
   const previous = previousRunEnd(earlier);
   const moved = movedRunFolder(earlier, runDir, { foreignThread: run.resume?.foreignThread === true });
   const folder = moved ? { runDir, runId, from: moved.from } : null;
-  let nextPrompt = threadId ? resumePrompt(gateMode, previous, folder) : promptText;
+  const skillsDir = join(runDir, "skills");
+  // A resumed session keeps the playbooks it already read, unless they were rendered for another
+  // folder or the plugin has changed since.
+  const stale = run.resume && !moved && existsSync(skillsDir) ? staleSkills(runDir, renderValues) : [];
+  const playbooks = stale.length > 0 ? { runDir, names: stale } : null;
+  let nextPrompt = threadId ? resumePrompt(gateMode, previous, folder, playbooks) : promptText;
   const argvFor = (prompt, resumeThreadId) =>
     buildCodexArgs({ pin, promptText: prompt, cwd: projectRoot, codexHome, resumeThreadId, skipGitRepoCheck });
   try {
@@ -999,8 +1018,7 @@ async function runDriver(args, deps) {
   }
 
   mkdirSync(runDir, { recursive: true });
-  // A resumed run keeps the playbooks its session already read, unless they were rendered for another folder.
-  if (!run.resume || moved || !existsSync(join(runDir, "skills"))) renderSkills(runDir, renderValues);
+  if (!run.resume || moved || !existsSync(skillsDir) || playbooks) renderSkills(runDir, renderValues);
   if (run.resume?.foreignThread) {
     warn(
       `run ${runId}: no run folder under ${join(projectRoot, ".sdlc", "runs")} records thread ${threadId}; its earlier ` +

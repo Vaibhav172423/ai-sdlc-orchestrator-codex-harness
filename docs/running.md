@@ -376,6 +376,10 @@ Resuming a run that stopped on purpose (an aborted gate, a preflight halt, a ref
 takes up the step again under the new `--gates`. For example, `--gates=auto-abort` stops at
 Gate 1 so you can read `requirements.md`, and `--resume=pass1 --gates=auto-approve` then goes on.
 
+A resumed run keeps the playbooks in its `skills/` folder unless the plugin changed since they
+were rendered. Then the driver renders them again and tells the conductor which ones changed, so a
+run that stopped on an older plugin takes up its step under the current playbook.
+
 `--resume` also takes the codex thread id from the run's `driver-events.jsonl`. A thread id that
 no folder under `.sdlc/runs/` (or the `--output-dir` you pass) records starts a new run folder,
 and every resume tells the conductor that folder and its run id, since its first prompt named

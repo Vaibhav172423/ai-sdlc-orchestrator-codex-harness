@@ -13,7 +13,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { main, RESUME_PROMPT, resumePrompt, runFolderNote } from "../../plugin/codex/run.mjs";
+import { main, playbooksNote, RESUME_PROMPT, resumePrompt, runFolderNote } from "../../plugin/codex/run.mjs";
 import { movedRunFolder } from "../../plugin/codex/run-folder.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -99,6 +99,7 @@ test("a resume of the folder its session was started in says nothing about the f
     const resumed = h.prompts()[1];
     assert.ok(resumed.startsWith(RESUME_PROMPT), resumed.slice(0, 200));
     assert.ok(!resumed.includes("This run's folder is now"));
+    assert.ok(!resumed.includes("The plugin changed since"), "playbooks the plugin would render the same are not news");
   } finally {
     h.cleanup();
   }
@@ -122,6 +123,29 @@ test("a session first told another folder is told which one this run uses, and i
     assert.equal(r.code, 0, r.err);
     assert.ok(h.prompts()[1].startsWith(`This run's folder is now '${dir}' and its run id is r1, not the folder '${old}' your first prompt named.`));
     assert.notEqual(readFileSync(join(dir, "skills", "pipeline.md"), "utf-8"), "stale\n");
+  } finally {
+    h.cleanup();
+  }
+});
+
+test("a resume after the plugin changed renders the playbooks again and tells the session to re-read them", async () => {
+  const h = harness();
+  try {
+    const dir = h.runDirOf("r1");
+    h.scenario([{}], { runDir: dir });
+    assert.equal((await h.run(["--project-root", h.root, "--run-id=r1", "--mode=greenfield", "--gates=auto-approve", "--max-turns=1"])).code, 3);
+    const pipeline = join(dir, "skills", "pipeline.md");
+    const current = readFileSync(pipeline, "utf-8");
+    // A Phase 4 from before plan-packets.mjs: the playbook a run that stopped there was rendered with.
+    writeFileSync(pipeline, current.replace(/### Phase 4 — plan_task_packets[\s\S]*?(?=### Phase 5)/, "### Phase 4 — plan_task_packets\n\n**Run metadata is yours, not the planner's.**\n\n"));
+    h.scenario([COMPLETE], { runDir: dir });
+    const r = await h.run(["--project-root", h.root, "--resume=r1"]);
+    assert.equal(r.code, 0, r.err);
+    assert.equal(readFileSync(pipeline, "utf-8"), current, "the playbook is the plugin's again");
+    const resumed = h.prompts()[1];
+    assert.ok(resumed.startsWith(RESUME_PROMPT));
+    assert.ok(resumed.includes(playbooksNote({ runDir: dir, names: ["pipeline"] })), resumed);
+    assert.match(resumed, /pipeline\.md in '.*skills' were rendered again from it\. Read the playbook for the step you take up again/);
   } finally {
     h.cleanup();
   }

@@ -43,6 +43,23 @@ export function renderedSkillPath(outputDir, name) {
   return join(outputDir, "skills", `${name}.md`);
 }
 
+/** The rendered playbooks in `outputDir` that a render of the plugin as it is now would change, by name. */
+export function staleSkills(outputDir, values, pluginRoot = PLUGIN_ROOT) {
+  const stale = [];
+  for (const [name, rel] of RENDERED_SKILLS) {
+    const source = join(pluginRoot, "skills", rel);
+    if (!existsSync(source)) continue;
+    let have = null;
+    try {
+      have = readFileSync(renderedSkillPath(outputDir, name), "utf-8");
+    } catch {
+      /* not rendered yet */
+    }
+    if (have !== renderPrompt(readFileSync(source, "utf-8"), values, `skills/${rel}`)) stale.push(name);
+  }
+  return stale;
+}
+
 export function renderSkills(outputDir, values, pluginRoot = PLUGIN_ROOT) {
   const written = [];
   for (const [name, rel] of RENDERED_SKILLS) {
