@@ -723,6 +723,7 @@ test("a non-git folder needs --mode=greenfield; brownfield needs git and gets no
     assert.match(refused.err, /not a git repository.*--mode=greenfield/);
     assert.equal(h.calls().length, 0);
 
+    mkdirSync(join(h.root, ".git"));
     const brown = await h.run(["--project-root", h.root, "--run-id=r1", "--mode=brownfield", "--gates=auto-approve"], { isGitRepo: () => true });
     assert.equal(brown.code, 0);
     assert.ok(!h.calls()[0].argv.includes("--skip-git-repo-check"));
@@ -735,6 +736,7 @@ test("a non-git folder needs --mode=greenfield; brownfield needs git and gets no
 test("a run with no --mode is handled as brownfield, and its code goes to the repo root", async () => {
   const h = harness();
   try {
+    mkdirSync(join(h.root, ".git"));
     const r = await h.run(["--project-root", h.root, "--run-id=r1", "--gates=auto-approve", "--dry-run"], { isGitRepo: () => true });
     assert.equal(r.code, 0, r.err);
     const plan = JSON.parse(r.out);

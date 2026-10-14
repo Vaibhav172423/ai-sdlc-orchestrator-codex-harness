@@ -21,7 +21,7 @@
 import { appendFileSync, readFileSync, mkdirSync, existsSync } from "node:fs";
 import { spawn, spawnSync } from "node:child_process";
 import { homedir } from "node:os";
-import { dirname, isAbsolute, join, resolve } from "node:path";
+import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { codexEvents, driverCostRow, modeledDriverCostRows, readDriverRecord } from "./telemetry/event-reader.mjs";
@@ -61,7 +61,7 @@ import {
 import { endWriteContract, finalizeRun, regenerateDriverFiles } from "./run-finalize.mjs";
 import { hookArgs } from "./hook-wiring.mjs";
 import { abandonCommand, ContractRefusal, finalEndRefusal, reopenRun } from "../scripts/write-contract.mjs";
-import { liveLock, readContract, readLock } from "../scripts/lib/contract-lock.mjs";
+import { gitRoot, liveLock, readContract, readLock } from "../scripts/lib/contract-lock.mjs";
 import { renderPrompt, renderSkills } from "./render.mjs";
 import { listDriverPriceFn } from "../mcp/model-dispatch/dist/driverPricing.js";
 import { reportCommand } from "../scripts/report.mjs";
@@ -715,6 +715,27 @@ export function contractHeldBy(projectRoot, runId) {
     `freeze would be refused.${id ? ` End it: ${abandonCommand(id, projectRoot)}` : ""}`;
 }
 
+/**
+ * Why a brownfield --project-root would have its Gate 0 freeze refused for not
+ * being the root of its git project, or null. Same test as the freeze's: a
+ * `.git` in the folder itself.
+ */
+export function notGitProjectRoot(projectRoot, runMode) {
+  const top = gitRoot(projectRoot);
+  if (top === projectRoot) return null;
+  const greenfield = runMode === undefined ? " For a new app in this folder, pass --mode=greenfield." : "";
+  if (!top) {
+    return `${projectRoot} has no .git folder, and none above it. A brownfield run's write contract is frozen at Gate 0 ` +
+      `at the root of its git project, beside .git, so this run would stop there after spending. Pass the folder that ` +
+      `holds .git as --project-root.${greenfield}`;
+  }
+  const rel = relative(top, projectRoot);
+  return `${projectRoot} is inside the git project at ${top}, not its root. A brownfield run's write contract is frozen ` +
+    `at Gate 0 at the git project's root, the only place the write hook reads it, so this run would stop there after ` +
+    `spending. Start it from the root: --project-root=${shellQuote(top)}; Gate 0's allowlist can still keep its ` +
+    `writes to ${rel}/**.${greenfield}`;
+}
+
 /** Where a path flag that names a place outside the project (a brief, a prompt, a binary) resolves: the shell's cwd. */
 function fromCwd(cwd, value) {
   return isAbsolute(value) ? value : resolve(cwd, value);
@@ -857,6 +878,8 @@ async function runDriver(args, deps) {
     );
   }
   if (runMode !== "greenfield") {
+    const notRoot = notGitProjectRoot(projectRoot, runMode);
+    if (notRoot) throw new UsageError(notRoot);
     const held = contractHeldBy(projectRoot, runId);
     if (held) throw new UsageError(held);
   }

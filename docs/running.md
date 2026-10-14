@@ -168,7 +168,7 @@ shaped correctly. Drop the flag to run for real.
 | Flag | Default | Purpose |
 |---|---|---|
 | `--brief=<path>` | — | The brief the run builds from. Greenfield takes a project brief; brownfield takes an intent brief. |
-| `--project-root=<path>` | current directory | The repo the run works against. |
+| `--project-root=<path>` | current directory | The repo the run works against. A brownfield run, or one with no `--mode`, takes the repository's root, the folder that holds `.git`; a subfolder exits 2 before anything is spent. |
 | `--output-dir=<path>` | `<project-root>/.sdlc/runs/<run-id>` | Greenfield only: a different run folder inside the project. It may not be the project root, a folder inside `.sdlc` other than the run's own, or a folder that overlaps the code directory. Pass it again on `--resume`. |
 | `--policy=<name>` | `.sdlc/project.json` default, else `gpt-plus-flash` | Routing policy for this run. A per-run override; it does not rewrite the project default. A `routing-policy.yaml` at the project root beats it — see [Which policy a run uses](#which-policy-a-run-uses). |
 | `--code-dir=<path>` | `<project-root>/src` (greenfield), `<project-root>` (brownfield, or no `--mode`) | Where generated code goes. It must stay inside the project and outside `.sdlc`. A resumed run keeps its own. |
