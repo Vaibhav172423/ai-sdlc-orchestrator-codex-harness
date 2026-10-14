@@ -15,6 +15,8 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { driverTurns, parseDriverRecords, summarizeDriverTurns } from "../../plugin/mcp/model-dispatch/dist/driverUsage.js";
+import { describeSpend, recordedSpend } from "../../plugin/mcp/model-dispatch/dist/costCap.js";
+import { loadPolicyFromPath } from "../../plugin/mcp/model-dispatch/dist/policy.js";
 import { modeledDriverCostRows } from "../../plugin/codex/telemetry/event-reader.mjs";
 import { buildDriverManifest } from "../../plugin/codex/run-record.mjs";
 import { regenerateDriverFiles, runCost } from "../../plugin/codex/run-finalize.mjs";
@@ -23,6 +25,7 @@ import { readRun, render, summarize } from "../../plugin/scripts/report.mjs";
 import { writeManifest } from "../../plugin/scripts/write-manifest.mjs";
 
 const FAKE = join(dirname(fileURLToPath(import.meta.url)), "fixtures", "fake-codex.mjs");
+const POLICY = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "plugin", "config", "policies", "gpt-plus-flash.yaml");
 const T = "019a0000-0000-7000-8000-0000000000a1";
 const T2 = "019a0000-0000-7000-8000-0000000000b2";
 const PIN = { model: "gpt-5.6-terra", effort: "high" };
@@ -120,6 +123,20 @@ test("the report books a covered turn as priced: an exact figure, not a floor", 
   const last = runFolder([{ usage: U(1000, 200, 50) }, {}]);
   const tail = summarize(readRun(last)).driver;
   assert.deepEqual([tail.turns_incomplete_unpriced, tail.turns_incomplete_covered, tail.bound], [1, 0, "floor"]);
+});
+
+test("the cost-cap message does not list a covered turn as left out of the conductor figure", () => {
+  const capMessage = (dir) => {
+    const telemetry = join(dir, "telemetry.jsonl");
+    writeFileSync(telemetry, "");
+    const codexHome = mkdtempSync(join(tmpdir(), "covered-cap-home-"));
+    temps.push(codexHome);
+    return describeSpend(recordedSpend(loadPolicyFromPath(POLICY), telemetry, { codexHome }), telemetry);
+  };
+  const covered = capMessage(runFolder([{ usage: U(1000, 200, 50) }, {}, { usage: U(5000, 1000, 300) }]));
+  assert.match(covered, /\$0\.0118 conductor \(modeled from driver-cost-modeled\.jsonl\)$/);
+  assert.doesNotMatch(covered, /not counted/);
+  assert.match(capMessage(runFolder([{ usage: U(1000, 200, 50) }, {}])), /not counted: 1 incomplete driver turn\(s\)\)$/);
 });
 
 test("with no booking, the closing line and SUMMARY.md read the manifest's covered count", () => {

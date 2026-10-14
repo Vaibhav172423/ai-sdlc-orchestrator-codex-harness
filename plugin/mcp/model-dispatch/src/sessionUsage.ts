@@ -1949,7 +1949,8 @@ export function driverSpendForCap(runDir: string, policy: Policy, opts: DriverSp
   const rows = all.filter((r) => r?.status === "complete" && typeof r.cost_usd === "number" && Number.isFinite(r.cost_usd));
   if (rows.length > 0) {
     const usd = rows.reduce((s, r) => s + r.cost_usd, 0);
-    const incomplete = all.filter((r) => r?.status === "incomplete").length;
+    // A covered row's tokens are in the covering complete row's delta.
+    const incomplete = all.filter((r) => r?.status === "incomplete" && !str(r.covered_by)).length;
     const unpricedRows = all.filter((r) => r?.status === "complete" && r.cost_usd == null).length;
     const notCountedRows = [
       ...(incomplete > 0 ? [`${incomplete} incomplete driver turn(s)`] : []),

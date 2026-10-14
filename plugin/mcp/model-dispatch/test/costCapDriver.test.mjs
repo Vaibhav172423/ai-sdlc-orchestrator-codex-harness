@@ -239,6 +239,29 @@ test("incomplete driver rows are named as left out of the conductor figure", () 
   }
 });
 
+test("an incomplete row a later running total covers is in the conductor figure, so the message does not name it", () => {
+  const s = sandbox();
+  try {
+    const rows = [
+      { invocation: 1, status: "complete", cost_usd: 0.2, provenance: "modeled" },
+      { invocation: 2, status: "incomplete", cost_usd: null, covered_by: "driver-i3-t1", provenance: "modeled" },
+      { invocation: 3, status: "complete", cost_usd: 0.4, provenance: "modeled" },
+    ];
+    writeJsonl(join(s.run, "driver-cost-modeled.jsonl"), rows);
+    const spend = recordedSpend(capped(5), s.telemetry, { codexHome: s.home });
+    assert.deepEqual([spend.driver_usd, spend.driver_not_counted], [0.6, []]);
+    assert.throws(
+      () => assertUnderCostCap(capped(0.5), s.telemetry, { codexHome: s.home }),
+      (err) => /\$0\.6000 conductor \(modeled from driver-cost-modeled\.jsonl\)\./.test(err.message) && !/not counted/.test(err.message),
+    );
+
+    writeJsonl(join(s.run, "driver-cost-modeled.jsonl"), [...rows, { invocation: 4, status: "incomplete", cost_usd: null, provenance: "modeled" }]);
+    assert.deepEqual(recordedSpend(capped(5), s.telemetry, { codexHome: s.home }).driver_not_counted, ["1 incomplete driver turn(s)"]);
+  } finally {
+    s.done();
+  }
+});
+
 test("with no session file, the cap prices the exec stream's running totals once: exec + 2 resumes is 9000 input, not 14000", () => {
   const s = sandbox();
   try {
