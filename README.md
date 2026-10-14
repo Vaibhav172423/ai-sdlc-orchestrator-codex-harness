@@ -4,31 +4,411 @@
 [![CI](https://github.com/tl-ai-labs/ai-sdlc-orchestrator-codex-harness/actions/workflows/test.yml/badge.svg)](https://github.com/tl-ai-labs/ai-sdlc-orchestrator-codex-harness/actions/workflows/test.yml)
 [![Version](https://img.shields.io/badge/version-0.2.0-blue)](.agents/plugins/marketplace.json)
 
+![How the plugin works: you paste two prompts in Codex, the conductor sends judgment work to GPT (gpt-5.6-terra) and mechanical work to Gemini Flash, and your project gets the generated code and a record of every run](docs/assets/hero.svg)
+
 ## What this is
 
-A Codex CLI plugin that runs a full SDLC pipeline — requirements → design → code → tests → docs → senior review → security review — against either an empty folder (**greenfield**) or an existing repository (**brownfield**). It routes each phase to the model that fits: judgment work stays on GPT, mechanical work drops to Gemini Flash.
+A plugin for the Codex CLI. You give it a written description of an app you want, or of a change you want in a project you already have. It runs the whole software process inside Codex: requirements, design, code, tests, a senior code review and a security review. At set checkpoints it stops, shows you what it produced, and waits for you to approve it, ask for changes, or stop the run. At the end it reports what each step cost and which model did it.
 
-This is a port of the [Claude Code harness](https://github.com/tl-ai-labs/ai-sdlc-orchestrator-claude-code-harness) — same pipeline, same job types, same briefs, driven by the Codex CLI instead. No Anthropic model or credential appears anywhere in the execution path. The carried Anthropic adapters stay compiled and tested but dormant: no policy the plugin ships names them, and a run refuses a policy of your own that does.
+Planning and review go to GPT, OpenAI's model. The routine writing of code, tests and docs goes to Gemini Flash, Google's lower-priced model. Every file a run writes, the cost report included, stays in your project folder.
 
-Two ways to pay for the judgment tier reach the same model at the same effort pin — a metered `OPENAI_API_KEY`, or a `codex exec` subprocess on a ChatGPT seat. You pick which once, by choosing a policy. See [Running without an API key](#running-without-an-api-key) for what that costs in reporting precision.
+This is the Codex version of the [Claude Code harness](https://github.com/tl-ai-labs/ai-sdlc-orchestrator-claude-code-harness): the same process, job types and briefs, run by Codex.
 
-Every generated file, every telemetry event, and every cost report lands under your project directory. Nothing is uploaded off the machine.
+## Words to know
 
-## Quick start
+| Word | Meaning |
+|---|---|
+| Terminal | A window where you type commands to your computer. On a Mac it is the Terminal app, in Applications, then Utilities. On Windows, use the Ubuntu app that WSL2 installs. |
+| Codex | OpenAI's coding agent. It runs in the terminal, reads and changes the files in the folder you start it in, and runs commands there. |
+| Session | One conversation with Codex. It starts when you type `codex` and ends when you type `/quit`. |
+| Plugin | An add-on for Codex. This one adds the `$mmo-codex:` commands. |
+| `$` command | How you start one of the plugin's commands: type it in the Codex chat, for example `$mmo-codex:setup`. Typing `$` alone shows the list. |
+| Project folder | The folder that holds your app. You start Codex inside it. |
+| Brief | A short written description of the app you want, under a fixed set of headings. The plugin can write one with you. |
+| Model | The AI that does a piece of the work. Here: GPT (OpenAI) and Gemini Flash (Google). |
+| Policy | The plugin's setting for which model does which step, and so who bills you for it. |
+| Gate | A checkpoint where the run stops, shows you a file it wrote, and waits for your answer. |
+| git | A tool that keeps a project's history. Work on an existing project needs it, so every change can be undone. |
+| API key | A long secret code that lets a program use your OpenAI or Google account. Usage is billed to that account. |
+| Greenfield, brownfield | A new app built in an empty folder, and a change to a project that already exists. |
 
-You use it in a codex session:
+## Prerequisites — what you actually need
 
-1. **Install.** Paste `Set up this plugin from this repo - https://github.com/tl-ai-labs/ai-sdlc-orchestrator-codex-harness` into a codex session and approve the commands it runs ([INSTALL.md](INSTALL.md)).
-2. **Start codex in your project** on the conductor's pin, with the sandbox dispatch needs: `codex -s danger-full-access -m gpt-5.6-terra -c model_reasoning_effort="high"`. When codex asks about the plugin's hook, choose "Trust all and continue"; brownfield runs need it.
-3. **Set up the project** with `$mmo-codex:setup`, which checks credentials and records the project's policy.
-4. **Start a run.** `$mmo-codex:greenfield` builds a new app from a brief in an empty folder. `$mmo-codex:brownfield`, or a job alias such as `$mmo-codex:bugfix POST /login returns 500 when the password is missing`, works on an existing repository.
-5. **Answer the gates** in the chat: `approved`, `revise: <what to change>` or `abort`, and `accept` at the end. The run's record is `.sdlc/runs/<run-id>/`, and its cost report is `report.md` there.
+| If you want to | You need |
+|---|---|
+| Use the plugin at all | A Mac, a Linux computer, or Windows with WSL2. Node.js 20 or newer, git 2.30 or newer, and the Codex CLI 0.151.0 or newer, signed in. |
+| Pay for the GPT work with an API key | An OpenAI API key. This is the default, and its cost figures are exact. |
+| Pay for the GPT work with your ChatGPT plan | Codex signed in with your ChatGPT account, and the `gpt-seat-plus-flash` policy. No OpenAI API key. |
+| Send the routine work to Gemini Flash | A Gemini API key from Google AI Studio, or a Google Cloud login. Every policy the plugin ships needs one of the two. |
 
-The walkthrough is [docs/tutorial-first-run.md](docs/tutorial-first-run.md). To check the cost figures against codex's own token count, run the same pipeline headlessly: [docs/headless-runs.md](docs/headless-runs.md).
+You do not have to pick a policy now. Setup asks.
 
-## Architecture
+### Check what you have
 
-### System dataflow
+Open a terminal and run each of these. Each one prints a version number.
+
+```
+node --version
+```
+
+```
+git --version
+```
+
+```
+codex --version
+```
+
+| Program | You need | If it is missing or older |
+|---|---|---|
+| Node.js | `v20` or higher | Install the LTS version from [nodejs.org](https://nodejs.org). |
+| git | `2.30` or higher | On a Mac, run `xcode-select --install`. On Ubuntu and WSL, run `sudo apt install git`. |
+| Codex CLI | `0.151.0` or higher | Run `npm install -g @openai/codex` once Node.js is installed. To upgrade, run `npm install -g @openai/codex@latest`. |
+
+Then sign Codex in. This opens your browser to sign in with your ChatGPT account:
+
+```
+codex login
+```
+
+Check that it worked:
+
+```
+codex login status
+```
+
+To sign Codex in with an OpenAI API key instead, set the key up as the next section shows, then run `printenv OPENAI_API_KEY | codex login --with-api-key`.
+
+### Give the plugin your keys
+
+The plugin reads your keys from the terminal you start Codex in, as environment variables: named settings that every program started from that terminal can read. To have them set in every new terminal window, you put them in your shell's startup file, `~/.zshrc` on a Mac and `~/.bashrc` on Linux and WSL.
+
+1. Get the keys you need. For Gemini, create one at [aistudio.google.com/app/apikey](https://aistudio.google.com/app/apikey). For OpenAI, if you pay with an API key, create one at [platform.openai.com/api-keys](https://platform.openai.com/api-keys).
+2. Open the startup file. On a Mac:
+
+   ```
+   touch ~/.zshrc && open -e ~/.zshrc
+   ```
+
+   On Linux and WSL:
+
+   ```
+   nano ~/.bashrc
+   ```
+
+3. Add these lines at the end of the file. Replace the words between the quotes with your own key, and keep the quotes. Leave out the OpenAI line if you pay with your ChatGPT plan.
+
+   ```
+   export GEMINI_API_KEY='your Gemini API key'
+   export OPENAI_API_KEY='your OpenAI API key'
+   ```
+
+4. Save and close the file. In nano, press Ctrl+O, then Enter, then Ctrl+X.
+5. Open a new terminal window and check that the key is there:
+
+   ```
+   test -n "$GEMINI_API_KEY" && echo set
+   ```
+
+   It prints `set`. Only terminal windows opened after you saved the file have the key.
+
+Keep keys out of the Codex chat, because the chat is sent to OpenAI. If setup later reports a missing key, add it to the file, open a new terminal window and start Codex again.
+
+With a Google Cloud account you can skip the Gemini key. Run `gcloud auth application-default login` once: it saves a login file that the plugin finds by itself. If your account has several Google Cloud projects, also add `export GOOGLE_CLOUD_PROJECT='your project id'` to the startup file.
+
+## Setup — the two-prompt flow
+
+You type two things in Codex: a sentence that installs the plugin, and later, in a new session, a command that starts a run. Between the two, you restart Codex with the settings a run needs.
+
+### Prompt 1: install the plugin
+
+1. Open a terminal.
+2. Make an empty folder for your first project and go into it (`~` is your home folder):
+
+   ```
+   mkdir ~/ping-service
+   ```
+
+   ```
+   cd ~/ping-service
+   ```
+
+   To work on a project you already have, go into its folder instead, for example `cd ~/my-app`.
+3. Start Codex:
+
+   ```
+   codex
+   ```
+
+4. Paste this sentence into Codex and press Enter:
+
+   ```
+   Set up this plugin from this repo - https://github.com/tl-ai-labs/ai-sdlc-orchestrator-codex-harness
+   ```
+
+5. Approve the commands Codex asks to run. It downloads the plugin from GitHub, installs it, builds the small helper program the plugin uses to reach the models, and checks your keys. The downloads need the internet, which Codex blocks until you approve. The steps it follows are in [INSTALL.md](INSTALL.md).
+6. Answer its questions. It asks which policy this project should use: `gpt-plus-flash` if you pay with an OpenAI API key, `gpt-seat-plus-flash` if you pay with your ChatGPT plan ([Choosing how you pay](#choosing-how-you-pay) has all four). If it asks which Gemini route to use, choose the Gemini API.
+7. When it is done, it prints `✓ Setup complete for this project.`, the policy it set, and the command to start Codex for a run. A line marked `✗` is a problem to fix first, and the line under it says how.
+
+### Restart Codex for runs
+
+8. Quit Codex:
+
+   ```
+   /quit
+   ```
+
+9. In the same folder, start Codex again with this command:
+
+   ```
+   codex -s danger-full-access -m gpt-5.6-terra -c model_reasoning_effort="high"
+   ```
+
+| Part of the command | Why it is there |
+|---|---|
+| `-s danger-full-access` | Turns off Codex's sandbox for this session. The plugin starts its helper program and talks to it directly, and the sandbox blocks that. Without it, the first model call fails with `MCP error -32000: Connection closed`. |
+| `-m gpt-5.6-terra -c model_reasoning_effort="high"` | Puts the session on the model and effort the plugin prices and checks its costs against. A run does not start on any other. |
+
+With the sandbox off, Codex can run commands anywhere on your computer. Use this command for plugin runs, and plain `codex` for other work.
+
+10. The first time, Codex asks about the plugin's hook. Choose **Trust all and continue**. The hook is the check that keeps a run on an existing project from changing files outside the list you approve. Until you trust it, those runs stop right after their first gate.
+11. To confirm the project is ready, type:
+
+    ```
+    $mmo-codex:setup
+    ```
+
+    It runs the same checks again. This time it can also check your Codex version and sign-in, which the first session's sandbox hid from it. It ends with `✓ Setup complete for this project.` and the current policy.
+
+> **Why a new session matters.** Codex loads a plugin's commands, and asks about its hook, only when a session starts. The session you installed from may not have the `$mmo-codex:` commands yet, and it has neither the sandbox setting nor the model a run needs.
+
+### Prompt 2: start a run
+
+In the session from step 9, type the command that fits. For a new app, in an empty folder:
+
+```
+$mmo-codex:greenfield
+```
+
+For a change to an existing project, which must be a git repository:
+
+```
+$mmo-codex:brownfield
+```
+
+The next section walks through both. Whenever you come back later, start Codex in your project folder with the command from step 9.
+
+## Try it — one worked example
+
+### A new app: the Ping Service
+
+The plugin ships a small example brief, the Ping Service: a web service with one address, `/ping`, that answers with the time. It is the quickest way to watch a whole run.
+
+1. In the session from step 9, in `~/ping-service`, type:
+
+   ```
+   $mmo-codex:greenfield
+   ```
+
+2. Answer its questions:
+
+| It asks | You reply |
+|---|---|
+| Which brief to build from | `the quick-demo example` |
+| Where the code and the run record go: `src/` and `.sdlc/runs/<run-id>/` | `keep both` |
+| It shows which model does which step, and what each one charges | Read it |
+| Whether to start | `yes` |
+
+Nothing is spent before your `yes`. The run then prints its run id, for example `20261014-091500-greenfield-3f9a1c`. Wherever this page shows `<run-id>`, use that id.
+
+3. The run works on its own between gates. At each gate it prints a block that starts with `⏸ HITL Gate` and the gate's number, names the file to read, and waits for your reply. The files are in the run's folder, `.sdlc/runs/<run-id>/`.
+
+| Gate | When | You read | You reply |
+|---|---|---|---|
+| 1 | After the requirements | `requirements.md` | `approved`, `revise: <what to change>`, or `abort` |
+| 2 | After the design | `design.md` | The same |
+| 3 | After the security review | `security_review.md` | The same |
+| 4 | At the end | `SUMMARY.md`: the cost, the file count and the test results | `accept`, or `reject: <what to change>` |
+
+In place of `<what to change>`, write what you want in your own words, for example `revise: also return the server version`. `abort` stops the run.
+
+4. After `accept`, the run writes its cost report, `report.md` in the run folder, and prints a `Cost report:` line with the command that shows it again.
+
+One recorded run of this brief, on `gpt-plus-flash`, took 20 minutes 47 seconds, cost $0.5287, and produced a working app: `/ping` answers with status 200 and any other address with 404. That is one run, not a promise. The cost grows with the size of the brief and with every `revise`. The $0.5287 covers the model calls the plugin made, metered by OpenAI and Google. It was priced at a Gemini rate about twice today's, so the same run costs less now. The Codex session that runs the pipeline is counted on its own line of the report, as an estimate. That line is marked `PROVISIONAL` in the first report, because it is read before the session's last turn ends. [docs/tutorial-first-run.md](docs/tutorial-first-run.md#7-find-the-record-and-the-cost) shows how to read it again afterwards.
+
+To try the app, open a second terminal window and leave Codex running in the first:
+
+```
+cd ~/ping-service/src
+```
+
+```
+npm install
+```
+
+```
+npm test
+```
+
+```
+npm start
+```
+
+While the app runs, open a third window and run:
+
+```
+curl -i localhost:3000/ping
+```
+
+It prints `HTTP/1.1 200 OK` and a JSON body with `status` set to `ok`. Press Ctrl+C in the window where the app runs to stop it.
+
+### A change to an existing project
+
+The project must be a git repository. Uncommitted changes are fine: the run backs up each such file before it first changes it.
+
+1. Start Codex in the project's folder with the command from step 9, and run `$mmo-codex:setup` there once.
+2. Start a job with its command and a one-line description of the job:
+
+   ```
+   $mmo-codex:bugfix POST /login returns 500 when the password is missing
+   ```
+
+   `$mmo-codex:brownfield` does the same, and asks which kind of job first. All seven jobs are in [Commands](#commands).
+3. The first run in a project starts with a short check, which includes one small paid call to each model. Then the plugin reads the project and stops at Gate 0, before it writes anything.
+4. Gate 0 shows what it found (the language and the test command), the policy, any other AI tool's settings files it found (they stay untouched unless you add one), the job, the files it proposes to change, the files it must not touch, and a typical cost for this job on a project this size. Reply `revise: <what to change>` to correct anything, then `approved`.
+5. From then on the run may write only the files you approved. Gates 1 to 4 follow as above, without the ones the job does not need: a bug fix skips the design gate unless the fix changes the design.
+6. After `accept`, the run prints `$mmo-codex:revert <run-id>`, which undoes every change it made.
+
+The plugin ships a small practice project with a known bug. [docs/tutorial-first-run.md](docs/tutorial-first-run.md#8-a-brownfield-run) has the commands to copy it out and run this example on it.
+
+## Commands
+
+Type `$` in Codex to see the list, or `/skills` to browse it.
+
+### Start a run
+
+| Command | What it does |
+|---|---|
+| [`$mmo-codex:greenfield`](plugin/skills/greenfield/SKILL.md) | Builds a new app from a brief, in an empty folder. It can write the brief with you. |
+| [`$mmo-codex:brownfield`](plugin/skills/brownfield/SKILL.md) | Changes an existing project. It asks which of the seven jobs below to do. |
+| [`$mmo-codex:pass`](plugin/skills/pass/SKILL.md) | Starts a run from options instead of questions, for scripts and repeat runs. [docs/running.md](docs/running.md) lists the options. |
+
+### Jobs on an existing project
+
+Each one starts `$mmo-codex:brownfield` with the job already chosen. A line describing the job after the command is optional. Gate 0 asks you to confirm the files either way.
+
+| Command | What it does | Example |
+|---|---|---|
+| [`$mmo-codex:bugfix`](plugin/skills/bugfix/SKILL.md) | Reproduces a bug, fixes it, and adds a test that proves the fix | the /login endpoint returns 500 on a missing password |
+| [`$mmo-codex:feature-extend`](plugin/skills/feature-extend/SKILL.md) | Adds to a feature that already exists | add a `?filter` option to the existing /users endpoint |
+| [`$mmo-codex:feature-new`](plugin/skills/feature-new/SKILL.md) | Adds a new part to the app: endpoint, storage and tests | add a webhooks module with a retry loop |
+| [`$mmo-codex:docs`](plugin/skills/docs/SKILL.md) | Writes or updates documentation: API docs, README, decision records, code comments | document the auth module |
+| [`$mmo-codex:test`](plugin/skills/test/SKILL.md) | Adds tests toward a coverage target | unit tests for src/payments to reach 80% line coverage |
+| [`$mmo-codex:refactor`](plugin/skills/refactor/SKILL.md) | Moves repeated code into one place and updates every use, checked by the full test suite | move the shared date logic into a util module |
+| [`$mmo-codex:deps`](plugin/skills/deps/SKILL.md) | Upgrades a library and fixes the code the upgrade breaks | upgrade jest from 28 to 29 |
+
+### Setup, policy and undo
+
+| Command | What it does |
+|---|---|
+| [`$mmo-codex:setup`](plugin/skills/setup/SKILL.md) | Checks the install and your keys, rebuilds the helper program when needed, and sets this project's policy. Safe to run any time. |
+| [`$mmo-codex:policy`](plugin/skills/policy/SKILL.md) | Shows this project's policy. `$mmo-codex:policy change` picks a different one. |
+| [`$mmo-codex:revert`](plugin/skills/revert/SKILL.md) | Undoes the file changes of one run on an existing project: `$mmo-codex:revert <run-id>`. |
+
+The seven job commands and `$mmo-codex:pass` start only when you type them, so a message that only mentions a job, such as "add some tests", never starts a paid run by itself. `$mmo-codex:greenfield` and `$mmo-codex:brownfield` can also start when you ask Codex for that work in plain words. The picker also lists two playbooks that a run follows, `pipeline` and `brownfield-guide`; you do not type those.
+
+## Choosing how you pay
+
+A policy decides which model does each step, and so who bills you. Four ship. Each one also needs Codex signed in, because the Codex session that runs the pipeline uses your Codex sign-in.
+
+| Policy | What you need | Costs on the report |
+|---|---|---|
+| `gpt-plus-flash` (the default) | An OpenAI API key, and a Gemini key or a Google Cloud login | Exact for every model call the plugin makes |
+| `gpt-plus-flash-38` | The same as `gpt-plus-flash` | Exact. The reports name Gemini 3.8 Flash, the model Google now serves for 3.7 requests |
+| `gpt-seat-plus-flash` | Codex signed in with your ChatGPT plan, and a Gemini key or a Google Cloud login. No OpenAI API key | GPT work estimated, Gemini work exact |
+| `flash-agsdk-only` | A Google Cloud login (there is no key option) and Python 3.10 or newer (the Python that comes with macOS, 3.9, is too old) | Exact. Every step the plugin sends out goes to Gemini working as an agent. For trying that route |
+
+To switch this project to another policy, type:
+
+```
+$mmo-codex:policy change
+```
+
+Exact figures (the report says vendor-metered) come from the usage OpenAI and Google report for each call. Estimated figures (the report says modeled) are worked out from token counts at list prices, because a ChatGPT plan reports tokens but no money. The Codex session's own share is estimated this way on every policy. Pick `gpt-plus-flash` when the cost figures matter, for example when you share them.
+
+On `gpt-seat-plus-flash`, a run's GPT work comes out of the same ChatGPT plan allowance as your Codex session, so a long run can reach your plan's usage limit.
+
+Every shipped policy stops a run once its recorded cost reaches $50: the plugin's model calls plus the session's estimated share.
+
+## Undo and safety
+
+To undo a run on an existing project, type `$mmo-codex:revert <run-id>`. It puts every file the run changed back the way it was, from git or from the run's own backups. If a file changed again after the run, it shows you the difference and asks before it touches that file. A new app lives in its own folder; to remove it, delete the folder.
+
+On an existing project, the hook you trusted in step 10 refuses any write outside the files you approved at Gate 0, and records each decision in `.sdlc/local/guard-decisions.jsonl`. Some files are refused in every session: `.env` files, everything under `.git/` and `.agents/`, Codex's own settings (`.codex/config.toml`, `.codex/auth.json`) and `.mcp.json`.
+
+The hook checks ordinary file writes. A write made some other way, for example by a script the model runs, can get past it. Commit your work in git before a run, so you can always get back to it. [docs/architecture.md](docs/architecture.md#what-the-contract-guarantees-and-what-it-does-not) states exactly what the hook covers and what it does not.
+
+Every file a run writes stays in your project folder. What leaves your computer is what the models need to do the work: the Codex session talks to OpenAI, and each model call the plugin makes sends its instructions, with the parts of your brief or code they need, to OpenAI or Google. The plugin uploads nothing else.
+
+## What a run produces
+
+Each run gets its own folder in your project, `.sdlc/runs/<run-id>/`. A new app's code goes in `src/`. Changes to an existing project are made in place.
+
+| File in the run folder | What it holds |
+|---|---|
+| `requirements.md`, `design.md`, `security_review.md`, `SUMMARY.md` | What you read at the gates |
+| `report.md` | The cost report: cost by step and by model, and the run total split into its exact and estimated parts |
+| `telemetry.jsonl` | One line per model call: the step, the model, the tokens and the cost |
+| `gates.jsonl` | Your answer at each gate |
+| `driver-usage.json` | The Codex session's own tokens and estimated cost |
+| `provenance.json` | Existing projects: every file the run changed, which `$mmo-codex:revert` reads |
+
+Outside the run folders, `.sdlc/local/guard-decisions.jsonl` lists every write the hook allowed or refused. [docs/running.md](docs/running.md#what-lands-in-the-run-folder) describes every file, and [docs/understanding-output.md](docs/understanding-output.md) explains the report line by line.
+
+## If something goes wrong
+
+| What you see | Why | What to do |
+|---|---|---|
+| A run on an existing project stops after Gate 0 with `The write guard did not run in this session` | The plugin's hook is not trusted yet, or a plugin update changed it | Quit Codex, start it with the command from step 9, and choose **Trust all and continue**. Or type `/hooks` and trust the mmo-codex hook. Then start the job again. |
+| `no run started: this session must run gpt-5.6-terra at effort high` | Codex was started without the model settings | Type `/model`, choose `gpt-5.6-terra` and effort `high`, send one message, then start the command again. Or quit and use the command from step 9. |
+| `MCP error -32000: Connection closed` | Codex was started without `-s danger-full-access`, so its sandbox blocks the plugin's helper program | Quit and start Codex with the command from step 9. |
+| `No Gemini credentials found` | No Gemini key reached Codex | Add `GEMINI_API_KEY` to your startup file as in [Give the plugin your keys](#give-the-plugin-your-keys), open a new terminal window, and start Codex again. Or run `gcloud auth application-default login`. |
+| `OPENAI_API_KEY is not set` | This project's policy pays for GPT with an API key, and none is set | Add the key the same way. Or move to your ChatGPT plan: `$mmo-codex:policy change`, then `gpt-seat-plus-flash`. |
+| `The bundled MCP server is not built`, or runs fail after a plugin update | An update replaces the plugin's files and removes the built helper program | Type `$mmo-codex:setup`, which builds it again. |
+| A run stops and the message mentions a usage limit | On `gpt-seat-plus-flash`, the run's GPT work and your session share your ChatGPT plan's allowance | Wait for the limit to reset, then start the run again. A job on an existing project offers to resume where it stopped. For long runs, a policy with an API key takes the GPT work off your plan. |
+| The `$mmo-codex:` commands do not appear when you type `$` | The plugin was installed after this session started, or it is not installed | Quit and start Codex again. `codex plugin list` should show `mmo-codex@tilicho-ai-labs` as installed and enabled. |
+
+[docs/troubleshooting.md](docs/troubleshooting.md) lists every message the plugin can show, with its cause and its fix.
+
+## Verify or repair the install
+
+Run the setup check whenever something looks wrong, after a plugin update, or after you change a key. It rebuilds the helper program when needed, checks your keys, and names anything missing with its fix. Inside a Codex session:
+
+```
+$mmo-codex:setup
+```
+
+From a terminal, outside Codex:
+
+```
+node "$(ls -d ~/.codex/plugins/cache/tilicho-ai-labs/mmo-codex/*/codex/verify-setup.mjs | tail -1)" --fix --project-root "$(pwd)"
+```
+
+Running either one again changes nothing that is already right.
+
+To update the plugin, run these two commands in a terminal, then `$mmo-codex:setup` in a new Codex session:
+
+```
+codex plugin marketplace upgrade
+```
+
+```
+codex plugin add mmo-codex@tilicho-ai-labs
+```
+
+## How it works inside
+
+### What calls what
 
 ```mermaid
 flowchart TD
@@ -53,13 +433,11 @@ flowchart TD
     class MCP,GemModel,GemAgent hero
 ```
 
-The highlighted path is where cost drops — mechanical work routed off the judgment tier into the cheaper one. Which door the mechanical tier uses (model vs agent) is picked once at setup; both reach the same model at the same published rates.
+The conductor is the Codex session itself, on `gpt-5.6-terra` at effort `high`. It splits the work into task packets and hands each one to the bundled bridge, which sends it to the model the policy names and records the call. The highlighted path is where the cost drops: mechanical work leaves the judgment tier for the cheaper one. Gemini can be reached as a model, one call per packet, or as an agent with tools and a working folder. Setup picks one, and both bill the same rates per token.
 
-Unlike the Claude harness, the model never calls the bridge as a tool. A model inside codex has no per-tool binding for an MCP server, so the conductor dispatches by running `plugin/codex/dispatch.mjs`, a shell command that opens the MCP connection itself — see [docs/verification/p1-codex-runtime.md](docs/verification/p1-codex-runtime.md).
+Unlike in the Claude harness, the model never calls the bridge as a tool. A model inside Codex has no per-tool binding for an MCP server, so the conductor runs `plugin/codex/dispatch.mjs`, a shell command that opens the connection itself. That is why a run needs `-s danger-full-access`. The measurements are in [docs/verification/p1-codex-runtime.md](docs/verification/p1-codex-runtime.md), and the design that follows from them in [docs/architecture.md](docs/architecture.md).
 
-### Phase timeline
-
-A greenfield run walks 11 states in order. Brownfield inserts two more (`discovery`, `change_plan`) around the same core. Each state is color-coded by which tier does the work.
+### The steps of a run
 
 ```mermaid
 flowchart LR
@@ -87,33 +465,11 @@ flowchart LR
     classDef local fill:#F3F4F6,stroke:#6B7280,color:#1F2937
 ```
 
-Legend — **amber:** GPT (judgment). **blue:** Gemini Flash (mechanical). **grey:** local — no model call.
+Amber steps run on GPT (judgment), blue ones on Gemini Flash (mechanical), and grey ones on your machine with no model call. A greenfield run walks these 11 states in order. A brownfield run adds `discovery` and `change_plan` around the same core. The gates come after requirements (Gate 1), after the design (Gate 2), after the security review (Gate 3) and before final acceptance (Gate 4). Brownfield adds Gate 0, the scope confirmation, before all of them. The full state machine is in [plugin/skills/pipeline/SKILL.md](plugin/skills/pipeline/SKILL.md).
 
-Four HITL gates fire along the way: after requirements (Gate 1), after design (Gate 2), after security review (Gate 3), before final acceptance (Gate 4). Brownfield adds Gate 0 (discovery confirmation) before any of them.
+### Which model does each step
 
-The state machine in full is in [plugin/skills/pipeline/SKILL.md](plugin/skills/pipeline/SKILL.md).
-
-## What it can do
-
-### Tasks — the seven brownfield job types
-
-Pick one at Gate 0 in `$mmo-codex:brownfield`.
-
-| Job type | When to use | Who does the heavy lifting |
-|---|---|---|
-| `docs` | Write API docs, README, ADRs, docstrings | Gemini Flash |
-| `bugfix` | Fix a specific defect (reproduce → diagnose → fix → regression test) | Gemini Flash · escalates to GPT after 2 failed retries |
-| `feature-extend` | Add a capability to an existing endpoint or module | GPT for change plan · Gemini for the edits |
-| `feature-new` | Add a new subsystem (endpoint + storage + tests) | GPT for design · Gemini for full codegen mix |
-| `refactor` | Extract shared logic; runs the **full** test suite for invariants | GPT for refactor plan · Gemini for `refactor_extract` + patches |
-| `test` | Backfill tests to a coverage target | Gemini Flash |
-| `deps` | Upgrade a dependency + patch breaking-change fallout | GPT for dep-swap plan · Gemini for adjacent-code patches |
-
-The intent-by-phase matrix is in [plugin/skills/pipeline/SKILL.md](plugin/skills/pipeline/SKILL.md).
-
-### Routing — model per phase
-
-Same rule applies to greenfield and brownfield. The default `gpt-plus-flash` policy routes:
+The default `gpt-plus-flash` policy routes greenfield and brownfield runs the same way:
 
 | Phase | Tier | Model in the default policy |
 |---|---|---|
@@ -122,281 +478,71 @@ Same rule applies to greenfield and brownfield. The default `gpt-plus-flash` pol
 | `discovery` · `change_plan` (brownfield only) | judgment | `gpt-5.6-terra`, effort `high` |
 | `codegen` · `tests` · `docs` (the `execute_packets` step) | mechanical | Gemini 3.7 Flash |
 | `debug` | mechanical | Gemini 3.7 Flash |
-| `codegen` · `tests` · `docs` · `debug` with `retry_count` ≥ 2 | judgment | `gpt-5.6-terra` (auto-escalation) |
+| `codegen` · `tests` · `docs` · `debug` with `retry_count` ≥ 2 | judgment | `gpt-5.6-terra` (escalation) |
 | `test_run` | local | Bash on your machine, no model call |
 
-Source: [plugin/config/policies/gpt-plus-flash.yaml](plugin/config/policies/gpt-plus-flash.yaml). Every rule is data — change routing by editing the YAML, or author a new policy in the browser console via `$mmo-codex:policy change`.
+Source: [plugin/config/policies/gpt-plus-flash.yaml](plugin/config/policies/gpt-plus-flash.yaml). Routing is data. You change it by editing the YAML, or by writing a new policy in the browser console that `$mmo-codex:policy change` opens.
 
-Two guardrails ship on:
+Two limits ship on:
 
-- **Escalation** — a mechanical-tier packet that fails validation twice auto-routes to GPT on the third attempt. Prevents infinite retries when Flash cannot solve a particular puzzle.
-- **Hard cost cap** — `$50` per run (`hard_cost_cap_usd` in the policy). The cap counts the dispatched cost in the run's `telemetry.jsonl` plus the conductor's own modeled cost from the same run folder. Once that total reaches the cap, the bridge refuses every further dispatch and `run.mjs` stops resuming. The call that crosses the cap still completes, and the conductor's current turn still runs, so a run can overshoot by part of one turn. A conductor on a model other than the policy's pin is not priced and adds $0. Raise the cap, or delete the key for no cap, in your own policy.
-
-Four policies ship, and each one runs on this harness:
-
-| Policy | Judgment tier | Mechanical tier | Cost reporting |
-|---|---|---|---|
-| `gpt-plus-flash` (default) | GPT via the OpenAI API | Gemini Flash | Every dispatch vendor-metered; the conductor's line modeled — the policy of record |
-| `gpt-plus-flash-38` | GPT via the OpenAI API | Gemini 3.8 Flash | Every dispatch vendor-metered; the conductor's line modeled |
-| `gpt-seat-plus-flash` | GPT via local `codex exec` on a ChatGPT seat | Gemini Flash | Judgment cost is **modeled**, not metered |
-| `flash-agsdk-only` | Gemini Flash via the agent worker | Gemini Flash via the agent worker | Every dispatch on the agent door; the conductor still runs on the GPT pin |
-
-The driver and judgment legs are both GPT but are **not** the same call path: the conductor runs on the codex CLI's own login, while judgment work dispatches through the bridge as metered API calls on `OPENAI_API_KEY`, one telemetry row each. That separation is deliberate — it is what keeps per-phase cost attribution honest.
-
-### Running without an API key
-
-With a ChatGPT subscription and no `OPENAI_API_KEY`, select the subscription policy:
-
-```bash
-node plugin/scripts/setup-policy.mjs --policy=gpt-seat-plus-flash --project-root "$(pwd)"
-```
-
-It routes judgment work through a local `codex exec` subprocess on your seat instead of the metered API. Same model, same effort pin, same routing rules.
-
-**The trade-off is in the cost figures, not the output.** Codex reports token counts but no cost, so judgment-tier cost becomes modeled rather than metered — telemetry labels those events `modeled`, and the run report keeps them out of the vendor total. Use `gpt-plus-flash` for anything whose cost numbers get published; use `gpt-seat-plus-flash` to develop, or to run at all without a key. A full run then draws judgment work from the same monthly seat allowance as the conductor.
-
-## Greenfield vs. brownfield
-
-```mermaid
-flowchart LR
-    Q{What do you have?}
-    E[empty folder<br/>+ a project brief]
-    R[existing repo<br/>any stack, any conventions]
-    G["$mmo-codex:greenfield<br/>generate a whole new app"]:::gpt
-    B["$mmo-codex:brownfield<br/>pick 1 of 7 job types<br/>confirm scope at Gate 0"]:::gem
-
-    Q --> E --> G
-    Q --> R --> B
-
-    classDef gpt fill:#FEF3C7,stroke:#B45309,color:#78350F
-    classDef gem fill:#E0F2FE,stroke:#0369A1,color:#0C4A6E
-```
-
-| Mode | Skill | What it does |
-|---|---|---|
-| **Greenfield** | `$mmo-codex:greenfield` | Generates a whole new application from a project brief into `./src/`. Original flow the pipeline was built for. |
-| **Brownfield** | `$mmo-codex:brownfield` | Extends an existing repository. Pick one of the seven job types above, confirm scope at Gate 0, run the pipeline with a non-destructive write contract that keeps off-limits files untouched. |
-
-Both use the same install, same policies, same MCP dispatch layer.
-
-## Prerequisites — what you actually need
-
-Framed by what you want to do, not by every provider that exists. The full matrix — env vars, verify commands, failure modes — is in [SETUP.md](SETUP.md).
-
-| If you want to… | You need |
+| Limit | What it does |
 |---|---|
-| **Try it at all** | Node.js 20+, Codex CLI 0.151.0+ logged in (`codex login`), git 2.30+, macOS/Linux/WSL2, and either an `OPENAI_API_KEY` **or** a ChatGPT seat with the `gpt-seat-plus-flash` policy |
-| **Get the cost drop on mechanical work** | The above, plus a Gemini surface — a `GEMINI_API_KEY` from [AI Studio](https://aistudio.google.com/app/apikey), or Application Default Credentials from `gcloud auth application-default login` |
-| **Use the Antigravity agent path** | The above, plus Python 3.10+ (macOS ships 3.9, too old) **and** Vertex ADC — there is no API-key door for the agent path |
+| Escalation | A mechanical-tier packet that fails its checks twice goes to GPT on the third attempt, so a case Flash cannot solve does not retry forever. |
+| Hard cost cap | `$50` per run (`hard_cost_cap_usd` in the policy). The cap counts the dispatched cost in the run's `telemetry.jsonl` plus the conductor's own modeled cost from the same run folder. Once that total reaches the cap, the bridge refuses every further dispatch and `run.mjs` stops resuming. The call that crosses the cap still completes, and the conductor's current turn still runs, so a run can overshoot by part of one turn. A conductor on a model other than the policy's pin is not priced and adds $0. Raise the cap, or delete the key for no cap, in a policy of your own. |
 
-You do not need to pick a Gemini door yourself — setup asks. You do not need to write a policy — `gpt-plus-flash` loads by default.
+### Which model does each job
 
-## Setup — ask for it in plain words
-
-Nothing to clone, nothing to type by hand. Paste this into a codex session:
-
-```
-Set up this plugin from this repo - https://github.com/tl-ai-labs/ai-sdlc-orchestrator-codex-harness
-```
-
-Codex follows [INSTALL.md](INSTALL.md): registers the marketplace, installs the plugin, builds the bundled MCP server, checks credentials, asks which policy this project should use, and reports where things stand. Approve the commands it asks to run — marketplace registration needs network, which the sandbox otherwise blocks.
-
-For a run, start a new session the way the next note says. Codex asks about the plugin's write hook when a session starts, and the run itself needs the sandbox and model flags.
-
-Prefer to drive it yourself:
-
-```bash
-codex plugin marketplace add https://github.com/tl-ai-labs/ai-sdlc-orchestrator-codex-harness.git
-codex plugin add mmo-codex@tilicho-ai-labs
-node "$(ls -d ~/.codex/plugins/cache/tilicho-ai-labs/mmo-codex/*/codex/verify-setup.mjs | tail -1)" --fix --project-root "$(pwd)"
-```
-
-`--fix` installs the bridge's dependencies and compiles it — `dist/` is not tracked, so a fresh install cannot dispatch until it is built. Credentials, the Gemini door choice, and the policy picker are covered step by step in [SETUP.md](SETUP.md).
-
-> **Start codex the way a run needs it.** The bridge is reached by spawning it and talking over pipes, and codex's sandbox denies piped stdio under both its default and `workspace-write` modes, so start codex with `-s danger-full-access`. A run also starts only in a session on the conductor's pin, `gpt-5.6-terra` at effort `high`: `codex -s danger-full-access -m gpt-5.6-terra -c model_reasoning_effort="high"`, or `/model` in a session already open.
-
-## Commands
-
-The workflow ships as 13 Codex skills you invoke, plus two playbooks (`pipeline` and `brownfield-guide`) that a run renders into its own folder and follows; you never invoke those two. In a codex session, type `$` to mention a skill, or `/skills` to browse. Custom prompts are deprecated in codex, so there is no `/mmo:*` slash-command surface — the reasoning is recorded in [docs/verification/p1-codex-runtime.md](docs/verification/p1-codex-runtime.md).
-
-### Run the pipeline
-
-| Skill | What it does | When to use it |
+| Job | When to use it | Who does most of the work |
 |---|---|---|
-| [`$mmo-codex:greenfield`](plugin/skills/greenfield/SKILL.md) | Runs the greenfield pipeline. Interviews you for the brief (or reads one you point at), confirms the output path, shows the routing plan, then starts spending. Takes no arguments. | Empty folder + a project brief. Generates a whole new app into `./src/`. |
-| [`$mmo-codex:brownfield`](plugin/skills/brownfield/SKILL.md) | Runs the brownfield pipeline. Hydrates prior state, runs discovery (or resumes), asks for the intent and brief, freezes scope at Gate 0, then executes. Takes no arguments. | Existing repo. Extends the code you already have. |
-| [`$mmo-codex:pass`](plugin/skills/pass/SKILL.md) | Flag-driven twin of the above: `--brief`, `--policy`, `--gates`, `--intent`, `--run-id`, and more. In a session it starts the run itself; from a shell the same flags drive `plugin/codex/run.mjs`. | Scripted replays, CI. |
+| `docs` | API docs, README, ADRs, docstrings | Gemini Flash |
+| `bugfix` | A specific defect: reproduce, diagnose, fix, regression test | Gemini Flash, escalating to GPT after 2 failed retries |
+| `feature-extend` | A capability added to an existing endpoint or module | GPT for the change plan, Gemini for the edits |
+| `feature-new` | A new subsystem: endpoint, storage, tests | GPT for the design, Gemini for the code |
+| `refactor` | Shared logic extracted; the full test suite checks the result | GPT for the refactor plan, Gemini for `refactor_extract` and the patches |
+| `test` | Tests backfilled to a coverage target | Gemini Flash |
+| `deps` | A dependency upgraded, with the breaking changes patched | GPT for the upgrade plan, Gemini for the patches to nearby code |
 
-### Run a specific brownfield job
+The intent-by-phase matrix is in [plugin/skills/pipeline/SKILL.md](plugin/skills/pipeline/SKILL.md).
 
-Seven aliases into `$mmo-codex:brownfield`, each with the job type pre-selected — one shared manual, one Gate 0, no second pipeline. An optional free-text argument seeds the brief; Gate 0 still fires and still re-confirms scope either way.
+### Two paths to GPT
 
-| Skill | Job type | Example |
-|---|---|---|
-| [`$mmo-codex:docs`](plugin/skills/docs/SKILL.md) | `docs` | write API docs, README, ADRs, docstrings for the auth module |
-| [`$mmo-codex:bugfix`](plugin/skills/bugfix/SKILL.md) | `bugfix` | fix the /login endpoint returning 500 on missing password |
-| [`$mmo-codex:feature-extend`](plugin/skills/feature-extend/SKILL.md) | `feature-extend` | add a `?filter` param to the existing /users endpoint |
-| [`$mmo-codex:feature-new`](plugin/skills/feature-new/SKILL.md) | `feature-new` | add a webhooks module (endpoint, storage, retry loop) |
-| [`$mmo-codex:refactor`](plugin/skills/refactor/SKILL.md) | `refactor` | extract shared date logic into a util module and update all call sites |
-| [`$mmo-codex:test`](plugin/skills/test/SKILL.md) | `test` | backfill unit tests for src/payments to reach 80% line coverage |
-| [`$mmo-codex:deps`](plugin/skills/deps/SKILL.md) | `deps` | upgrade jest 28 → 29 (and adapt breaking changes) |
+The conductor and the judgment work both run on GPT, through different paths. The conductor runs on your Codex sign-in. Judgment work goes through the bridge, one telemetry line per call: as metered API calls on `OPENAI_API_KEY`, or under `gpt-seat-plus-flash` as a `codex exec` subprocess on your ChatGPT plan, at the same model and effort. Keeping the two apart is what keeps the per-phase cost figures honest.
 
-These and `pass` are invoke-only: they start a full billable run, so they never fire on their own from a matching phrase.
+### The write contract on existing projects
 
-### Setup and configuration
+Gate 0 freezes a write contract: the files the run may change and the ones it must not touch. One hook script judges every patch and shell command the model runs against it, and the model cannot edit the contract while the run is live. A headless `run.mjs` run registers the hook itself. In a Codex session the hook runs once you trust it, and the run stops right after Gate 0 when no hook decision was recorded. [docs/architecture.md](docs/architecture.md#what-the-contract-guarantees-and-what-it-does-not) says where the guard runs, what it enforces and what it does not.
 
-| Skill | What it does | When to use it |
-|---|---|---|
-| [`$mmo-codex:setup`](plugin/skills/setup/SKILL.md) | Rebuilds the MCP server, re-checks credentials, pauses only when a human decision is genuinely needed (missing credential, Gemini door choice, policy pick). Idempotent. | After a plugin update, a credential change, or an unexpected refusal. Also the everyday "did I set this up right?" check. |
-| [`$mmo-codex:policy`](plugin/skills/policy/SKILL.md) | Bare: prints this project's `default_policy`, and names the `routing-policy.yaml` that overrides it when one sits at the project root. `change`: terminal picker, with an option to author a new one in the browser. `--policy=<name>`: silent set, no browser. Per-project — writes `.sdlc/project.json.default_policy`. | Check or change which policy this project uses. |
+### Checking the cost figures
 
-### Undo
+In a Codex session, the conductor's cost is read from Codex's session file at the end of the run. A headless run checks that reading: `plugin/codex/run.mjs` drives the same pipeline from a terminal with `codex exec --json`, and at the end compares Codex's own per-turn token counts with the session-file reading, token for token. [docs/headless-runs.md](docs/headless-runs.md) is the procedure, including the check against the OpenAI usage dashboard.
 
-| Skill | What it does | When to use it |
-|---|---|---|
-| [`$mmo-codex:revert`](plugin/skills/revert/SKILL.md) | Reads `.sdlc/runs/<run-id>/provenance.json` and restores each touched file to its pre-run state — git checkout for tracked-committed files, per-run backup for uncommitted ones. When a file changed after the run, or close-out found a change no snapshot saw, it shows the diff and asks before touching that file. | Undoing a specific brownfield run. |
+### The worked example's price
 
-Installed as a plugin, these work everywhere with no extra step. Working **inside a clone** of this repo, codex scans `.agents/skills` rather than the `plugin/skills/` directory they ship in, so run `node plugin/codex/verify-setup.mjs --fix` once to link them.
-
-## Check the cost with a headless run
-
-In a codex session, the conductor's cost is read from codex's session file at the run's end. A headless run checks that reading: `plugin/codex/run.mjs` drives the same pipeline from a shell with `codex exec --json`, and at the run's end the harness compares codex's own per-turn token counts with what the session-file reader computes, token for token. From the root of a clone, with the bridge built (`node plugin/codex/verify-setup.mjs --fix`), this runs the quick-demo brief into a project folder of its own:
-
-```bash
-mkdir -p ~/mmo-runs/ping
-node plugin/codex/run.mjs \
-  --brief=examples/quick-demo/brief.md \
-  --project-root="$HOME/mmo-runs/ping" \
-  --mode=greenfield \
-  --policy=gpt-plus-flash \
-  --gates=auto-approve
-```
-
-Add `--dry-run` to see the pinned invocation without spending anything. The run's record lands in `~/mmo-runs/ping/.sdlc/runs/<run-id>/`, with the cost report in `report.md` there and the token comparison under its driver figure. The report prints `Run total = dispatched + driver` and splits it into a **vendor-metered** total and a **modeled** total. Codex reports no wallet figures at all, so the driver leg's cost can only be derived from token counts at the dated price list's rates — and a driver running on a seat may have cost nothing in money. That is why the modeled figure never enters the vendor-metered total.
-
-Every step, from the API-key login to the OpenAI usage dashboard check, is in [docs/headless-runs.md](docs/headless-runs.md). Every flag is in [docs/running.md](docs/running.md).
-
-## What a run produces
-
-Each run's record lands in its own folder, `.sdlc/runs/<run-id>/`. Generated source lands under `./src/` (greenfield) or in place (brownfield). The project-level state shared by every run stays in `.sdlc/` itself.
-
-| File | Contents |
-|---|---|
-| `runs/<run-id>/telemetry.jsonl` | One JSON line per model call: phase, model, tokens (input / cached / output), cost, latency, task_id. |
-| `runs/<run-id>/manifest.json` | Rollup of the telemetry, written by `plugin/scripts/write-manifest.mjs`: totals, per-phase, per-module, per-task-type. |
-| `runs/<run-id>/gates.jsonl` | One line per gate decision. |
-| `runs/<run-id>/driver-usage.json` | The conductor's own tokens and modeled cost, read from codex's session file at the run's end. |
-| `runs/<run-id>/report.md` | The cost report, written at the run's end. |
-| `runs/<run-id>/provenance.json` | Brownfield: every file the run touched, with pre-run hash — the input `$mmo-codex:revert` reads. |
-| `local/guard-decisions.jsonl` | One line per hooked call while a brownfield contract binds, allow or deny; outside a run, one line per refusal, and only in a project that already has `.sdlc/`. A denied call leaves no trace in the Codex event stream, so this file is the only record of it. |
-| `runs/<run-id>/delegation/` | Only on runs that used the agent path. Three files per delegated packet: task brief, worker usage sidecar, receipt. |
-| Cost report | `report.md` in the run folder, or `node plugin/scripts/report.mjs .sdlc/runs/<run-id>` from a clone — per-phase table, delegation table if any, the run total with its vendor-metered and modeled parts, methodology footer. |
-
-How the numbers are derived is in [docs/methodology.md](docs/methodology.md).
-
-## Brownfield mode: what the write contract actually guarantees
-
-Brownfield runs work against an existing repository, so scope is confirmed at a gate and enforced at the tool boundary. Being precise about the guarantee matters more than making it sound strong.
-
-**Where the guard runs.** One hook script judges every `apply_patch` and shell call. It is wired twice from `plugin/hooks/hooks.json`:
-
-| Route | Guarded | Why |
-|---|---|---|
-| Headless `run.mjs` | Always | `run.mjs` registers the hook for each `codex exec` call and passes `--dangerously-bypass-hook-trust`. |
-| Interactive, plugin installed | After you trust the hook once (the startup prompt's "Trust all and continue", or `/hooks`) | Codex skips an untrusted or changed hook without a word. Gate 0 runs `write-contract.mjs --assert-guard-live` and stops the run when no hook decision was recorded; a resumed run runs it again before its first write. |
-| Interactive, from a clone without installing | No | Nothing registers the hook. |
-| A judgment dispatch on the seat policy (a nested `codex exec`) | No | The worker runs in a read-only sandbox, and the bridge switches the plugin's hook off for it. |
-
-**What is enforced.** Gate 0 freezes the contract with `write-contract.mjs --freeze`: it writes `.sdlc/local/write-contract.json`, a byte-for-byte copy in the run's folder, and a lock holding the contract's SHA-256. While the run is live, a write outside the confirmed allowlist, or matching an off-limits pattern, is refused, and the model is told why. The run's own `.sdlc/runs/<run-id>/` folder stays writable, except the lock, the frozen copy, the rendered `skills/`, `provenance.json` and `backups/`. This covers the patch mechanism the model uses by default, also when it runs `apply_patch` through the shell, shell redirects outside quotes (`>`, `>>`, `>|`, `&>` and the rest), every file `tee` names, `touch`, each file a `cp` or `mv` lands on (into a folder too: the hook lists a copied folder's files and judges each one), and `rm`, `unlink` and `mv` sources aimed at the contract or those records. A path the shell expands (a glob, `{a,b}` braces, a quote inside a word, a variable) is refused while a run is live when it may reach one of those records, and a variable the hook cannot read counts as reaching everything below the folder written before it, so such a removal names its path in full. A redirect with no space before the `>` (`echo hi>.env`) reads the same as code such as `a>b`, so it is checked against the always-refused list and those records only. Off-limits names match in any case, and a write through a link is judged where it lands: a link that leads out of the project is a write outside it. Only the contract at the root of the target's git project counts.
-
-**Refused in every session, contract or not.** `.env`, `.env.*`, `.mcp.json`, `.codex/config.toml`, `.codex/auth.json`, `.git/**` and `.agents/**`, at any depth and in any case, and a file named `.git` (a linked worktree's pointer to its store). A shell `rm`, `unlink`, `git rm` or `mv` source that names one of them, or the `.codex` folder, is refused the same way, by the name it removes: removing a link to `.env` is allowed. A glob is judged by each such name it may match, so `rm -rf .git/*` and `rm -f .env.prod*` are refused. `git rm --cached` touches only the index and is allowed. With no contract binding, a missing `.env`, `.env.example` or `.env.test` may be created, so a fresh project can bootstrap its test fixture. The allowance holds only where the hook knows the folder the file lands in: an `apply_patch` Add File, or a shell write to an absolute path written out literally (no `~`, `$`, backtick, glob or quote inside it), with nothing at that path yet. A relative path in a shell command gets no allowance, because the shell can run it from another folder (see below). Build output, `node_modules/` and `.sdlc/local/` are off-limits only inside a contracted run.
-
-**The contract protects itself.** The model cannot edit the contract while its run is live, and a contract whose bytes no longer match its lock, by any route, makes the hook refuse every write until you end the run with `write-contract.mjs --abandon --run-id=<run-id>`. Every refusal a live run causes (a write outside the allowlist, off-limits or outside the repo, or a removal of the run's records) names the same command, ready to paste, because a run whose session was killed holds its lock until you end it. Close-out (`write-contract.mjs --close`) ends the run and switches the contract off; a contract whose run has ended binds nothing. Every other end of a run does the same with the run's outcome (`run.mjs` at its run end, `end-run.mjs` in a session), and a resume puts the frozen contract back, except for a run that ended `completed` or `aborted`.
-
-**The decision log.** While a contract binds, every hooked call is recorded to `.sdlc/local/guard-decisions.jsonl` with its own timestamp, the run id, and `wired_by` (`run` or `plugin`). A refusal with no binding contract is recorded only when the project already has `.sdlc/`. The hook never creates `.sdlc/` in a repository that has none.
-
-**What is not enforced.** The shell-command scan splits a command as the shell does, but it judges only the commands it knows: redirects, `tee`, `touch`, `cp`, `mv`, `rm`, `unlink`, `git rm`, `git mv` and a shell `apply_patch`. A sufficiently indirect construction — a write performed by a script the model invokes, an interpreter one-liner, an unusual redirect form, a `cd` before a relative write — can fall outside it, and fails open rather than closed. The one exception is depth: a command that nests substitutions or shells more than 8 levels deep is refused in every session, because the scan does not read that far. A folder copy whose source the hook cannot list (a variable or glob source, or more than 1,000 entries) is judged as its destination folder, not by the names inside it. A relative path in a shell command is judged from the session folder: Codex's shell tool takes a `workdir` that the hook payload does not carry, so the hook cannot see the folder the command runs in. The guarantee is that ordinary writes are gated and recorded, not that the sandbox is escape-proof. Codex's own sandbox is the outer boundary; this contract is the scope boundary inside it.
-
-## Try it — one worked example
-
-The [Ping Service](examples/quick-demo/) brief run on `gpt-plus-flash`, mechanical phases going to Gemini as a model:
-
-```
-Wall-clock:    20 minutes 47 seconds
-Recorded cost: $0.5287, vendor-metered
-Result:        a working app — GET /ping returns 200, unknown routes 404
-```
-
-The recorded figure was priced at Gemini rates of $1.50 / $0.15 / $9.00 per 1M tokens, about 2× Gemini 3.7 Flash's introductory card. The dated price list (`plugin/mcp/model-dispatch/src/prices.ts`) bills Gemini 3.7 Flash at $0.75 / $0.075 / $3.75 through 2026-12-31 and $1.50 / $0.15 / $7.50 from 2027-01-01, so the same run re-priced costs less on either card. The GPT share is unaffected.
-
-That is one run of one small brief, not a guarantee — cost scales with how much code the brief implies and how many times a phase has to be revised. Each run writes its cost report to `report.md` in its folder. From the root of a clone, this renders the report of the latest headless quick-demo run again:
-
-```bash
-node plugin/scripts/report.mjs "$HOME/mmo-runs/ping/.sdlc" --markdown
-```
-
-The same brief, run step by step in a codex session: [docs/tutorial-first-run.md](docs/tutorial-first-run.md).
-
-## Verify or repair the install
-
-Re-run the setup check any time. It rebuilds the MCP server, re-checks credentials, and reports what is missing with the fix for each:
-
-```bash
-node plugin/codex/verify-setup.mjs --fix
-```
-
-`$mmo-codex:setup` does the same from inside a codex session, pausing only when a human decision is needed. Both are idempotent, and both are the repair after a plugin update, which removes the build.
-
-## Clone route
-
-For working on the harness itself, rather than using it:
-
-```bash
-git clone https://github.com/tl-ai-labs/ai-sdlc-orchestrator-codex-harness.git
-cd ai-sdlc-orchestrator-codex-harness
-node tools/setup.mjs
-```
-
-`tools/setup.mjs` runs the same checks the plugin route runs, installs the MCP server's dependencies, builds it, optionally builds the Python agent worker, and registers the bridge with `codex mcp add`.
+The Ping Service figure above was priced at Gemini rates of $1.50 / $0.15 / $9.00 per 1M tokens (input / cached input / output), about twice Gemini 3.7 Flash's introductory card. The dated price list, [plugin/mcp/model-dispatch/src/prices.ts](plugin/mcp/model-dispatch/src/prices.ts), bills Gemini 3.7 Flash at $0.75 / $0.075 / $3.75 through 2026-12-31 and $1.50 / $0.15 / $7.50 from 2027-01-01, so the same run re-priced costs less on either card. The GPT share is unaffected.
 
 ## Documentation
 
-- [INSTALL.md](INSTALL.md) — the steps codex follows when asked to set this up in plain words
-- [SETUP.md](SETUP.md) — prerequisites, both install routes, credentials, both Gemini doors, the policy pick
-- [docs/running.md](docs/running.md) — the pipeline, policies, bringing your own brief
-- [docs/brief-template.md](docs/brief-template.md) — the section layout a brief needs
-- [docs/tutorial-first-run.md](docs/tutorial-first-run.md) — a greenfield run and a brownfield run in a codex session, from install to the cost report
-- [docs/headless-runs.md](docs/headless-runs.md) — check the cost with a headless run: the token cross-check and the OpenAI usage dashboard
-- [docs/troubleshooting.md](docs/troubleshooting.md) — symptom → cause → fix, keyed by the message on screen
-- [docs/understanding-output.md](docs/understanding-output.md) — reading the cost report and the raw files a run leaves behind
-- [docs/architecture.md](docs/architecture.md) — who calls what, adapters, routing, the write contract, telemetry, install routes
-- [docs/methodology.md](docs/methodology.md) — how tokens and costs are recorded, and why modeled figures stay out of the vendor-metered total
-- [docs/verification/p1-codex-runtime.md](docs/verification/p1-codex-runtime.md) — the Codex runtime capability checks this port is built on, with the pinned model, effort, sandbox and approval values, and the findings that shaped the architecture
-- [CONTRIBUTING.md](CONTRIBUTING.md) — branching model, style rules, how to submit
-- [examples/quick-demo/](examples/quick-demo/) — smallest brief, one endpoint, minutes to run
-- [examples/workforce-ops/](examples/workforce-ops/) — the reference brief
-- [examples/travel-ops/](examples/travel-ops/) — a second brief (booking, cancellation, refund handling)
-
-## Status
-
-Every part of the port is built and tested. What is outstanding is a metered reference run, which needs an API key this machine does not have.
-
-| Phase | Work | Status |
-|---|---|---|
-| P1′ | Codex runtime verification, model/effort pin selection | Done |
-| P2 | Repository skeleton, carried engine and support scripts | Done |
-| P3 | OpenAI adapter, Codex policy, driver-bridge client, write-contract enforcement | Done |
-| P4 | Telemetry reader, denied-call sidecar, fairness pin, setup rebuild, plugin packaging, cost report | Done |
-| P5 | Quick-demo run end to end | Done — 20m 47s, working app, $0.5287 metered (at the superseded Gemini rate) |
-| P6 | Command surface (15 skills), agent roles, discovery, docs, plugin install | Done |
-| P7 | Full Workforce Ops reference run | Running on the seat; **metered** run still needs `OPENAI_API_KEY` |
-| P8 | Walkthroughs, console study | Not started |
-
-Findings during the port that changed the design from the original plan, all documented in the verification file: a model inside `codex exec` cannot call the bridge's MCP tools at all, so the driver calls the bridge itself; the write-contract hook must cover the native patch tool, not just shell commands; the default `workspace-write` sandbox blocks the network the bridge needs; custom prompts are deprecated, so the command surface ships as skills; and one `codex exec` turn cannot finish a real project, so the driver resumes the session until the pipeline completes.
+| Doc | What it covers |
+|---|---|
+| [docs/tutorial-first-run.md](docs/tutorial-first-run.md) | A new app and a change to an existing project in a Codex session, step by step, gate by gate |
+| [docs/running.md](docs/running.md) | The policies, the gates, every option of a headless run, and every file in the run folder |
+| [docs/brief-template.md](docs/brief-template.md) | The headings a brief needs, to write your own |
+| [docs/understanding-output.md](docs/understanding-output.md) | The cost report line by line, and the raw files a run leaves behind |
+| [docs/headless-runs.md](docs/headless-runs.md) | Double-checking the cost figures: a run from a terminal, the token cross-check, and the OpenAI usage dashboard |
+| [docs/troubleshooting.md](docs/troubleshooting.md) | Every message the plugin can show, with its cause and its fix |
+| [docs/architecture.md](docs/architecture.md) | What calls what, the adapters, routing, the write contract, telemetry, the install routes |
+| [docs/methodology.md](docs/methodology.md) | How tokens and costs are recorded, and why estimated figures stay out of the vendor-metered total |
+| [SETUP.md](SETUP.md) | The manual install, working from a clone (`node tools/setup.mjs`), credentials in detail, uninstalling |
+| [INSTALL.md](INSTALL.md) | The steps Codex follows when you paste the setup sentence |
+| [docs/verification/p1-codex-runtime.md](docs/verification/p1-codex-runtime.md) | The Codex behaviour this plugin is built on, as measured: the pinned model, effort, sandbox and approval values, and the findings that shaped the design |
+| [CONTRIBUTING.md](CONTRIBUTING.md) | Changing the plugin itself: branches, style rules, testing a branch in Codex, pull requests |
+| [examples/quick-demo/](examples/quick-demo/) | The smallest brief: one endpoint, about twenty minutes |
+| [examples/workforce-ops/](examples/workforce-ops/) | The reference brief: five modules, an hour or more |
+| [examples/travel-ops/](examples/travel-ops/) | A second large brief: booking, cancellation and refund handling |
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
+MIT. See [LICENSE](LICENSE).
 
 ---
 
