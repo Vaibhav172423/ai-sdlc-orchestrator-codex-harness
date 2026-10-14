@@ -29,6 +29,7 @@ import { loadPolicy, loadPolicyFromPath } from "../mcp/model-dispatch/dist/polic
 import { readRunJson } from "../codex/interactive-run.mjs";
 import { appendSessionMarker } from "../codex/session-marker.mjs";
 import { isMain } from "./lib/is-main.mjs";
+import { exitAfterFlush } from "./lib/exit.mjs";
 
 export const DEFAULT_POLICY = "gpt-plus-flash";
 const VALUE_FLAGS = new Set(["codex-home", "thread", "policy", "policy-path", "project-root", "route"]);
@@ -200,7 +201,7 @@ export function crossCheckLines(report) {
   return lines;
 }
 
-if (isMain(import.meta.url, process.argv[1])) {
+function cli() {
   let args;
   try {
     args = parseCollectorArgs(process.argv.slice(2));
@@ -208,7 +209,8 @@ if (isMain(import.meta.url, process.argv[1])) {
     if (!(err instanceof UsageError)) throw err;
     console.error(`collect-driver-usage: ${err.message}`);
     console.error("usage: node plugin/scripts/collect-driver-usage.mjs <run-dir> [--codex-home=<dir>] [--thread=<id>] [--policy=<name>|--policy-path=<file>] [--project-root=<dir>] [--route=headless|interactive] [--from-conductor] [--dry-run]");
-    process.exit(2);
+    exitAfterFlush(2);
+    return;
   }
   const result = collectDriverUsage(args.runDir, {
     codexHome: args.codexHome,
@@ -222,12 +224,17 @@ if (isMain(import.meta.url, process.argv[1])) {
   });
   if (!result.ok) {
     console.error(`collect-driver-usage: ${result.message}`);
-    process.exit(result.code === "no_run_dir" || result.code === "policy" ? 2 : 1);
+    exitAfterFlush(result.code === "no_run_dir" || result.code === "policy" ? 2 : 1);
+    return;
   }
   if (args.dryRun) console.log(JSON.stringify(result.report, null, 2));
   else {
     console.log(summaryLine(result.report, result.path, result.written));
     for (const line of crossCheckLines(result.report)) console.log(line);
   }
-  process.exit(0);
+  exitAfterFlush(0);
+}
+
+if (isMain(import.meta.url, process.argv[1])) {
+  cli();
 }

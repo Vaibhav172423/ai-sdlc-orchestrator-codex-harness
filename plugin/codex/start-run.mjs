@@ -44,6 +44,7 @@ import { ContractRefusal, guardCheckCommand, reopenRun } from "../scripts/write-
 import { isRunId, runDirFor } from "../scripts/lib/run-id.mjs";
 import { isMain } from "../scripts/lib/is-main.mjs";
 import { configureSinks, log } from "../scripts/lib/log.mjs";
+import { exitAfterFlush } from "../scripts/lib/exit.mjs";
 
 export const START_FLAGS = Object.freeze({
   value: ["mode", "project-root", "policy", "brief", "code-dir", "intent", "gates", "run-id", "resume"],
@@ -407,5 +408,5 @@ export async function main(argv = [], deps = {}) {
 }
 
 if (isMain(import.meta.url)) {
-  process.exit(await main(process.argv.slice(2)));
+  exitAfterFlush(await main(process.argv.slice(2)));
 }

@@ -17,6 +17,7 @@ import { readFileSync, readdirSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { isMain } from "../scripts/lib/is-main.mjs";
+import { exitAfterFlush } from "../scripts/lib/exit.mjs";
 
 export function defaultCodexHome(env = process.env) {
   return env.CODEX_HOME || join(homedir(), ".codex");
@@ -280,5 +281,5 @@ async function main(argv) {
 }
 
 if (isMain(import.meta.url, process.argv[1])) {
-  process.exit(await main(process.argv.slice(2)));
+  exitAfterFlush(await main(process.argv.slice(2)));
 }

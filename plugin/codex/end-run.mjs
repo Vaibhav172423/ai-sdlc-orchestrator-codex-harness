@@ -39,6 +39,7 @@ import {
 import { isMain } from "../scripts/lib/is-main.mjs";
 import { finalEndRefusal } from "../scripts/write-contract.mjs";
 import { configureSinks, log } from "../scripts/lib/log.mjs";
+import { exitAfterFlush } from "../scripts/lib/exit.mjs";
 
 export const END_FLAGS = Object.freeze({ value: ["run-dir", "outcome", "reason"], boolean: [] });
 
@@ -170,5 +171,5 @@ export async function main(argv = [], deps = {}) {
 }
 
 if (isMain(import.meta.url)) {
-  process.exit(await main(process.argv.slice(2)));
+  exitAfterFlush(await main(process.argv.slice(2)));
 }

@@ -41,6 +41,7 @@ import { fileURLToPath } from "node:url";
 import { readMmoSelectFile } from "./mmoSelect.mjs";
 import { appendSessionMarker } from "./session-marker.mjs";
 import { isMain } from "../scripts/lib/is-main.mjs";
+import { exitAfterFlush } from "../scripts/lib/exit.mjs";
 
 const BRIDGE_CLIENT = resolve(
   dirname(fileURLToPath(import.meta.url)),
@@ -327,10 +328,10 @@ if (isMain(import.meta.url, process.argv[1])) {
           `The full result is in ${args.out}.`,
       );
     }
-    process.exit(ok ? 0 : 1);
+    exitAfterFlush(ok ? 0 : 1);
   } catch (err) {
     // stderr, not stdout — the conductor reads stdout for the summary line.
     console.error(`dispatch failed: ${err?.message ?? err}`);
-    process.exit(1);
+    exitAfterFlush(1);
   }
 }

@@ -69,6 +69,7 @@ import { reportCommand } from "../scripts/report.mjs";
 import { gateLine } from "../scripts/lib/gate-record.mjs";
 import { staleBridgeBuild, staleBuildWarning } from "./bridge-build.mjs";
 import { isMain } from "../scripts/lib/is-main.mjs";
+import { exitAfterFlush } from "../scripts/lib/exit.mjs";
 
 const CODEX_DIR = dirname(fileURLToPath(import.meta.url));
 const PLUGIN_ROOT = dirname(CODEX_DIR);
@@ -1431,5 +1432,5 @@ async function runDriver(args, deps) {
 if (isMain(import.meta.url, process.argv[1])) {
   ignoreWriteErrors(process.stdout);
   ignoreWriteErrors(process.stderr);
-  process.exit(await main(process.argv.slice(2)));
+  exitAfterFlush(await main(process.argv.slice(2)));
 }
