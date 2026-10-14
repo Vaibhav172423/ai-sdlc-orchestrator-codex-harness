@@ -780,10 +780,9 @@ function tagMarkers(markers: RunMarker[], run: (m: RunMarker) => string): Tagged
 
 /**
  * Every run's markers on one thread, in time order, merged into segments of
- * consecutive markers from one run. A collection marker only extends the
- * segment before it: after another run's marker, or with none before it, it
- * was written from a session doing other work (a discard, or the end of a run
- * resumed elsewhere), so it claims no turn.
+ * consecutive markers from one run. A collection marker after another run's
+ * marker was written from that run's session (a discard there), so it claims
+ * no turn.
  */
 function markerSegments(markers: TaggedMarker[]): MarkerSegment[] {
   const sorted = [...markers].sort((a, b) => a.t - b.t || (a.run < b.run ? -1 : a.run > b.run ? 1 : 0));
@@ -791,7 +790,7 @@ function markerSegments(markers: TaggedMarker[]): MarkerSegment[] {
   for (const m of sorted) {
     const prev = out.at(-1);
     if (prev?.run === m.run) prev.last = m.t;
-    else if (!m.closing) out.push({ run: m.run, first: m.t, last: m.t, started: m.start });
+    else if (!m.closing || !prev) out.push({ run: m.run, first: m.t, last: m.t, started: m.start });
   }
   return out;
 }
@@ -1846,7 +1845,7 @@ export function measureDriverUsage(opts: MeasureOptions): MeasureResult {
     if (workers.has(id)) return exclude(id, "a codex-cli dispatch of this run ran in it (telemetry.jsonl codex_thread_id)");
     if (recorded && route === "interactive") {
       if (!claimsThread(ownOn(id), othersOn(id), ownRun)) {
-        return exclude(id, "it holds only an end-of-run collection for this run, after another run's marker or before any of this run's");
+        return exclude(id, "it holds only an end-of-run collection for this run, after another run's marker");
       }
       if (conductors.size > 0 && !conductors.has(id)) return exclude(id, "run.json records no start of this run in it", true);
     }

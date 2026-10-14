@@ -64,7 +64,7 @@ codex reports each turn's usage as the thread's running total, and `codex exec r
 | `Tokens (in / out)` | Fresh input and output, every turn the reading counted, unpriced ones included |
 | `Cached input` | Cached input, kept out of the input figure |
 | `Unpriced` | Turns on a model with no price, left out of the figure. The run total becomes a floor. |
-| `Left out` | Threads the reading named but did not book, each with its reason. A nested codex-cli dispatch's thread is booked in dispatched work instead. A thread `run.json` records no start of this run in holds conductor turns the figure is missing, so the run total becomes a floor. |
+| `Left out` | Threads the reading named but did not book, each with its reason. A nested codex-cli dispatch's thread is booked in dispatched work instead. A thread whose only marker of this run is its end-of-run collection, written after another run's marker there, holds none of this run's turns. Any other thread `run.json` records no start of this run in holds conductor turns the figure is missing, so the run total becomes a floor. |
 | `Flags` | Per-turn flags from `driver-cost-modeled.jsonl` or `driver-manifest.json`: `baseline_unknown`, `cumulative_reset`, `zero_usage`, `no_thread_id` |
 | `Cross-check` | Whether the `codex exec --json` figure and the session-file figure agree, when both exist |
 | `Price` | The driver's card from `driver-manifest.json` `driver_price`: rates per 1M, the list entry's verified date, and the long-context tier |
@@ -78,7 +78,7 @@ Several runs can share one codex thread: a second `$mmo-codex:*` command in the 
 - A run's stretch of a thread opens at its `$mmo-codex:*` command turn, else at the turn of its first marker, and closes with the turn of its last marker before another run's marker. A resume there opens a new stretch the same way. A stretch whose first marker is a dispatch's rather than `start-run.mjs`'s, with no command turn, is a `LOWER BOUND`.
 - A turn that holds two runs' markers is split at the earlier run's last marker in it.
 - Turns between two stretches that hold no marker, such as chat after a run ended, belong to neither run. The `Window` line counts the turns inside it that are not this run's.
-- The collection `end-run.mjs` records for a run discarded or ended from another run's session claims none of that session's turns.
+- The collection `end-run.mjs` records for a run discarded or ended from another run's session claims none of that session's turns. In a chat where no other run's marker comes before it, such as one opened with `/new` only to close the run out, it opens a stretch like a dispatch's.
 
 On the interactive route the run's end step runs inside the conductor's last turn, so that turn is still open and the figure is marked `PROVISIONAL`. Once the session has moved on, collect it again for the exact figure:
 

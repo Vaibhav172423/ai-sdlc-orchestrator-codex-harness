@@ -99,8 +99,8 @@ test("the discard step's collection claims no turn of the session that discarded
     assert.deepEqual(discarded.thread_ids, [T2]);
     assert.deepEqual(inputOf(discarded), [7000]);
     assert.deepEqual(
-      discarded.excluded_threads.map((e) => [e.thread_id, e.conductor_turns_left_out]),
-      [[T1, false]],
+      discarded.excluded_threads,
+      [{ thread_id: T1, reason: "it holds only an end-of-run collection for this run, after another run's marker", conductor_turns_left_out: false }],
       "a collection run from another session drops none of this run's turns",
     );
     assert.equal(discarded.cost_complete, true);
@@ -111,6 +111,41 @@ test("the discard step's collection claims no turn of the session that discarded
     const legacy = measureDriverUsage({ runDir: OLD, policy: POLICY, codexHome: s.home });
     assert.equal(legacy.ok, false, "with no run.json and only that collection, nothing is this run's");
     assert.equal(legacy.code, "no_threads");
+  } finally {
+    s.done();
+  }
+});
+
+test("a chat used only to close the run out holds this run's turns: left out with run.json, a lower bound without it", () => {
+  const s = sandbox("r1");
+  try {
+    const [run] = s.runs;
+    const a = new SyntheticRollout({ threadId: T1, originator: "codex-tui" });
+    const a1 = a.turn({ text: "$mmo-codex:brownfield", responses: [{ usage: u(1000) }] });
+    const a2 = a.turn({ text: "approve", responses: [{ usage: u(2000) }] });
+    a.write(s.home);
+    // /new without --resume: answer the last gate, then end the run from that chat.
+    const b = new SyntheticRollout({ threadId: T2, originator: "codex-tui", start: "2026-10-13T11:00:00.000Z" });
+    b.turn({ text: "where was run r1? approve the last gate", responses: [{ usage: u(300_000) }, { usage: u(300_000) }] });
+    const b2 = b.turn({ text: "close it out", responses: [{ usage: u(200_000) }] });
+    b.write(s.home);
+    writeFileSync(join(run, "run.json"), JSON.stringify({ route: "interactive", starts: [{ codex_thread_id: T1 }] }));
+    writeJsonl(join(run, "driver-session.jsonl"), [marker(T1, inside(a1), "start_run"), marker(T1, inside(a2)), marker(T2, inside(b2), "collect_driver_usage")]);
+
+    const rep = measure(s, run);
+    assert.deepEqual(rep.thread_ids, [T1]);
+    assert.deepEqual(rep.excluded_threads, [{ thread_id: T2, reason: "run.json records no start of this run in it", conductor_turns_left_out: true }]);
+    assert.equal(rep.cost_complete, false);
+    assert.match(rep.cost_source, /INCOMPLETE: this run's turns in 1 conductor thread\(s\) left out/);
+    const cap = driverSpendForCap(run, POLICY, { codexHome: s.home });
+    assert.deepEqual(cap.not_counted, ["this run's turns in 1 conductor thread(s) run.json records no start of this run in"]);
+
+    rmSync(join(run, "run.json"));
+    const legacy = measure(s, run);
+    assert.deepEqual(legacy.thread_ids, [T1, T2]);
+    assert.deepEqual(inputOf(legacy), [1000, 2000, 200_000], "the collection's turn is this run's");
+    assert.equal(legacy.window.lower_bound, true, "the chat's turns before it may be this run's too");
+    assert.match(legacy.cost_source, /LOWER BOUND/);
   } finally {
     s.done();
   }
