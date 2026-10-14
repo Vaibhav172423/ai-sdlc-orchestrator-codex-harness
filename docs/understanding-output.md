@@ -79,6 +79,7 @@ Several runs can share one codex thread: a second `$mmo-codex:*` command in the 
 - A turn that holds two runs' markers is split at the earlier run's last marker in it.
 - Turns between two stretches that hold no marker, such as chat after a run ended, belong to neither run. The `Window` line counts the turns inside it that are not this run's.
 - The collection `end-run.mjs` records for a run discarded or ended from another run's session claims none of that session's turns. In a chat where no other run's marker comes before it, such as one opened with `/new` only to close the run out, it opens a stretch like a dispatch's.
+- The other runs are found in the `.sdlc/runs/` folder that holds this run, and in `.sdlc/runs/` at each working folder the session file records and every folder above it. That covers every run `start-run.mjs` starts in the chat: it puts a greenfield run at the chat's folder and a brownfield run at its git toplevel. A run started with a `--project-root` off that path, or after the shell left the chat's folder, is not found, and its turns on the thread can be booked to this run as well.
 
 On the interactive route the run's end step runs inside the conductor's last turn, so that turn is still open and the figure is marked `PROVISIONAL`. Once the session has moved on, collect it again for the exact figure:
 

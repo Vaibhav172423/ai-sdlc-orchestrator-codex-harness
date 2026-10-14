@@ -28,8 +28,10 @@ export class SyntheticRollout {
     start = "2026-10-13T10:00:00.000Z",
     records = true,
     planType = null,
+    cwd = null,
   }) {
     this.threadId = threadId;
+    this.cwd = cwd;
     this.records = records;
     this.planType = planType;
     this.clock = Date.parse(start);
@@ -40,7 +42,7 @@ export class SyntheticRollout {
     this.responseCount = 0;
     this.push({
       type: "session_meta",
-      payload: { id: threadId, session_id: threadId, originator, source, cli_version: "0.160.1", model_provider: "openai" },
+      payload: { id: threadId, session_id: threadId, originator, source, cli_version: "0.160.1", model_provider: "openai", ...(cwd ? { cwd } : {}) },
     }, 0);
   }
 
@@ -64,14 +66,15 @@ export class SyntheticRollout {
 
   /**
    * responses: [{ usage, compaction?, repeat? }]. end: "complete" | "aborted" | null (still running).
-   * resetBefore overwrites the token_count total with zeros before the turn's responses.
+   * resetBefore overwrites the token_count total with zeros before the turn's responses. cwd is the
+   * turn_context's working folder (default: the session's).
    */
-  turn({ text = "continue", model = PIN, effort = "high", responses = [], end = "complete", resetBefore = false, gap = 1000, webSearches = 0 } = {}) {
+  turn({ text = "continue", model = PIN, effort = "high", responses = [], end = "complete", resetBefore = false, gap = 1000, webSearches = 0, cwd = this.cwd } = {}) {
     const turnId = `turn-${String(++this.turnCount).padStart(4, "0")}-${this.threadId.slice(0, 8)}`;
     const startedAt = this.push({ type: "event_msg", payload: { type: "task_started", turn_id: turnId, model_context_window: 258400 } }, gap);
     this.push({
       type: "turn_context",
-      payload: { turn_id: turnId, model, effort, collaboration_mode: { mode: "default", settings: { model, reasoning_effort: effort } } },
+      payload: { turn_id: turnId, ...(cwd ? { cwd } : {}), model, effort, collaboration_mode: { mode: "default", settings: { model, reasoning_effort: effort } } },
     });
     this.push({
       type: "event_msg",

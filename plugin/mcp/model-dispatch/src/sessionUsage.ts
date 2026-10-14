@@ -9,7 +9,7 @@
  * running totals.
  */
 
-import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, join, relative, resolve } from "node:path";
 import * as zlib from "node:zlib";
@@ -221,6 +221,8 @@ export interface Rollout {
   duplicate_records: number;
   token_count_repeats: number;
   token_count_resets: number;
+  /** session_meta's and every turn_context's working folder. */
+  cwds: string[];
 }
 
 const ROLLOUT_KEYS = [
@@ -293,6 +295,7 @@ export function parseRollout(text: string): Rollout {
   let torn = 0;
   let duplicates = 0;
   let current: string | null = null;
+  const cwds = new Set<string>();
 
   for (const line of text.split("\n")) {
     if (!line || !ROLLOUT_KEYS.some((k) => line.includes(k))) continue;
@@ -305,6 +308,7 @@ export function parseRollout(text: string): Rollout {
     }
     const p = j?.payload ?? {};
     const ts = str(j?.timestamp);
+    if ((j?.type === "session_meta" || j?.type === "turn_context") && str(p.cwd)) cwds.add(p.cwd);
     if (j?.type === "session_meta") {
       meta ??= {
         id: str(p.id),
@@ -405,6 +409,7 @@ export function parseRollout(text: string): Rollout {
     duplicate_records: duplicates,
     token_count_repeats: counts.repeats,
     token_count_resets: counts.resets,
+    cwds: [...cwds],
   };
 }
 
@@ -520,7 +525,7 @@ export interface SessionMarker {
   tool: string | null;
   policy: string | null;
   pid: number | null;
-  /** The run folder the marker came from, when it was read from another run's. */
+  /** The real path of the run folder the marker came from, when it was read from another run's. */
   run?: string;
 }
 
@@ -541,20 +546,48 @@ export function readSessionMarkers(runDir: string): SessionMarker[] {
     }));
 }
 
-/** Markers the other runs under the same `<root>/.sdlc/runs/` left; empty outside that layout. */
-export function otherRunMarkers(runDir: string): SessionMarker[] {
-  const own = resolve(runDir);
-  const runs = dirname(own);
-  if (basename(runs) !== "runs" || basename(dirname(runs)) !== ".sdlc") return [];
-  let entries;
+function realPath(path: string): string {
   try {
-    entries = readdirSync(runs, { withFileTypes: true });
+    return realpathSync(path);
   } catch {
-    return [];
+    return resolve(path);
   }
-  return entries
-    .filter((e) => e.isDirectory() && e.name !== basename(own))
-    .flatMap((e) => readSessionMarkers(join(runs, e.name)).map((m) => ({ ...m, run: e.name })));
+}
+
+/**
+ * Markers the other runs left, read from every run folder in the run's own
+ * `.sdlc/runs/` and in `<folder>/.sdlc/runs/` for each of `folders` and each
+ * folder above it. start-run.mjs puts a run at the session's working folder
+ * or at its git toplevel, so the session file's working folders reach every
+ * run started in that chat.
+ */
+export function otherRunMarkers(runDir: string, folders: string[] = []): SessionMarker[] {
+  const own = realPath(runDir);
+  const roots = new Set<string>();
+  const parent = dirname(resolve(runDir));
+  if (basename(parent) === "runs" && basename(dirname(parent)) === ".sdlc") roots.add(realPath(parent));
+  for (const folder of folders) {
+    for (let d = resolve(folder); ; d = dirname(d)) {
+      const runs = join(d, ".sdlc", "runs");
+      if (existsSync(runs)) roots.add(realPath(runs));
+      if (dirname(d) === d) break;
+    }
+  }
+  const out: SessionMarker[] = [];
+  for (const runs of roots) {
+    let entries;
+    try {
+      entries = readdirSync(runs, { withFileTypes: true });
+    } catch {
+      continue;
+    }
+    for (const e of entries) {
+      const dir = join(runs, e.name);
+      if (!e.isDirectory() || dir === own) continue;
+      out.push(...readSessionMarkers(dir).map((m) => ({ ...m, run: dir })));
+    }
+  }
+  return out;
 }
 
 /** One `codex exec` process, read from driver-events.jsonl (v1 lines, or a legacy bare stream). */
@@ -1833,8 +1866,21 @@ export function measureDriverUsage(opts: MeasureOptions): MeasureResult {
   let excluded: ExcludedThread[] = [];
   const workers = nestedDispatchThreads(opts.runDir);
   const conductors = route === "interactive" ? recordedConductorThreads(opts.runDir) : new Set<string>();
-  const ownRun = basename(resolve(opts.runDir));
-  const otherMarkers = route === "interactive" ? otherRunMarkers(opts.runDir) : [];
+  const ownRun = realPath(opts.runDir);
+  const rollouts = new Map<string, LoadedRollout>();
+  const rolloutOf = (id: string): LoadedRollout => {
+    let loaded = rollouts.get(id);
+    if (!loaded) rollouts.set(id, (loaded = loadRollout(codexHome, id)));
+    return loaded;
+  };
+  const chatFolders = () =>
+    [...new Set([...markers.map((m) => m.thread_id), ...(opts.threadIds ?? [])])]
+      .filter((id) => isThreadId(id) && !workers.has(id))
+      .flatMap((id) => {
+        const loaded = rolloutOf(id);
+        return loaded.status === "found" ? loaded.rollout.cwds : [];
+      });
+  const otherMarkers = route === "interactive" ? otherRunMarkers(opts.runDir, chatFolders()) : [];
   const ownOn = (id: string) => markers.filter((m) => m.thread_id === id);
   const othersOn = (id: string) => otherMarkers.filter((m) => m.thread_id === id);
   const exclude = (id: string, reason: string, leftOut = false) => {
@@ -1876,7 +1922,7 @@ export function measureDriverUsage(opts: MeasureOptions): MeasureResult {
   let byOrder = false;
 
   for (const threadId of threadIds) {
-    const loaded = loadRollout(codexHome, threadId);
+    const loaded = rolloutOf(threadId);
     const info: DriverThreadInfo = {
       thread_id: threadId,
       rollout: loaded.status,

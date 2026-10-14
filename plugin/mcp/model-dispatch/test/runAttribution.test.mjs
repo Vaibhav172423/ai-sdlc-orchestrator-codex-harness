@@ -151,6 +151,38 @@ test("a chat used only to close the run out holds this run's turns: left out wit
   }
 });
 
+test("a run under another .sdlc/runs on the chat's folder path is found, so neither run books the other's turns", () => {
+  const root = mkdtempSync(join(tmpdir(), "mmo-attrib-"));
+  try {
+    const home = join(root, "home");
+    mkdirSync(home, { recursive: true });
+    const chat = join(root, "repo", "app");
+    // start-run.mjs puts a brownfield run at the git toplevel and a greenfield run at the chat's folder.
+    const A = join(root, "repo", ".sdlc", "runs", "run-a");
+    const B = join(chat, ".sdlc", "runs", "run-b");
+    mkdirSync(A, { recursive: true });
+    mkdirSync(B, { recursive: true });
+    const r = new SyntheticRollout({ threadId: T1, originator: "codex-tui", cwd: chat });
+    const a1 = r.turn({ text: "$mmo-codex:brownfield", responses: [{ usage: u(1000) }] });
+    const b1 = r.turn({ text: "$mmo-codex:greenfield", responses: [{ usage: u(50_000) }] });
+    const a2 = r.turn({ text: "resume run-a", responses: [{ usage: u(2000) }] });
+    const b2 = r.turn({ text: "resume run-b", responses: [{ usage: u(60_000) }] });
+    r.write(home);
+    writeJsonl(join(A, "driver-session.jsonl"), [marker(T1, inside(a1), "start_run"), marker(T1, inside(a2), "start_run")]);
+    writeJsonl(join(B, "driver-session.jsonl"), [marker(T1, inside(b1), "start_run"), marker(T1, inside(b2), "start_run")]);
+
+    const a = measureDriverUsage({ runDir: A, policy: POLICY, codexHome: home }).report;
+    const b = measureDriverUsage({ runDir: B, policy: POLICY, codexHome: home }).report;
+    assert.deepEqual(inputOf(a), [1000, 2000]);
+    assert.equal(a.window.left_out_turns, 1);
+    assert.deepEqual(inputOf(b), [50_000, 60_000]);
+    assert.equal(b.window.left_out_turns, 1);
+    assert.equal(driverSpendForCap(A, POLICY, { codexHome: home }).usd, a.cost_usd_modeled, "the cap books the same turns");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("a turn that ends one run and resumes another is split at the first run's last marker, the same before and after", () => {
   const s = sandbox("run-a", "run-n");
   try {
