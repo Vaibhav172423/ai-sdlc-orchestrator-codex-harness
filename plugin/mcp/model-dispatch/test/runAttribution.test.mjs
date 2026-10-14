@@ -1,5 +1,6 @@
 // Interactive conductor cost when several runs share one codex thread: every
-// response the session file records is booked by at most one run.
+// response the session file records is booked by at most one run, and a
+// thread whose turns the figure leaves out marks it incomplete.
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
@@ -96,7 +97,11 @@ test("the discard step's collection claims no turn of the session that discarded
     const discarded = measure(s, OLD);
     assert.deepEqual(discarded.thread_ids, [T2]);
     assert.deepEqual(inputOf(discarded), [7000]);
-    assert.deepEqual(discarded.excluded_threads.map((e) => e.thread_id), [T1]);
+    assert.deepEqual(
+      discarded.excluded_threads.map((e) => [e.thread_id, e.conductor_turns_left_out]),
+      [[T1, false]],
+      "a collection run from another session drops none of this run's turns",
+    );
     assert.equal(discarded.cost_complete, true);
     assert.deepEqual(inputOf(measure(s, NEW)), [1000, 30_000, 5000]);
 
@@ -198,6 +203,41 @@ test("runs interleaved on one thread never book the same response twice", () => 
     }
     for (const turn of t) assert.ok((booked.get(turn.id) ?? 0) <= 700, `${turn.id} booked ${booked.get(turn.id)} of 700`);
     assert.equal(reps.reduce((n, rep) => n + rep.tokens.input_tokens, 0), 3500, "every response of the five turns, once");
+  } finally {
+    s.done();
+  }
+});
+
+test("conductor turns in a thread run.json never started are left out, and the figure and the cap say so", () => {
+  const s = sandbox("r1");
+  try {
+    const [run] = s.runs;
+    const a = new SyntheticRollout({ threadId: T1, originator: "codex-tui" });
+    const a1 = a.turn({ text: "$mmo-codex:brownfield", responses: [{ usage: u(1000) }] });
+    a.write(s.home);
+    const b = new SyntheticRollout({ threadId: T2, originator: "codex-tui", start: "2026-10-13T11:00:00.000Z" });
+    const b1 = b.turn({ text: "carry on with the run", responses: [{ usage: u(400_000) }] });
+    b.write(s.home);
+    writeFileSync(join(run, "run.json"), JSON.stringify({ route: "interactive", starts: [{ codex_thread_id: T1 }] }));
+    writeJsonl(join(run, "driver-session.jsonl"), [marker(T1, inside(a1), "start_run"), marker(T2, inside(b1))]);
+
+    const rep = measure(s, run);
+    assert.deepEqual(rep.thread_ids, [T1]);
+    assert.deepEqual(rep.excluded_threads, [{ thread_id: T2, reason: "run.json records no start of this run in it", conductor_turns_left_out: true }]);
+    assert.equal(rep.cost_complete, false);
+    assert.match(rep.cost_source, /INCOMPLETE: this run's turns in 1 conductor thread\(s\) left out, as run\.json records no start of this run there/);
+    const cap = driverSpendForCap(run, POLICY, { codexHome: s.home });
+    assert.equal(cap.usd, r6(cost(u(1000))));
+    assert.deepEqual(cap.not_counted, ["this run's turns in 1 conductor thread(s) run.json records no start of this run in"]);
+
+    const named = measureDriverUsage({ runDir: run, policy: POLICY, codexHome: s.home, threadIds: [T2] }).report;
+    assert.deepEqual(named.thread_ids, [T1, T2], "--thread counts it");
+    assert.deepEqual([named.excluded_threads, named.cost_complete], [[], true]);
+
+    writeJsonl(join(run, "driver-session.jsonl"), [marker(T2, inside(b1))]);
+    const only = driverSpendForCap(run, POLICY, { codexHome: s.home });
+    assert.deepEqual([only.source, only.unmeasured], ["none", true], "with nothing else to book, the cap reports the conductor unmeasured");
+    assert.match(only.note, /run\.json records no start of this run in/);
   } finally {
     s.done();
   }

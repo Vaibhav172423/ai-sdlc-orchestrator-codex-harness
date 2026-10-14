@@ -1634,6 +1634,13 @@ export interface DriverThreadInfo {
   window: DriverWindow | null;
 }
 
+export interface ExcludedThread {
+  thread_id: string;
+  reason: string;
+  /** This run's conductor turns are in it, so the figure is missing them. */
+  conductor_turns_left_out: boolean;
+}
+
 export interface DriverUsageReport {
   schema_version: 1;
   route: DriverRoute;
@@ -1657,8 +1664,8 @@ export interface DriverUsageReport {
   cost_complete: boolean;
   unpriced: UnpricedEntry[];
   cross_check: CrossCheck | null;
-  /** Threads a marker or the exec stream named that are not the conductor's, and why. */
-  excluded_threads: { thread_id: string; reason: string }[];
+  /** Threads a marker or the exec stream named that the figure leaves out, and why. */
+  excluded_threads: ExcludedThread[];
   /** Turns whose summed input crossed a tier threshold with no per-response sizes, billed at the standard card. */
   tier_unverified_turns: number;
   price_list_verified: string;
@@ -1682,7 +1689,7 @@ export interface MeasureOptions {
 
 export type MeasureResult =
   | { ok: true; report: DriverUsageReport }
-  | { ok: false; code: "no_threads" | "no_rollout"; message: string; unreadable?: string[] };
+  | { ok: false; code: "no_threads" | "no_rollout"; message: string; unreadable?: string[]; excluded?: ExcludedThread[] };
 
 interface ThreadResult {
   info: DriverThreadInfo;
@@ -1824,15 +1831,15 @@ export function measureDriverUsage(opts: MeasureOptions): MeasureResult {
   const route: DriverRoute = opts.route ?? (invocations.length > 0 ? "headless" : "interactive");
 
   const threadIds: string[] = [];
-  const excluded: { thread_id: string; reason: string }[] = [];
+  let excluded: ExcludedThread[] = [];
   const workers = nestedDispatchThreads(opts.runDir);
   const conductors = route === "interactive" ? recordedConductorThreads(opts.runDir) : new Set<string>();
   const ownRun = basename(resolve(opts.runDir));
   const otherMarkers = route === "interactive" ? otherRunMarkers(opts.runDir) : [];
   const ownOn = (id: string) => markers.filter((m) => m.thread_id === id);
   const othersOn = (id: string) => otherMarkers.filter((m) => m.thread_id === id);
-  const exclude = (id: string, reason: string) => {
-    if (!excluded.some((e) => e.thread_id === id)) excluded.push({ thread_id: id, reason });
+  const exclude = (id: string, reason: string, leftOut = false) => {
+    if (!excluded.some((e) => e.thread_id === id)) excluded.push({ thread_id: id, reason, conductor_turns_left_out: leftOut });
   };
   const addThread = (id: unknown, recorded: boolean) => {
     if (!isThreadId(id) || threadIds.includes(id)) return;
@@ -1841,7 +1848,7 @@ export function measureDriverUsage(opts: MeasureOptions): MeasureResult {
       if (!claimsThread(ownOn(id), othersOn(id), ownRun)) {
         return exclude(id, "it holds only an end-of-run collection for this run, after another run's marker or before any of this run's");
       }
-      if (conductors.size > 0 && !conductors.has(id)) return exclude(id, "run.json records no start of this run in it");
+      if (conductors.size > 0 && !conductors.has(id)) return exclude(id, "run.json records no start of this run in it", true);
     }
     threadIds.push(id);
   };
@@ -1851,11 +1858,13 @@ export function measureDriverUsage(opts: MeasureOptions): MeasureResult {
   if (route === "headless") invocations.forEach((i) => addThread(i.thread_id, true));
   else markers.forEach((m) => addThread(m.thread_id, true));
   (opts.threadIds ?? []).forEach((id) => addThread(id, false));
+  excluded = excluded.filter((e) => !threadIds.includes(e.thread_id));
   if (threadIds.length === 0) {
     const skipped = excluded.length ? ` (left out as not the conductor's: ${excluded.map((e) => `${e.thread_id}, ${e.reason}`).join("; ")})` : "";
     return {
       ok: false,
       code: "no_threads",
+      excluded,
       message:
         route === "headless"
           ? `no codex thread id in ${join(opts.runDir, DRIVER_EVENTS_FILE)}${skipped}; pass --thread=<id>`
@@ -2005,6 +2014,10 @@ export function measureDriverUsage(opts: MeasureOptions): MeasureResult {
   if (window?.provisional && route === "interactive") costSource += "; PROVISIONAL: the closing turn was still running";
   if (window?.lower_bound) costSource += "; LOWER BOUND: the window opens at the first dispatch turn";
   if (unread.length > 0) costSource += `; INCOMPLETE: no readable session file for ${unread.length} thread(s)`;
+  const leftOut = excluded.filter((e) => e.conductor_turns_left_out);
+  if (leftOut.length > 0) {
+    costSource += `; INCOMPLETE: this run's turns in ${leftOut.length} conductor thread(s) left out, as run.json records no start of this run there`;
+  }
   if (unpriced.length > 0) costSource += "; INCOMPLETE: unpriced tokens excluded";
   const unreported = results
     .filter((r) => r.info.booked_from === "exec-stream")
@@ -2043,7 +2056,7 @@ export function measureDriverUsage(opts: MeasureOptions): MeasureResult {
         web_search_calls: webSearches,
       },
       cost_usd_modeled: round6(results.reduce((s, r) => s + r.cost_usd, 0)),
-      cost_complete: unread.length === 0 && webSearches === 0 && results.every((r) => r.cost_complete),
+      cost_complete: unread.length === 0 && leftOut.length === 0 && webSearches === 0 && results.every((r) => r.cost_complete),
       unpriced,
       cross_check: crossCheck,
       excluded_threads: excluded,
@@ -2104,7 +2117,13 @@ function notCounted(report: any): string[] {
   if (unread > 0) out.push(`${unread} thread(s) with no readable session file`);
   const missing = report?.cross_check?.missing_invocations;
   if (typeof missing === "number" && missing > 0) out.push(`${missing} invocation(s) missing from the session file`);
+  const leftOut = leftOutThreads(report?.excluded_threads);
+  if (leftOut > 0) out.push(`this run's turns in ${leftOut} conductor thread(s) run.json records no start of this run in`);
   return out;
+}
+
+function leftOutThreads(excluded: unknown): number {
+  return Array.isArray(excluded) ? excluded.filter((e) => e?.conductor_turns_left_out === true).length : 0;
 }
 
 /**
@@ -2158,6 +2177,11 @@ export function driverSpendForCap(runDir: string, policy: Policy, opts: DriverSp
   // The collector's messages name its own flags; this note ends up in a refusal the conductor prints.
   if (!measured.ok) {
     if (measured.code === "no_threads") {
+      const leftOut = leftOutThreads(measured.excluded);
+      if (leftOut > 0) {
+        const note = `this run's turns are in ${leftOut} conductor thread(s) run.json records no start of this run in`;
+        return { usd: 0, source: "none", note, not_counted: [], unmeasured: true };
+      }
       return { usd: 0, source: "none", note: "no conductor thread recorded in this run folder", not_counted: [], unmeasured: false };
     }
     const note = measured.unreadable?.length

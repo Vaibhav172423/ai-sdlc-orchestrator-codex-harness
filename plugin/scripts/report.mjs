@@ -367,6 +367,15 @@ function verificationOf(costSource, verifiedFlag, cc) {
   return { verified: verified === true, qualifiers };
 }
 
+/** driver-usage.json excluded_threads, as the report shows them. */
+function excludedThreads(v) {
+  return (Array.isArray(v) ? v : [])
+    .filter((e) => e && str(e.thread_id))
+    .map((e) => ({ thread_id: str(e.thread_id), reason: str(e.reason) ?? null, conductor_turns_left_out: e.conductor_turns_left_out === true }));
+}
+
+const excludedText = (list) => list.map((e) => `${e.thread_id}${e.reason ? ` (${e.reason})` : ""}`).join("; ");
+
 /** The threads a driver-usage.json priced from their session file: "all", or a Set. */
 function sessionBookedThreads(usage) {
   const source = str(usage.source);
@@ -429,7 +438,7 @@ function driverSummary(run) {
     m: null, input_tokens: null, cached_input_tokens: null, output_tokens: null,
     thread_ids: strings(d.thread_ids).length ? strings(d.thread_ids) : rowThreads,
     window: null, unpriced: [], cross_check: d.driver_cross_check ?? null, flags: {},
-    token_check: null, tier_unverified_turns: 0, stale_collection: staleUsage,
+    token_check: null, tier_unverified_turns: 0, stale_collection: staleUsage, excluded_threads: [],
   };
   const floorFacts = [];
   const ceilingFacts = [];
@@ -482,11 +491,16 @@ function driverSummary(run) {
       cross_check: crossCheck,
       token_check: tokenCheck(crossCheck),
       tier_unverified_turns: Array.isArray(usage.turns) ? usage.turns.filter((t) => t?.price_tier === "unverified").length : num(usage.tier_unverified_turns),
+      excluded_threads: excludedThreads(usage.excluded_threads),
     };
     if (staleUsage) floorFacts.push("driver-usage.json was collected before the run's last recorded activity; run collect-driver-usage.mjs again for the later turns");
     const threads = Array.isArray(usage.threads) ? usage.threads : [];
     const unread = threads.filter((t) => t && t.booked_from == null && t.rollout !== "found").map((t) => str(t.thread_id)).filter(Boolean);
     if (unread.length) floorFacts.push(`${plural(unread.length, "conductor thread")} had no readable session file (${unread.join(", ")})`);
+    const leftOut = driver.excluded_threads.filter((e) => e.conductor_turns_left_out).map((e) => e.thread_id);
+    if (leftOut.length) {
+      floorFacts.push(`This run's turns in ${plural(leftOut.length, "conductor thread")} (${leftOut.join(", ")}) are left out, as run.json records no start of this run there`);
+    }
     const searches = num(usage.tokens?.web_search_calls);
     if (searches > 0) floorFacts.push(`${plural(searches, "hosted web search call")} ${searches === 1 ? "is" : "are"} billed per call and not priced`);
     const w = usage.window && typeof usage.window === "object" ? usage.window : {};
@@ -971,6 +985,7 @@ function renderText(r) {
     if (dr.cached_input_tokens > 0) figure("Cached input", fmtCompact(dr.cached_input_tokens));
     figure("Modeled cost", fmtUSD(dr.cost_usd));
     if (dr.unpriced.length) field("Unpriced", dr.unpriced.join(", "));
+    if (dr.excluded_threads.length) wrappedField("Left out", excludedText(dr.excluded_threads));
     const flags = flagsText(dr.flags);
     if (flags) field("Flags", flags);
     const cc = dr.cross_check ? crossCheckText(dr.cross_check) : null;
@@ -1127,6 +1142,9 @@ function renderMarkdown(r) {
     if (dr.turns_incomplete > 0) bullets.push(`Incomplete turns: ${incompleteNote(dr)}`);
     if (dr.cached_input_tokens > 0) bullets.push(`Cached input: ${fmtCompact(dr.cached_input_tokens)}`);
     if (dr.unpriced.length) bullets.push(`Unpriced: ${dr.unpriced.join(", ")}`);
+    if (dr.excluded_threads.length) {
+      bullets.push(`Left out: ${dr.excluded_threads.map((e) => `\`${e.thread_id}\`${e.reason ? ` (${e.reason})` : ""}`).join("; ")}`);
+    }
     const flags = flagsText(dr.flags);
     if (flags) bullets.push(`Flags: ${flags}`);
     const cc = dr.cross_check ? crossCheckText(dr.cross_check) : null;
