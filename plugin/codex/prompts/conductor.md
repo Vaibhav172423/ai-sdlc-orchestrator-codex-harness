@@ -213,6 +213,11 @@ playbook; the tools that run it are not yours to provide. When a step needs a to
 lacks, write `{"reason": "<the missing tool>", "needs": "<how the person installs it>"}` to
 `{{OUTPUT_DIR}}/stop.json` and end your turn.
 
+Keep every scratch file inside `{{OUTPUT_DIR}}`: tool output you redirect (an `npm audit --json`
+report, a log, a test listing), intermediate JSON, anything that is not a shipped file. Never write
+to `/tmp`, `$TMPDIR` or any other folder outside the project. Under a brownfield write contract the
+guard refuses a write outside the repository, and a refused write stops the run.
+
 ## Stopping a run
 
 The driver reads why your turn ended from files, not from your prose: an `aborted` gate line, a
