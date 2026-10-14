@@ -2158,7 +2158,10 @@ function runningInvocationSpend(runDir: string, policy: Policy, rows: any[], opt
       out.counted.add(r.invocation);
     }
   }
-  const pending = invs.filter((i) => (i.invocation as number) > reportedUpTo(i.thread_id as string));
+  // Read live only while an invocation is still running; then it covers every invocation after the last
+  // reported one. With none running, an ended invocation with no complete row is an incomplete turn.
+  const unreported = invs.filter((i) => (i.invocation as number) > reportedUpTo(i.thread_id as string));
+  const pending = unreported.some((i) => !i.ended_at) ? unreported : [];
   if (pending.length === 0) return out;
   out.invocations = pending.map((i) => i.invocation as number);
   const label = `invocation(s) ${out.invocations.join(", ")}`;
