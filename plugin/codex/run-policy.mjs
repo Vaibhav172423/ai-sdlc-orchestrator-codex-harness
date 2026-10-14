@@ -221,7 +221,8 @@ export function readRecordedPolicy(runDir, { runId = null, warn = stderrWarn } =
 
 /**
  * A resumed run keeps the policy it started on. Refuses a different name,
- * file or driver pin; warns when the same file's bytes changed.
+ * a different file (one that moved and changed), or a different driver pin;
+ * warns when the same file's bytes changed or the same bytes moved.
  */
 export function assertResumePolicy({ recorded, run, runDir, warn = stderrWarn }) {
   if (!recorded) {
@@ -243,7 +244,13 @@ export function assertResumePolicy({ recorded, run, runDir, warn = stderrWarn })
         `Resume with the same --policy and the same routing-policy.yaml, or start a new run.${manifestHint}`,
     );
   if (recorded.name && recorded.name !== run.name) throw refuse("the policy name differs");
-  if (recorded.path && recorded.path !== run.path) throw refuse("the policy file differs");
+  // A plugin update or a second checkout moves the file, so only a move that also changed its
+  // bytes is a different policy.
+  const moved = recorded.path && recorded.path !== run.path;
+  if (moved && !(recorded.sha256 && recorded.sha256 === run.sha256)) throw refuse("the policy file differs");
+  if (moved) {
+    warn(`run: --resume: the policy file moved (${recorded.path} then, ${run.path} now) with the same contents.`);
+  }
   const pin = run.driver.pin;
   if (recorded.pin && (recorded.pin.model !== pin.model || (recorded.pin.effort && recorded.pin.effort !== pin.effort))) {
     throw refuse(

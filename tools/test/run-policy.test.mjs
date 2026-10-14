@@ -397,8 +397,20 @@ test("assertResumePolicy accepts the same policy and refuses a different name, f
         return true;
       });
     refused({ ...same, name: "gpt-seat-plus-flash" }, /--resume refused: the policy name differs/);
-    refused({ ...same, path: "/elsewhere/gpt-plus-flash.yaml" }, /the policy file differs/);
+    refused({ ...same, path: "/elsewhere/gpt-plus-flash.yaml", sha256: "0".repeat(64) }, /the policy file differs/);
+    refused({ ...same, path: "/elsewhere/gpt-plus-flash.yaml", sha256: null }, /the policy file differs/);
     refused({ ...same, pin: { model: "gpt-6", effort: "high" } }, /the driver pin differs/);
+  });
+});
+
+test("assertResumePolicy accepts the same bytes at a new path, as after a plugin update, with a warning", () => {
+  within({}, (root) => {
+    const run = runFor(root, "gpt-plus-flash");
+    const warnings = [];
+    const recorded = { name: run.name, path: "/old/cache/0.2.0/config/policies/gpt-plus-flash.yaml", sha256: run.sha256, pin: PIN };
+    assert.doesNotThrow(() => assertResumePolicy({ recorded, run, warn: (m) => warnings.push(m) }));
+    assert.equal(warnings.length, 1);
+    assert.match(warnings[0], /the policy file moved .* with the same contents/);
   });
 });
 
