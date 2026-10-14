@@ -110,8 +110,8 @@ A PreToolUse hook on `apply_patch` and `Bash`. The script only reads the call an
 | # | Rule | Answer |
 |---|---|---|
 | 1 | The contract's bytes no longer match a live lock, two locks are live, or a frozen contract's lock is gone | Refuse every write in the project |
-| 2 | A binding contract, and the path is the contract, or the run's lock, frozen copy, `skills/`, `provenance.json` or `backups/`; a shell word that may expand to one of them (glob, braces, quotes, a variable) | Refuse (also for `rm`, `unlink` and `mv` sources, under a live lock) |
-| 3 | `.env`, `.env.*`, `.mcp.json`, `.codex/config.toml`, `.codex/auth.json`, `.git/**`, `.agents/**` at any depth, any case; `.git` and `.agents` themselves too | Refuse, except creating a missing `.env`, `.env.example` or `.env.test` when no contract binds, by an `apply_patch` Add File or a shell write to an absolute path with no variable, glob or command substitution in it (quoted or not) |
+| 2 | A binding contract, and the path is the contract, or the run's lock, frozen copy, `skills/`, `provenance.json` or `backups/`; a shell word that may expand to one of them (glob, braces, quotes, a variable) | Refuse (also for `rm`, `unlink`, `git rm` and `mv` sources, under a live lock) |
+| 3 | `.env`, `.env.*`, `.mcp.json`, `.codex/config.toml`, `.codex/auth.json`, `.git/**`, `.agents/**` at any depth, any case; `.git` and `.agents` themselves too | Refuse, except creating a missing `.env`, `.env.example` or `.env.test` when no contract binds, by an `apply_patch` Add File or a shell write to an absolute path with no variable, glob or command substitution in it (quoted or not). A shell removal (`rm`, `unlink`, `git rm`, an `mv` source) of such a path or of the `.codex` folder is refused too, judged by the name it removes, not where a link of that name points |
 | 4 | No binding contract | Allow |
 | 5 | The path is inside `.sdlc/runs/<run_id>/` | Allow |
 | 6 | The contract's `off_limits`, any case | Refuse (warn and allow under `strict: false`) |

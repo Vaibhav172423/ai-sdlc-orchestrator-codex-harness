@@ -5,7 +5,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -81,6 +81,21 @@ const CASES = [
   ["echo x &> .env", "deny", "deny", ".env"],
   ["echo x >! .env", "deny", "deny", ".env"],
   ["echo x >| src/a.ts", "allow", "allow"],
+  // A shell removal meets the always-off-limits list, as an apply_patch Delete File does.
+  ["rm -rf .git", "deny", "deny", ".git"],
+  ["rm .env", "deny", "deny", ".env"],
+  ["rm -f .env.test", "deny", "deny", ".env.test"],
+  ["rm -f .env*", "deny", "deny", ".env*"],
+  ["rm -rf .codex", "deny", "deny", ".codex"],
+  ["rm -rf .agents/skills", "deny", "deny", ".agents/skills"],
+  ["rm -rf src/.git", "deny", "deny", "src/.git"],
+  ["unlink .mcp.json", "deny", "deny", ".mcp.json"],
+  ["git rm -q .env", "deny", "deny", ".env"],
+  ["mv .env src/env.bak", "deny", "deny", ".env"],
+  ["rm -rf node_modules dist/* .next", "allow", "allow"],
+  ["rm -f *.log src/*", "allow", "allow"],
+  ["rm .gitignore && rm -rf .github/old", "allow", "allow"],
+  ["git rm --cached .env", "allow", "allow"],
 ];
 
 test("the guard judges real conductor commands by what the shell writes, not by text in quotes or here-documents", () => {
@@ -169,4 +184,28 @@ test("scan: only an operator outside quotes redirects, and a glued one stays a n
   assert.deepEqual(narrow("echo x>|.env"), [".env"]);
   assert.deepEqual(narrow('echo "a>b">c'), ["c"]);
   assert.deepEqual(narrow("echo 'a>b'"), []);
+});
+
+test("a shell removal and an apply_patch delete of the same always-off-limits file get the same answer", () => {
+  const dir = project({ live: false });
+  try {
+    for (const path of [".env", ".git", ".git/index.lock", ".codex/config.toml", ".agents/x.md", "pkg/.env.local", "src/a.ts"]) {
+      const patch = decideCall({ cwd: dir, tool_name: "apply_patch", tool_input: { command: `*** Begin Patch\n*** Delete File: ${path}\n*** End Patch` } });
+      const shell = decideCall({ cwd: dir, ...bash(`rm -f ${path}`) });
+      assert.equal(shell.decision, patch.decision, path);
+      if (shell.decision === "deny") assert.match(shell.reason, /always-off-limits pattern .*never written or removed by a tool call/);
+    }
+  } finally { cleanup(dir); }
+});
+
+test("a removal is judged by the name it removes: a link to .env goes, a path through a link into .git does not", () => {
+  const dir = project({ live: true });
+  try {
+    symlinkSync(join(dir, ".env"), join(dir, "src", "env-link"));
+    symlinkSync(join(dir, ".git"), join(dir, "src", "gitlink"));
+    assert.equal(decideCall({ cwd: dir, ...bash("rm src/env-link") }).decision, "allow");
+    const r = decideCall({ cwd: dir, ...bash("rm -f src/gitlink/config") });
+    assert.equal(r.decision, "deny");
+    assert.equal(r.record.row.run_id, "r1", "a refusal under a live contract is logged with its run");
+  } finally { cleanup(dir); }
 });

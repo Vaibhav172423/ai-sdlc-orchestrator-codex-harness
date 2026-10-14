@@ -445,7 +445,7 @@ function hardRefusal(path, binds, mayCreate) {
 
 const hardMessage = (target, hit, runId) =>
   `${target} matches always-off-limits pattern "${hit}"${runId ? ` (run ${runId})` : ""}: secrets, Codex's own config, ` +
-  `git's store and the conductor's skills are never written by a tool call, with or without a contract. ` +
+  `git's store and the conductor's skills are never written or removed by a tool call, with or without a contract. ` +
   `Stop and tell the person which file and why.`;
 
 /** Stands for any file of a folder copied in whole: no pattern names it, and every `*` or `**` takes it. */
@@ -599,7 +599,47 @@ function checkRemoval(target, cwd, sessionRoot, session) {
     }
     if (st.binds && insidePath(st.root, abs) !== null) bound.push({ ...statusOf(st), target, abs });
   }
+  const hard = hardRemoval(target, cwd);
+  if (hard) {
+    const st = candidates.find((s) => s.binds || s.live) ?? null;
+    return { deny: hardMessage(target, hard.hit, st ? statusOf(st).run_id : null), rule: hard.hit, state: st, root: hard.root ?? sessionRoot };
+  }
   return { bound };
+}
+
+/** Names a dot glob in a removal is tried as: each is, or holds, an always-off-limits file. */
+const HARD_NAMES = [".env", ".env.local", ".mcp.json", ".git", ".agents", ".codex"];
+
+/**
+ * The paths a removal word may name, for the always-off-limits list. A glob takes a dot name only when its own name
+ * starts with a dot, as the shell's globbing does; a variable or substitution is left out.
+ */
+function removalForms(word) {
+  if (isLiteralWord(word)) return [word];
+  const out = [];
+  for (const { path } of wordForms(word, { open: false })) {
+    const cut = path.lastIndexOf("/");
+    const last = path.slice(cut + 1);
+    if (!GLOB_CHARS.test(last)) out.push(path);
+    else if (last.startsWith(".")) out.push(...HARD_NAMES.filter((n) => nameRegex(last).test(n)).map((n) => path.slice(0, cut + 1) + n));
+  }
+  return out;
+}
+
+/** The always-off-limits pattern a removal hits, by the name itself or a file in the folder it removes, or null. */
+function hardRemoval(target, cwd) {
+  for (const form of removalForms(target)) {
+    const abs = joinRaw(cwd, form);
+    // rm takes the name it is given, not what a link of that name points to.
+    const at = join(realPath(dirname(abs)), basename(abs));
+    const root = gitRoot(dirname(at));
+    const rels = root ? [relPosix(root, abs), relPosix(realPath(root), at)].filter((r) => !outsideRel(r)) : [];
+    for (const p of rels.length ? rels : [toPosix(at)]) {
+      const hit = hardFor(p, true, false, true);
+      if (hit) return { hit, root };
+    }
+  }
+  return null;
 }
 
 /**
