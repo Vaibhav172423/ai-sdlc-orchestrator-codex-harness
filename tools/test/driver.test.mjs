@@ -128,6 +128,22 @@ test("buildCodexArgs grants CODEX_HOME as writable, so a nested codex exec can s
   );
 });
 
+test("buildCodexArgs grants npm's cache as writable, so Phase 7's npm install can run in the sandbox", () => {
+  const argv = buildCodexArgs({ pin: PIN, promptText: "x", codexHome: "/home/u/.codex", npmCache: "/home/u/.npm" });
+  const roots = argv.filter((a) => typeof a === "string" && a.startsWith("sandbox_workspace_write.writable_roots="));
+  assert.deepEqual(roots, ['sandbox_workspace_write.writable_roots=["/home/u/.codex","/home/u/.npm"]']);
+  const resumed = buildCodexArgs({ pin: PIN, promptText: "x", codexHome: "/home/u/.codex", npmCache: "/home/u/.npm", resumeThreadId: "t-1" });
+  assert.ok(resumed.includes(roots[0]), "a resumed turn keeps the same writable roots");
+  const prev = process.env.npm_config_cache;
+  process.env.npm_config_cache = "/srv/npm-cache";
+  try {
+    assert.ok(buildCodexArgs({ pin: PIN, promptText: "x", codexHome: "/home/u/.codex" }).some((a) => a.includes('"/srv/npm-cache"')));
+  } finally {
+    if (prev === undefined) delete process.env.npm_config_cache;
+    else process.env.npm_config_cache = prev;
+  }
+});
+
 test("buildCodexArgs passes -C only when a cwd is given", () => {
   assert.ok(!buildCodexArgs({ pin: PIN, promptText: "x" }).includes("-C"));
   const withCwd = buildCodexArgs({ pin: PIN, promptText: "x", cwd: "/proj" });

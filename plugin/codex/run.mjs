@@ -96,6 +96,17 @@ export function defaultCodexHome() {
   return process.env.CODEX_HOME ?? join(homedir(), ".codex");
 }
 
+/** Where `npm install` keeps its cache: npm's own setting when exported, else npm's default. */
+export function defaultNpmCache() {
+  return process.env.npm_config_cache || process.env.NPM_CONFIG_CACHE || join(homedir(), ".npm");
+}
+
+/** The sandbox's extra writable folders, as one config key both `exec` and `exec resume` accept. */
+function writableRoots(roots) {
+  const kept = roots.filter(Boolean);
+  return kept.length ? ["-c", `sandbox_workspace_write.writable_roots=${JSON.stringify(kept)}`] : [];
+}
+
 /**
  * Job types a brownfield run can be given up front. Mirrors the `id` values
  * in plugin/config/intents.json — read from there rather than duplicated, so
@@ -234,6 +245,7 @@ export function buildCodexArgs({
   pluginRoot = PLUGIN_ROOT,
   cwd,
   codexHome = defaultCodexHome(),
+  npmCache = defaultNpmCache(),
   /** Resume this session instead of starting a new one. See RESUME_PROMPT. */
   resumeThreadId = null,
   /** Greenfield only: a new app's folder is usually not a git repo, and codex refuses one without this. */
@@ -272,9 +284,11 @@ export function buildCodexArgs({
     // working directory, and spawnCodex sets the process cwd regardless, so
     // omitting it here changes nothing about where the turn runs.
     ...(cwd && !resumeThreadId ? ["-C", cwd] : []),
-    // Writable so a nested `codex exec` (the seat-backed dispatch path) can
-    // initialise its own app-server state. See defaultCodexHome above.
-    ...(codexHome ? ["-c", `sandbox_workspace_write.writable_roots=["${codexHome}"]`] : []),
+    // CODEX_HOME: writable so a nested `codex exec` (the seat-backed dispatch
+    // path) can initialise its own app-server state. See defaultCodexHome above.
+    // npm's cache: Phase 7's `npm install` writes there, and a denied write
+    // reaches npm as EPERM, which it reports as root-owned cache files.
+    ...writableRoots([codexHome, npmCache]),
     // The plugin's own hook entry, wired for this session, and the installed copy off so a call is judged once.
     ...hookArgs(pluginRoot),
     "--",
