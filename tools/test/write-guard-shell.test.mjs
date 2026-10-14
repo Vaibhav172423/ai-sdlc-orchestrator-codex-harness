@@ -111,6 +111,11 @@ const CASES = [
   ["echo x &> .env", "deny", "deny", ".env"],
   ["echo x >! .env", "deny", "deny", ".env"],
   ["echo x >| src/a.ts", "allow", "allow"],
+  // A `$'…'` word is its decoded text.
+  ["echo x > $'.env'", "deny", "deny", ".env"],
+  ["cp src/a.ts $'\\x2eenv'", "deny", "deny", ".env"],
+  ["echo x > $'src/it\\'s.ts'", "allow", "allow"],
+  ["apply_patch $'*** Begin Patch\\n*** Add File: .env\\n+x\\n*** End Patch'", "deny", "deny", ".env"],
   // Patch text piped into a shell apply_patch is judged by its file headers.
   ["cat <<'EOF' | apply_patch\n*** Begin Patch\n*** Add File: .env\n+x\n*** End Patch\nEOF", "deny", "deny", ".env"],
   ["printf '%s' '*** Begin Patch\n*** Add File: .env\n+x\n*** End Patch' | apply_patch", "deny", "deny", ".env"],

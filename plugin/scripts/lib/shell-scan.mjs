@@ -90,6 +90,21 @@ function ansiEnd(text, i) {
   return text.length;
 }
 
+const ANSI_ESCAPES = { a: "\x07", b: "\b", e: "\x1b", E: "\x1b", f: "\f", n: "\n", r: "\r", t: "\t", v: "\v" };
+
+/** The text of a `$'…'` string, its escapes decoded as bash and zsh decode them. */
+function ansiText(body) {
+  return body.replace(/\\(?:([0-7]{1,3})|x([0-9A-Fa-f]{1,2})|u([0-9A-Fa-f]{1,4})|U([0-9A-Fa-f]{1,8})|c(.)|([\s\S]))/g,
+    (m, oct, hex, u4, u8, ctl, ch) => {
+      if (oct) return String.fromCharCode(parseInt(oct, 8) & 0xff);
+      if (hex) return String.fromCharCode(parseInt(hex, 16));
+      const cp = parseInt(u4 ?? u8 ?? "", 16);
+      if (cp >= 0) return cp <= 0x10ffff ? String.fromCodePoint(cp) : "";
+      if (ctl) return String.fromCharCode(ctl.charCodeAt(0) & 0x1f);
+      return ANSI_ESCAPES[ch] ?? (/["'\\?]/.test(ch) ? ch : m);
+    });
+}
+
 function backtickEnd(text, i) {
   for (let j = i + 1; j < text.length; j++) {
     if (text[j] === "\\") j++;
@@ -220,7 +235,7 @@ function lexWord(text, i, ctx, level) {
     }
     if (c === "$" && text[i + 1] === "'") {
       const close = ansiEnd(text, i + 1);
-      v += `$${text.slice(i + 2, close).replace(/\\([\s\S])/g, "$1")}`;
+      v += ansiText(text.slice(i + 2, close));
       i = close + 1;
       plain = false;
       continue;
