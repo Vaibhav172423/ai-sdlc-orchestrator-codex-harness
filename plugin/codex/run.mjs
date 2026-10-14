@@ -429,6 +429,7 @@ export function spawnCodex(
     const turns = { started: 0, completed: 0, failed: 0 };
     let threadId = resumeThreadId;
     let sawThread = false;
+    let failure = null;
     let pending = "";
     let settled = false;
 
@@ -452,6 +453,9 @@ export function spawnCodex(
       if (event.type === "turn.started") turns.started += 1;
       else if (event.type === "turn.completed") turns.completed += 1;
       else if (event.type === "turn.failed") turns.failed += 1;
+      // codex prints the reason a turn failed (a usage limit, a refused model) on stdout, not stderr.
+      if (event.type === "turn.failed" && typeof event.error?.message === "string") failure = event.error.message;
+      else if (event.type === "error" && typeof event.message === "string" && !/^Reconnecting/.test(event.message)) failure ??= event.message;
       onRecord({ kind: "codex", invocation, thread_id: threadId, received_at: receivedAt, event });
     };
     const finish = (end) => {
@@ -459,7 +463,7 @@ export function spawnCodex(
       settled = true;
       if (pending) onLine(pending);
       pending = "";
-      resolvePromise({ threadId, turns, ...end });
+      resolvePromise({ threadId, turns, failure, ...end });
     };
 
     let child;
@@ -1261,7 +1265,7 @@ async function runDriver(args, deps) {
       }
       if (result.exitStatus !== 0) {
         outcome = "codex_failed";
-        reason = `codex exited ${result.exitStatus ?? result.signal}`;
+        reason = `codex exited ${result.exitStatus ?? result.signal}${result.failure ? `: ${result.failure}` : ""}`;
         break;
       }
       if (!threadId) {

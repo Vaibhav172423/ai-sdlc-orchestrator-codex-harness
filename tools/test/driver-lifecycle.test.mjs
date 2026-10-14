@@ -391,6 +391,21 @@ test("the cost cap is checked before every spawn and after every invocation", as
   }
 });
 
+test("a failed turn's message reaches the stop reason when codex's stderr says nothing", async () => {
+  const h = harness();
+  try {
+    withScenario(h, "r1", [{ failTurn: "You've hit your usage limit. Try again at 1:53 PM.", exit: 1 }]);
+    const { code, out } = await h.run(args(h, "r1"));
+    assert.equal(code, 1);
+    const end = h.records("r1").at(-1);
+    assert.equal(end.outcome, "codex_failed");
+    assert.equal(end.reason, "codex exited 1: You've hit your usage limit. Try again at 1:53 PM.");
+    assert.match(out, /codex_failed — codex exited 1: You've hit your usage limit/);
+  } finally {
+    h.cleanup();
+  }
+});
+
 test("a codex failure shows codex's stderr, keeps it in driver-stderr.log, and exits 1", async () => {
   const h = harness();
   try {
