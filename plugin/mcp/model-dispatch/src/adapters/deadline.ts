@@ -28,7 +28,6 @@ export function startDeadline(ms: number, outer?: AbortSignal): Deadline {
     expired = true;
     controller.abort(new Error(`dispatch deadline of ${ms / 1000}s reached`));
   }, ms);
-  timer.unref?.();
   const onOuter = () => controller.abort(outer?.reason);
   if (outer?.aborted) onOuter();
   else outer?.addEventListener("abort", onOuter, { once: true });
