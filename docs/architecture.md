@@ -92,7 +92,7 @@ This lives in install state rather than in the policy on purpose: the policy fil
 
 ## 7. The write contract — `plugin/codex/hooks/write-contract-check.mjs`
 
-A PreToolUse hook on `apply_patch` and `Bash`. The script only reads the call and replies; the decision is in `plugin/scripts/lib/write-guard.mjs`. Codex blocks a call on a JSON `deny` reply alone, not on an exit code. An allow is an empty reply, because Codex reports a bare `permissionDecision: "allow"` as a failed hook run. Any failure inside the hook allows the call.
+A PreToolUse hook on `apply_patch` and `Bash`. The script only reads the call and replies; the decision is in `plugin/scripts/lib/write-guard.mjs`. Codex blocks a call on a JSON `deny` reply alone, not on an exit code. An allow is an empty reply, because Codex reports a bare `permissionDecision: "allow"` as a failed hook run. Any failure inside the hook allows the call. A Bash call's `tool_input.command` is read as a string or as an argv array; an `apply_patch` patch is read from `tool_input.command` or `tool_input.input`.
 
 **Lifecycle.** `plugin/scripts/write-contract.mjs` owns the contract; the model never writes it.
 

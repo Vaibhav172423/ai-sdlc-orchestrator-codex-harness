@@ -209,3 +209,26 @@ test("a removal is judged by the name it removes: a link to .env goes, a path th
     assert.equal(r.record.row.run_id, "r1", "a refusal under a live contract is logged with its run");
   } finally { cleanup(dir); }
 });
+
+test("an argv-array command and an apply_patch under tool_input.input are judged like the string forms", () => {
+  const live = project({ live: true });
+  const plain = project({ live: false });
+  const hook = (dir, call) => {
+    const r = spawnSync(process.execPath, [HOOK], { cwd: dir, input: JSON.stringify({ cwd: dir, ...call }), encoding: "utf8" });
+    assert.equal(r.status, 0, r.stderr);
+    return r.stdout === "" ? "allow" : JSON.parse(r.stdout).hookSpecificOutput.permissionDecision;
+  };
+  const argv = (...command) => ({ tool_name: "Bash", tool_input: { command } });
+  const patchInput = (path) => ({ tool_name: "apply_patch", tool_input: { input: `*** Begin Patch\n*** Add File: ${path}\n+x\n*** End Patch` } });
+  try {
+    assert.equal(hook(live, argv("bash", "-lc", "echo x > docs/a.md")), "deny");
+    assert.equal(hook(live, argv("/bin/zsh", "-lc", "git commit -m 'a > b'")), "allow");
+    assert.equal(hook(live, argv("cat", "a > docs/b.md")), "allow", "an argv word is one word, not shell");
+    assert.equal(hook(live, argv("apply_patch", "*** Begin Patch\n*** Add File: docs/c.md\n+x\n*** End Patch")), "deny");
+    assert.equal(hook(live, { tool_name: "apply_patch", tool_input: { command: ["*** Begin Patch", "*** Add File: docs/d.md", "+x", "*** End Patch"] } }), "deny");
+    assert.equal(hook(live, patchInput("docs/e.md")), "deny");
+    assert.equal(hook(live, patchInput("src/e.ts")), "allow");
+    assert.equal(hook(plain, argv("bash", "-lc", "echo x > .env")), "deny");
+    assert.equal(hook(plain, patchInput(".mcp.json")), "deny");
+  } finally { cleanup(live); cleanup(plain); }
+});

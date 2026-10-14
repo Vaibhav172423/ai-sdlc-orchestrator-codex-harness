@@ -9,7 +9,9 @@
  * run's provenance record, so `$mmo-codex:revert` can put it back. A snapshot never changes the decision.
  */
 import { existsSync, lstatSync } from "node:fs";
-import { decideCall, isLiteralWord, recordDecision, shellPatchTargets, WIRED_BY_RUN_FLAG } from "../../scripts/lib/write-guard.mjs";
+import {
+  callCommand, decideCall, isLiteralWord, recordDecision, shellPatchTargets, WIRED_BY_RUN_FLAG,
+} from "../../scripts/lib/write-guard.mjs";
 import { recordBefore, recordFolderBefore } from "../../scripts/write-provenance.mjs";
 import { log } from "../../scripts/lib/log.mjs";
 
@@ -57,7 +59,7 @@ function record(b) {
 function snapshot(call, out) {
   let n = 0;
   const seen = new Set();
-  const patched = new Set(call.tool_name === "Bash" ? shellPatchTargets(call.tool_input?.command) : []);
+  const patched = new Set(call.tool_name === "Bash" ? shellPatchTargets(callCommand(call)) : []);
   const targets = [
     ...out.bound.map((b) => ({ ...b, kind: "write" })),
     ...out.unsure.map((b) => ({ ...b, kind: "unsure" })),

@@ -35,10 +35,20 @@ export function extractApplyPatchTargets(command) {
 
 // ── what a shell command writes ────────────────────────────────────────────
 
-/** The patch or shell text a call carries. */
+/**
+ * The text a call carries: a Bash `command` string, or an argv array quoted back into one shell line; for
+ * `apply_patch`, its `command` or its `input`.
+ */
 export function callCommand(call) {
-  const c = call?.tool_input?.command;
-  return typeof c === "string" ? c : null;
+  const input = call?.tool_input;
+  const patch = call?.tool_name === "apply_patch";
+  for (const c of patch ? [input?.command, input?.input] : [input?.command]) {
+    if (typeof c === "string") return c;
+    if (Array.isArray(c) && c.length > 0 && c.every((a) => typeof a === "string")) {
+      return patch ? c.join("\n") : c.map((a) => `'${a.replace(/'/g, "'\\''")}'`).join(" ");
+    }
+  }
+  return null;
 }
 
 let lastScan = { raw: null, effects: [] };
