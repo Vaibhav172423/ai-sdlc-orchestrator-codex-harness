@@ -69,3 +69,42 @@ test("a policy built in the console keeps its base policy's driver pin and cost 
     assert.equal(saved.hard_cost_cap_usd, 50);
   });
 });
+
+test("the console offers only the shipped runnable policies, and builds a policy on each GPT one", async () => {
+  await withConsole(async (base) => {
+    const data = await (await fetch(`${base}/api/policies`)).json();
+    assert.deepEqual(data.policies.map((p) => p.id), ["gpt-plus-flash", "flash-agsdk-only", "gpt-plus-flash-38", "gpt-seat-plus-flash"]);
+    assert.ok(data.policies.every((p) => p.origin === "preset"));
+    assert.deepEqual(data.adapters, ["openai", "codex-cli", "mcp:model-dispatch", "antigravity-worker"]);
+    assert.doesNotMatch(JSON.stringify(data.adapterLabel), /Anthropic|Claude/);
+    for (const id of ["gpt-plus-flash", "gpt-plus-flash-38", "gpt-seat-plus-flash"]) {
+      const p = data.policies.find((x) => x.id === id);
+      const res = await fetch(`${base}/api/preview`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ baseId: id, name: `my-${id}`, models: p.models, routing: p.routing, thinking: p.thinking, intentOverrides: p.intentOverrides }),
+      });
+      const out = await res.json();
+      assert.equal(out.ok, true, `${id}: ${JSON.stringify(out.errors)}`);
+      const saved = parseYaml(out.yaml);
+      assert.equal(saved.driver?.model_name, "gpt-5.6-terra", id);
+      assert.ok(saved.models.some((m) => m.adapter === "openai" || m.adapter === "codex-cli"), id);
+    }
+  });
+});
+
+test("the console refuses an Anthropic adapter on a new model", async () => {
+  await withConsole(async (base) => {
+    const data = await (await fetch(`${base}/api/policies`)).json();
+    const p = data.policies.find((x) => x.id === "gpt-plus-flash");
+    const models = [...p.models, { id: "opus", adapter: "builtin-anthropic", model_name: "claude-opus-5", pricing: { input: 5, input_cached: 0.5, output: 25 } }];
+    const res = await fetch(`${base}/api/preview`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ baseId: "gpt-plus-flash", name: "with-opus", models, routing: p.routing, thinking: p.thinking, intentOverrides: p.intentOverrides }),
+    });
+    const out = await res.json();
+    assert.equal(out.ok, false);
+    assert.ok(out.errors.some((e) => /Model "opus" names adapter "builtin-anthropic"/.test(e)), JSON.stringify(out.errors));
+  });
+});

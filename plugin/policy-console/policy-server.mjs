@@ -30,7 +30,7 @@ const PHASES = [
   { id: "docs", label: "Docs", note: "volume work" },
   { id: "senior_code_review", label: "Senior review", note: "cross-file judgment" },
   { id: "security_review", label: "Security review", note: "risk-bearing · low volume" },
-  { id: "debug", label: "Debug", note: "escalates to opus at retry ≥ 2" },
+  { id: "debug", label: "Debug", note: "escalates to the judgment tier at retry ≥ 2" },
 ];
 
 /**
@@ -69,40 +69,33 @@ const CONDITIONAL_SKIP_NOTE = {
 };
 
 const KNOWN_ADAPTERS = [
-  "builtin-anthropic",
-  "claude-cli",
+  "openai",
+  "codex-cli",
   "mcp:model-dispatch",
   "antigravity-worker",
 ];
 const ADAPTER_LABEL = {
-  "builtin-anthropic": "Anthropic (Claude)",
-  "claude-cli": "Anthropic (Claude Code CLI, Max subscription)",
+  openai: "GPT — OpenAI API (OPENAI_API_KEY)",
+  "codex-cli": "GPT — codex exec on a ChatGPT seat",
   "mcp:model-dispatch": "Gemini — completion call",
   "antigravity-worker": "Gemini — Antigravity agent (SDK worker)",
 };
 
 const GEMINI_TIERS = ["off", "minimal", "low", "medium", "high"];
-const ANTHROPIC_EFFORT_TIERS = ["off", "low", "medium", "high", "xhigh", "max"];
-const SHIPPED_PRESETS = ["gpt-plus-flash", "opus-only", "opus-plus-flash"];
+const SHIPPED_PRESETS = ["gpt-plus-flash", "gpt-plus-flash-38", "gpt-seat-plus-flash", "flash-agsdk-only"];
 const NAME_PATTERN = /^[a-z0-9][a-z0-9-]*$/;
 
-// This harness ships no Anthropic credential (D9 — no Claude anywhere in the
-// official cast). A policy naming either Anthropic adapter is carried as a
-// compiled-and-tested replay fixture, not something to offer here — it would
-// fail at first dispatch with no ANTHROPIC_API_KEY to find.
-const ANTHROPIC_ONLY_ADAPTERS = new Set(["builtin-anthropic", "claude-cli"]);
+// This harness runs no Anthropic model (D9), so a policy file naming either
+// Anthropic adapter is not offered as a base: a run refuses it.
+const ANTHROPIC_ADAPTERS = new Set(["builtin-anthropic", "claude-cli"]);
 function usesAnthropicAdapter(policy) {
-  return (policy.models ?? []).some((m) => ANTHROPIC_ONLY_ADAPTERS.has(m.adapter));
+  return (policy.models ?? []).some((m) => ANTHROPIC_ADAPTERS.has(m.adapter));
 }
 
+// A GPT model's effort is its model entry's reasoning.effort; the GPT adapters read no per-rule reasoning.
 function thinkingSupport(model) {
   if (model.adapter === "mcp:model-dispatch" || model.adapter === "antigravity-worker") return GEMINI_TIERS;
-  if (model.adapter === "builtin-anthropic" || model.adapter === "claude-cli") return ANTHROPIC_EFFORT_TIERS;
   return [];
-}
-
-function thinkingField(model) {
-  return model.adapter === "builtin-anthropic" || model.adapter === "claude-cli" ? "effort" : "tier";
 }
 
 // ── policy readers ────────────────────────────────────────────────────
@@ -115,10 +108,6 @@ function listPolicyIds() {
     .sort((a, b) => {
       if (a === "gpt-plus-flash") return -1;
       if (b === "gpt-plus-flash") return 1;
-      if (a === "opus-only") return -1;
-      if (b === "opus-only") return 1;
-      if (a === "opus-plus-flash") return -1;
-      if (b === "opus-plus-flash") return 1;
       return a.localeCompare(b);
     });
 }
@@ -159,7 +148,7 @@ function resolvePhaseThinking(policy, phaseId) {
     if (hasWhen(rule)) {
       if (rule.when.retry_count) continue;
       const phases = Array.isArray(rule.when.phase) ? rule.when.phase : rule.when.phase ? [rule.when.phase] : [];
-      if (phases.includes(phaseId)) return rule.reasoning?.tier ?? rule.reasoning?.effort ?? "off";
+      if (phases.includes(phaseId)) return rule.reasoning?.tier ?? "off";
     }
   }
   return "off";
@@ -223,7 +212,7 @@ function fallbackRule(policy) {
 
 /**
  * Rules for phases NOT in the visible PHASES list (e.g. brownfield's
- * `discovery`, `change_plan` in `opus-plus-flash.yaml`). The console UI
+ * `discovery`, `change_plan` in `gpt-plus-flash.yaml`). The console UI
  * only renders 9 phases, but the base policy may name more. Without this,
  * buildCustomPolicy iterates only PHASES and silently drops those rules
  * on save — a data-loss regression from the old TypeScript app. Skip the
@@ -306,10 +295,7 @@ function buildCustomPolicy(base, input) {
       // 9 phases × thinking tier) was more surface than this UI could stay
       // readable at. Revisit if a real policy needs it.
       const tier = input.thinking[phase.id];
-      if (tier && tier !== "off") {
-        const model = models.find((m) => m.id === modelId);
-        rule.reasoning = model && thinkingField(model) === "effort" ? { effort: tier } : { tier };
-      }
+      if (tier && tier !== "off") rule.reasoning = { tier };
       rules.push(rule);
     }
 
@@ -321,15 +307,12 @@ function buildCustomPolicy(base, input) {
       use: input.routing[phase.id],
     };
     const tier = input.thinking[phase.id];
-    if (tier && tier !== "off") {
-      const model = models.find((m) => m.id === input.routing[phase.id]);
-      rule.reasoning = model && thinkingField(model) === "effort" ? { effort: tier } : { tier };
-    }
+    if (tier && tier !== "off") rule.reasoning = { tier };
     rules.push(rule);
   }
 
   // Carry through rules for phases the console UI doesn't edit — brownfield's
-  // discovery / change_plan in opus-plus-flash.yaml is the concrete case. Old
+  // discovery / change_plan in gpt-plus-flash.yaml is the concrete case. Old
   // code silently dropped these on save; a saved custom policy would then fall
   // through to the default for those phases.
   if (Array.isArray(structural.extraPhaseRules)) {

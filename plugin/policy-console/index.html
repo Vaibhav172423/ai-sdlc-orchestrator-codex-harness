@@ -197,7 +197,7 @@
         <span class="swatch"></span>
         <div>
           <h2>Routing &amp; thinking capacity — per phase</h2>
-          <p>The thinking picker sits next to each model and shows that model's own real range — Gemini's named levels via <span class="mono">reasoning.tier</span>, Opus's effort levels via <span class="mono">reasoning.effort</span>. This is what every intent uses unless the table below overrides a cell.</p>
+          <p>The thinking picker sits next to each model and shows that model's own real range — Gemini's named levels via <span class="mono">reasoning.tier</span>. A GPT model's effort is set once on its model entry (<span class="mono">reasoning.effort</span>), so its phases show Not available. This is what every intent uses unless the table below overrides a cell.</p>
         </div>
       </div>
       <div id="phase-rows" class="rows"></div>
@@ -230,22 +230,20 @@
 <script>
 // ── constants (mirror policy-server.mjs) ──────────────────────
 
-const TIER_LABEL = { off: "off", minimal: "min", low: "low", medium: "med", high: "high", xhigh: "xh", max: "max" };
+const TIER_LABEL = { off: "off", minimal: "min", low: "low", medium: "med", high: "high" };
 const GEMINI_TIERS = ["off", "minimal", "low", "medium", "high"];
-const ANTHROPIC_EFFORT_TIERS = ["off", "low", "medium", "high", "xhigh", "max"];
 const NAME_PATTERN = /^[a-z0-9][a-z0-9-]*$/;
 
 function thinkingSupport(model) {
   if (!model) return [];
   if (model.adapter === "mcp:model-dispatch" || model.adapter === "antigravity-worker") return GEMINI_TIERS;
-  if (model.adapter === "builtin-anthropic" || model.adapter === "claude-cli") return ANTHROPIC_EFFORT_TIERS;
   return [];
 }
 
 function defaultAuthEnv(adapter) {
-  // claude-cli reads OAuth from the local `claude` binary — no env var to name.
-  if (adapter === "claude-cli") return "";
-  return adapter === "builtin-anthropic" ? "ANTHROPIC_API_KEY" : "GEMINI_API_KEY";
+  // codex-cli runs on the codex CLI's own seat login — no env var to name.
+  if (adapter === "codex-cli") return "";
+  return adapter === "openai" ? "OPENAI_API_KEY" : "GEMINI_API_KEY";
 }
 
 // ── state ──────────────────────────────────────────────────────
@@ -299,9 +297,9 @@ function renderGallery() {
     `;
     g.appendChild(c);
   }
-  // Default the "add new" base to opus-plus-flash if present, otherwise the
+  // Default the "add new" base to gpt-plus-flash if present, otherwise the
   // first shipped preset, otherwise the first policy on disk.
-  const defaultBase = allPolicies.find((p) => p.id === "opus-plus-flash")
+  const defaultBase = allPolicies.find((p) => p.id === "gpt-plus-flash")
     ?? allPolicies.find((p) => p.origin === "preset")
     ?? allPolicies[0];
   if (defaultBase) {
@@ -556,7 +554,7 @@ function addModel() {
   }
 
   const model = { id, adapter, model_name, pricing: { input, input_cached, output } };
-  // claude-cli has no env var — omit auth entirely so the YAML doesn't carry
+  // codex-cli has no env var — omit auth entirely so the YAML doesn't carry
   // a misleading empty key.
   if (authEnv) model.auth = { env: authEnv };
   editorState.models.push(model);
