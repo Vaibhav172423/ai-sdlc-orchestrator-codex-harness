@@ -164,7 +164,7 @@ Two things to collect from the user. Both go into `.sdlc/runs/<run-id>/intent_br
 `run.mjs` route, every question in this step goes to the user the way your gate instruction says:
 under `--gates=prompt` through `question.json`, one question per turn; under the unattended modes
 it is not asked, and a question the run cannot go on without stops the run with the question in
-`stop.json`.
+`stop.json`'s `needs` field.
 
 **a. Intent.**
 

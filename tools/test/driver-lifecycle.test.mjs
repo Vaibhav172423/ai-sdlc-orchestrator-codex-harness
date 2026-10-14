@@ -303,13 +303,40 @@ test("a refused write stops the run; a refusal older than the invocation does no
   }
 });
 
-test("stop.json from the conductor ends the run as stopped", async () => {
+test("stop.json naming what the person must decide ends the run as stopped", async () => {
   const h = harness();
   try {
-    withScenario(h, "r1", [{ stop: { reason: "the brief contradicts itself" } }]);
+    withScenario(h, "r1", [{ stop: { reason: "the brief contradicts itself", needs: "which of the two goals wins" } }]);
     assert.equal((await h.run(args(h, "r1"))).code, 4);
+    assert.equal(h.calls().length, 1);
     assert.equal(h.records("r1").at(-1).outcome, "stopped");
-    assert.equal(h.records("r1").at(-1).reason, "the brief contradicts itself");
+    assert.equal(h.records("r1").at(-1).reason, "the brief contradicts itself (needs: which of the two goals wins)");
+  } finally {
+    h.cleanup();
+  }
+});
+
+test("a stop.json with no needs is a progress note: the run resumes and completes", async () => {
+  const h = harness();
+  try {
+    withScenario(h, "r1", [{ stop: { reason: "security review and Gate 4 remain" } }, COMPLETE]);
+    assert.equal((await h.run(args(h, "r1"))).code, 0);
+    assert.equal(h.calls().length, 2);
+    assert.deepEqual(h.calls()[1].argv.slice(0, 3), ["exec", "resume", THREAD]);
+    assert.equal(h.records("r1").at(-1).outcome, "completed");
+  } finally {
+    h.cleanup();
+  }
+});
+
+test("two stop.json progress notes in a row stop the run", async () => {
+  const h = harness();
+  try {
+    withScenario(h, "r1", [{ stop: { reason: "phases remain" } }, { stop: { reason: "phases still remain" } }]);
+    assert.equal((await h.run(args(h, "r1"))).code, 4);
+    assert.equal(h.calls().length, 2);
+    assert.equal(h.records("r1").at(-1).outcome, "stopped");
+    assert.equal(h.records("r1").at(-1).reason, "phases still remain");
   } finally {
     h.cleanup();
   }
@@ -842,7 +869,7 @@ test("a resumed conductor that stops again with a new record ends the resume at 
     assert.equal((await h.run(["--project-root", h.root, "--run-id=r1", "--mode=greenfield", "--gates=auto-abort"])).code, 4);
     withScenario(h, "r1", [{ gates: [{ gate: 1, decision: "aborted", note: "still auto-abort" }] }]);
     assert.equal((await h.run(["--project-root", h.root, "--resume=r1", "--max-turns=5"])).code, 4);
-    withScenario(h, "r1", [{ stop: { reason: "the brief needs a decision from the person" } }]);
+    withScenario(h, "r1", [{ stop: { reason: "the brief needs a decision from the person", needs: "which goal wins" } }]);
     assert.equal((await h.run(["--project-root", h.root, "--resume=r1", "--gates=auto-approve", "--max-turns=5"])).code, 4);
     assert.equal(h.calls().length, 3);
     assert.equal(h.records("r1").at(-1).outcome, "stopped");

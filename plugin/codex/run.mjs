@@ -139,7 +139,8 @@ export function renderHandover({ mode, intent, seed } = {}) {
 
 const NO_QUESTIONS =
   "Do not ask a question you cannot receive an answer to: if the run cannot go on without an " +
-  'answer, write {"reason": "<the question>"} to stop.json in your run folder and end your turn.';
+  'answer, write {"reason": "<why the run cannot go on>", "needs": "<the question>"} to stop.json in ' +
+  "your run folder and end your turn.";
 
 /**
  * What the conductor is told to do at each approval gate. `codex exec` runs
@@ -353,8 +354,9 @@ export const RESUME_PROMPT =
   "result file already exists. Pick up at the first incomplete phase. If a gate is waiting for " +
   "an answer, do not answer it yourself: follow the gate instruction below. If you have to stop " +
   "the run on purpose, record why before you end your turn (an aborted line in gates.jsonl, or " +
-  'stop.json with {"reason": "<one line>"}): a turn that ends with no new record reads as ' +
-  "running out of context, and the session is resumed. The rules you were given still apply: " +
+  'stop.json with {"reason": "<one line>", "needs": "<what the person must decide>"}): a turn that ' +
+  "ends with no new record reads as running out of context, and the session is resumed. Do not stop " +
+  "because phases remain: carry on to Gate 4. The rules you were given still apply: " +
   "you author no shipped content, every artifact comes back from a dispatch. Finish with Phase 9 " +
   `and Gate 4. Phase 9 is one command, node '${WRITE_MANIFEST_MJS}' with the arguments your playbook ` +
   "gives it: it writes manifest.json and SUMMARY.md, so do not write manifest.json or SUMMARY.md " +

@@ -191,6 +191,25 @@ function writtenSince(path, sinceMs) {
 /** Files a conductor writes to say why it stopped. */
 const STOP_FILES = ["preflight.json", "stop.json", QUESTION_FILE];
 
+/**
+ * What a stop.json says the person must decide or provide, or null. With
+ * `existing`, a missing record reads as "" (nothing was there) rather than null.
+ */
+export function stopNeeds(stop, existing = false) {
+  if (!stop) return existing ? "" : null;
+  return typeof stop.needs === "string" && stop.needs.trim() ? stop.needs.trim() : null;
+}
+
+/** The JSON body of a stamp() value, or null. */
+function stampedJson(stamped) {
+  if (typeof stamped !== "string") return null;
+  try {
+    return JSON.parse(stamped.slice(stamped.indexOf(":") + 1));
+  } catch {
+    return null;
+  }
+}
+
 function stamp(path) {
   const m = mtimeMs(path);
   if (m === null) return null;
@@ -302,7 +321,12 @@ export function stopCheck({
   const stopPath = join(runDir, "stop.json");
   if (fresh("stop.json")) {
     const stop = readJson(stopPath);
-    return { outcome: "stopped", reason: stop?.reason ?? "the conductor wrote stop.json" };
+    const reason = stop?.reason ?? "the conductor wrote stop.json";
+    const needs = stopNeeds(stop);
+    if (needs) return { outcome: "stopped", reason: `${reason} (needs: ${needs})` };
+    // A stop.json that names nothing for the person to decide is a progress note: resume once,
+    // and stop when the resumed turn writes another one.
+    if (!before || stopNeeds(stampedJson(before.files["stop.json"]), true) === null) return { outcome: "stopped", reason };
   }
 
   if (fresh(QUESTION_FILE)) {

@@ -210,15 +210,17 @@ toolchain, runtime or package manager yourself (a Node or Python download, `curl
 record and the gate record, and a fetched toolchain makes the run depend on whatever you
 downloaded. Phase 7's `npm install` of the app's own dependencies in `{{CODE_DIR}}` is part of the
 playbook; the tools that run it are not yours to provide. When a step needs a tool this machine
-lacks, write `{"reason": "<the missing tool, and how to install it>"}` to `{{OUTPUT_DIR}}/stop.json`
-and end your turn.
+lacks, write `{"reason": "<the missing tool>", "needs": "<how the person installs it>"}` to
+`{{OUTPUT_DIR}}/stop.json` and end your turn.
 
 ## Stopping a run
 
 The driver reads why your turn ended from files, not from your prose: an `aborted` gate line, a
-`preflight.json` with `ok: false`, a refused write, or the cost cap. If you stop the run for any
-other reason, write `{"reason": "<one line>"}` to `{{OUTPUT_DIR}}/stop.json` before ending your
-turn. A pending gate line or a `question.json` (the gate instruction above says when) means you are
+`preflight.json` with `ok: false`, a refused write, or the cost cap. If you stop the run because
+something needs the person, write `{"reason": "<one line>", "needs": "<what the person must decide
+or provide>"}` to `{{OUTPUT_DIR}}/stop.json` before ending your turn. Do not stop, and do not write
+`stop.json`, because phases remain or the run is long: carry on to Gate 4. A `stop.json` with no
+`needs` reads as a progress note, and the session is resumed; a second one in a row stops the run. A pending gate line or a `question.json` (the gate instruction above says when) means you are
 waiting for the person. A turn that ends without any of these is read as running out of context,
 and the session is resumed. Each record counts only for the turn that wrote it: when a resumed run
 has to stop again, write a new one.
