@@ -540,9 +540,34 @@ test("the file a packet writes, or an earlier packet writes, is never given as a
   ]);
 
   const wide = brownfieldRun({ contract: { allowlist: ["src/**"] } });
-  await assertRefused(await accept(wide.runDir, dispatchResult({
+  const created = await accept(wide.runDir, dispatchResult({
     packets: [child({ phase: "tests", task_type: "test_add", artifact_path: "src/login.spec.js", inputs: [{ path: "src/login.spec.js", content: "", reason: "r" }] })],
-  })), wide.runDir, ['packets[0].inputs[0].path "src/login.spec.js" is the file this packet creates, so there is nothing on disk to read yet; leave it out of inputs.']);
+  }));
+  assert.equal(created.code, 0, created.err);
+  assert.match(created.err, /^warning: packets\[0\]\.inputs\[0\]\.path "src\/login\.spec\.js" is the file this packet creates; nothing is on disk yet, so the input was left out\.$/m);
+  assert.deepEqual(JSON.parse(packetsFile(wide.runDir))[0].inputs, []);
+
+  const fresh = brownfieldRun({ contract: { allowlist: ["src/**"] } });
+  await assertRefused(await accept(fresh.runDir, dispatchResult({
+    packets: [child({ task_type: "existing_file_edit", artifact_path: "src/login.js", inputs: [{ path: "src/login.js", content: "", reason: "r" }] })],
+  })), fresh.runDir, ['packets[0].inputs[0].path "src/login.js" is not on disk, but task_type "existing_file_edit" changes a file that already exists. Fix the path, or plan the packet as new_file_add.']);
+});
+
+test("a greenfield plan may list each new file it writes as an input; the empty input is left out", async () => {
+  const { runDir, runId } = greenfieldRun();
+  const own = (path, extra = []) => [{ path, content: "", reason: "This is the file to create." }, ...extra];
+  const r = await accept(runDir, dispatchResult({
+    packets: [
+      child({ task_type: "service_method", module: "notes", artifact_path: "src/notes.js", inputs: own("src/notes.js", [{ path: `.sdlc/runs/${runId}/design.md`, content: "", reason: "The design." }]) }),
+      child({ task_type: "server_app", module: "notes", artifact_path: "src/server.js", inputs: own("src/server.js", [{ path: "src/notes.js", content: "", reason: "The store it uses." }]) }),
+      child({ phase: "tests", task_type: "test_unit", module: "notes", artifact_path: "src/server.test.js", inputs: own("src/server.test.js", [{ path: "src/server.js", content: "", reason: "The app under test." }]) }),
+    ],
+  }, { pass: runId }));
+  assert.equal(r.code, 0, r.err);
+  assert.equal(r.err.match(/^warning: .* is the file this packet creates; nothing is on disk yet, so the input was left out\.$/gm)?.length, 3);
+  const packets = JSON.parse(packetsFile(runDir));
+  assert.deepEqual(packets.map((p) => p.inputs.map((s) => s.path)), [[`.sdlc/runs/${runId}/design.md`], ["src/notes.js"], ["src/server.js"]]);
+  assert.equal(packets[1].inputs[0].content, "", "a file an earlier packet writes is filled at Phase 5");
 });
 
 test("a contract that is not strict lets a target outside the allowlist through, with a warning", async () => {

@@ -50,6 +50,8 @@ const MAX_PACKET_INPUT_BYTES = 384 * 1024;
 /** The env files a plan may write. `.env` itself is the Phase 7 bootstrap's copy of `.env.test`, never a packet's. */
 const PLAN_ENV_FILES = [".env.example", ".env.test"];
 const MAX_PACKETS = 200;
+/** Brownfield task types that change a file already on disk, so a missing target is a wrong path, not a new file. */
+const EDIT_TASK_TYPES = new Set(["existing_file_edit", "patch_apply", "doc_update", "bug_fix_apply"]);
 // Reasoning tokens count against the ceiling; the OpenAI adapter doubles it on truncation.
 const PLAN_OUTPUT_TOKENS = 8000;
 const PLAN_FIELDS = [
@@ -547,7 +549,7 @@ export function judgePlan(facts, result) {
     } else w.indices.push(i);
   });
   children.forEach((c, i) => {
-    if (c) c.inputs = judgeInputs(facts, c.rawInputs, `packets[${i}]`, i, writers, problems);
+    if (c) c.inputs = judgeInputs(facts, c.rawInputs, `packets[${i}]`, i, writers, problems, warnings, c.task_type);
   });
   for (const w of writers.values()) {
     for (let n = 1; n < w.indices.length; n++) {
@@ -682,7 +684,7 @@ function judgeFields(facts, raw, at, problems, warnings) {
  * it whole: the first read from disk here, the second at Phase 5, once that packet has run. Either one given as a
  * slice is refused.
  */
-function judgeInputs(facts, inputs, at, index, writers, problems) {
+function judgeInputs(facts, inputs, at, index, writers, problems, warnings, taskType) {
   if (!Array.isArray(inputs)) return null;
   const out = [];
   let bytes = 0;
@@ -730,11 +732,17 @@ function judgeInputs(facts, inputs, at, index, writers, problems) {
     if (!given) {
       const blocked = readProblem(facts, loc);
       const read = blocked ? { problem: blocked } : readText(loc.abs, loc.label, { whole: own });
+      const edits = facts.mode === "brownfield" && EDIT_TASK_TYPES.has(taskType);
+      if (read.missing && own && !edits) {
+        // The plan rules tell the planner to list the file it writes with content "": for a new file that is empty.
+        warnings.push(`${where}.path ${quote(loc.rel)} is the file this packet creates; nothing is on disk yet, so the input was left out.`);
+        return;
+      }
       if (read.problem) {
         const later = w ? w.indices.filter((k) => k > index) : [];
         problems.push(
           read.missing && own
-            ? `${where}.path ${quote(loc.rel)} is the file this packet creates, so there is nothing on disk to read yet; leave it out of inputs.`
+            ? `${where}.path ${quote(loc.rel)} is not on disk, but task_type ${quote(taskType)} changes a file that already exists. Fix the path, or plan the packet as new_file_add.`
             : read.missing && later.length > 0
               ? `${where} reads ${quote(loc.rel)}, which packets[${later[0]}] writes later. List the packets in dependency order.`
               : `${where}.path ${read.problem}.`,
