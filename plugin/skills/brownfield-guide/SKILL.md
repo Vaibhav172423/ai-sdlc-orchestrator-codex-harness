@@ -111,7 +111,10 @@ Agent-side steps (1 = discovery smoke, 3 = dispatch smoke) — you run yourself:
 3. **Dispatch smoke.** Construct a trivial `{ id: "smoke-1", phase: "codegen", task_type:
    "smoke", instruction: "Return the literal string OK", ... }` TaskPacket, write it to a file,
    and dispatch it to each policy tier the current policy uses (premium + mechanical for
-   `gpt-plus-flash`):
+   `gpt-plus-flash`). Give every smoke packet `"budget": { "maxInputTokens": 1000,
+   "maxOutputTokens": 3000 }`, and no smaller output cap: Gemini Flash spends its thinking from the
+   output budget, about 2,900 tokens even for this one-word answer, so a cap of a few hundred
+   fails the smoke on a healthy tier.
    ```bash
    node '{{PLUGIN_ROOT}}/codex/dispatch.mjs' --packet=<smoke-packet.json> \
      --out=<smoke-result.json> --policy={{POLICY}} --project-root='{{PROJECT_ROOT}}' \
