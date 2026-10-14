@@ -45,20 +45,25 @@ export const HARDCODED_OFF_LIMITS = [
  */
 export const CREATABLE_WHEN_ABSENT = [".env", ".env.example", ".env.test"];
 
-/**
- * The write contract's glob dialect: `**` any characters, `*` any but `/`, `?` one character but `/`.
- * `ci` matches without regard to case (macOS and Windows disks treat `.ENV` and `.env` as one file).
- */
+const withoutDotSlash = (s) => s.replace(/^(?:\.\/)+/, "");
+
+// The write contract's glob dialect: `**` any characters, and as a whole folder name zero or more folders, so
+// `src/**/*.ts` takes `src/a.ts`; `*` any but `/`; `?` one character but `/`. A leading `./` names the project root.
+// `ci` matches without regard to case (macOS and Windows disks treat `.ENV` and `.env` as one file).
 export function matchGlob(path, pattern, { ci = false } = {}) {
   if (typeof path !== "string" || typeof pattern !== "string") return false;
-  if (path === pattern || (ci && path.toLowerCase() === pattern.toLowerCase())) return true;
-  const re = pattern
+  const p = withoutDotSlash(path);
+  const g = withoutDotSlash(pattern);
+  if (p === g || (ci && p.toLowerCase() === g.toLowerCase())) return true;
+  const re = g
     .replace(/[.+^${}()|[\]\\]/g, "\\$&")
+    .replace(/(?<=^|\/)\*\*\//g, "\x01")
     .replace(/\*\*/g, "\x00")
     .replace(/\*/g, "[^/]*")
     .replace(/\?/g, "[^/]")
+    .replace(/\x01/g, "(?:.*/)?")
     .replace(/\x00/g, ".*");
-  return new RegExp(`^${re}$`, ci ? "i" : "").test(path);
+  return new RegExp(`^${re}$`, ci ? "i" : "").test(p);
 }
 
 /** A base pattern (`.env`, `.git/**`) matched at any nesting depth, without regard to case. */
