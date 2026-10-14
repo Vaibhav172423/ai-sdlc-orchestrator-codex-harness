@@ -8,8 +8,9 @@ Two ways to run the pipeline, what the gates ask you, and what lands on disk.
 
 ## Policies
 
-A policy decides which model each phase is routed to, and what the run costs. Four ship as
-selectable. `$mmo-codex:policy` prints the current one; `$mmo-codex:policy change` swaps it.
+A policy decides which model each phase is routed to, and what the run costs. Four ship, and
+each one runs on this harness. `$mmo-codex:policy` prints the current one; `$mmo-codex:policy
+change` swaps it.
 
 ### Which policy a run uses
 
@@ -86,9 +87,9 @@ API-key door — plus Python 3.10+ and a logged-in codex for the conductor. No `
 **When to pick it:** exercising the agent door, or measuring what the mechanical tier does
 unaided.
 
-The `opus-*` files under `../plugin/config/policies/` are replay fixtures carried from the Claude
-harness, not selectable policies. The picker excludes them, and no run in this harness dispatches
-to an Anthropic model.
+The Claude harness's `opus-*` policies do not ship with this plugin. A policy of your own that
+names an Anthropic adapter (`builtin-anthropic`, `claude-cli`), or pins `driver:` to a model that
+is not GPT, does not run here: `run.mjs` and `start-run.mjs` refuse it before anything is spent.
 
 **The mechanical tier has two doors, and the policy file does not choose between them.** Gemini
 can be called as a model — one completion per packet — or as an agent that opens the working

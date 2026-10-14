@@ -8,7 +8,7 @@
 
 A Codex CLI plugin that runs a full SDLC pipeline — requirements → design → code → tests → docs → senior review → security review — against either an empty folder (**greenfield**) or an existing repository (**brownfield**). It routes each phase to the model that fits: judgment work stays on GPT, mechanical work drops to Gemini Flash.
 
-This is a port of the [Claude Code harness](https://github.com/tl-ai-labs/ai-sdlc-orchestrator-claude-code-harness) — same pipeline, same job types, same briefs, driven by the Codex CLI instead. No Anthropic model or credential appears anywhere in the execution path. The carried Anthropic adapters stay compiled and tested but dormant, and the policies naming them are non-selectable replay fixtures, excluded from the picker.
+This is a port of the [Claude Code harness](https://github.com/tl-ai-labs/ai-sdlc-orchestrator-claude-code-harness) — same pipeline, same job types, same briefs, driven by the Codex CLI instead. No Anthropic model or credential appears anywhere in the execution path. The carried Anthropic adapters stay compiled and tested but dormant: no policy the plugin ships names them, and a run refuses a policy of your own that does.
 
 Two ways to pay for the judgment tier reach the same model at the same effort pin — a metered `OPENAI_API_KEY`, or a `codex exec` subprocess on a ChatGPT seat. You pick which once, by choosing a policy. See [Running without an API key](#running-without-an-api-key) for what that costs in reporting precision.
 
@@ -132,7 +132,7 @@ Two guardrails ship on:
 - **Escalation** — a mechanical-tier packet that fails validation twice auto-routes to GPT on the third attempt. Prevents infinite retries when Flash cannot solve a particular puzzle.
 - **Hard cost cap** — `$50` per run (`hard_cost_cap_usd` in the policy). The cap counts the dispatched cost in the run's `telemetry.jsonl` plus the conductor's own modeled cost from the same run folder. Once that total reaches the cap, the bridge refuses every further dispatch and `run.mjs` stops resuming. The call that crosses the cap still completes, and the conductor's current turn still runs, so a run can overshoot by part of one turn. A conductor on a model other than the policy's pin is not priced and adds $0. Raise the cap, or delete the key for no cap, in your own policy.
 
-Four policies ship as selectable:
+Four policies ship, and each one runs on this harness:
 
 | Policy | Judgment tier | Mechanical tier | Cost reporting |
 |---|---|---|---|

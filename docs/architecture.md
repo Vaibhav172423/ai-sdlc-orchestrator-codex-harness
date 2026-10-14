@@ -72,7 +72,7 @@ One per way of reaching a model. A policy names an adapter per model entry.
 | `mcp:model-dispatch` → `GeminiFlashAdapter` | Gemini as a model, one completion per packet | `GEMINI_API_KEY` or Google Cloud ADC |
 | `antigravity-worker` | Gemini as an agent session with tools and a working directory | Vertex ADC only — no API-key door |
 
-`BuiltinAnthropicAdapter` and `ClaudeCliAdapter` are carried from the source, compiled and tested, and never reached: no selectable policy names them.
+`BuiltinAnthropicAdapter` and `ClaudeCliAdapter` are carried from the source, compiled and tested, and never reached: no shipped policy names them, and `run-policy.mjs` refuses a policy that does.
 
 The `openai` and `codex-cli` adapters reach the same model. They are separate because they bill differently, and keeping them distinct is what makes per-phase cost attribution honest — one produces metered figures, the other modeled ones.
 
@@ -82,7 +82,7 @@ Routing is data, not code. Each policy declares `models:` (id, adapter, model na
 
 Two guardrails ship on: a mechanical packet that fails validation twice escalates to the judgment tier on the third attempt, and `hard_cost_cap_usd` stops the run once the dispatched cost in `telemetry.jsonl` plus the conductor's modeled cost reaches it. The bridge refuses every dispatch after that point (`src/costCap.ts`), and `run.mjs` stops resuming the session and records `cost_cap_stop` in `driver-manifest.json`. `src/sessionUsage.ts` reads the conductor's cost from the same run folder, from one source: `driver-usage.json` when nothing was recorded after it was collected, else the complete rows of `driver-cost-modeled.jsonl` plus the session file's turns of any invocation no row reports yet (the one running), else the conductor's codex session file. A headless run names the conductor's thread in `driver-events.jsonl`; an interactive run names it in `driver-session.jsonl`, where `dispatch.mjs` appends a marker on every call. The refusal message gives both parts and says which is modeled.
 
-The four selectable policies are described in [running.md](running.md#policies).
+The four shipped policies are described in [running.md](running.md#policies).
 
 ## 6. The two Gemini doors
 

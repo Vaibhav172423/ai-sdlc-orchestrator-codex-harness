@@ -61,7 +61,8 @@ node '<plugin-root>/scripts/setup-policy.mjs' --list-json --project-root "$(pwd)
 Parse the JSON — one entry per policy in `plugin/config/policies/`. Malformed YAMLs surface as
 `{ name, error }` and should still appear in the list (the user can skip past them).
 
-**Only offer the selectable ones.** Four policies are meant to be chosen here:
+**Offer the four shipped policies.** These are the policies this plugin ships, and each one runs
+on this harness:
 
 - **`gpt-plus-flash`** — the default and the one of record. Judgment work goes to the vendor API,
   mechanical work to Gemini Flash. Every dispatched figure on the cost report is vendor-metered;
@@ -78,12 +79,12 @@ Parse the JSON — one entry per policy in `plugin/config/policies/`. Malformed 
   no API-key door — plus Python 3.10+. For exercising the agent door, or measuring what the
   mechanical tier does unaided.
 
-The `opus-*` files in the same directory are replay fixtures kept for comparison against the
-earlier harness. They are not selectable here and must not be offered.
+The Claude harness's `opus-*` policies do not ship with this plugin, and no run here dispatches to
+an Anthropic model. Do not offer them.
 
 ## 2c — Ask which policy
 
-Ask the user which policy they want as this project's default. Offer the four selectable policies
+Ask the user which policy they want as this project's default. Offer the four shipped policies
 above with their one-line summaries, plus a final `Author a new policy (opens browser)` option
 described as `Opens the local policy console to create a custom YAML.`.
 
@@ -149,7 +150,7 @@ node '<plugin-root>/scripts/setup-policy.mjs' --policy=<name> --project-root "$(
 
 No browser. The script validates `<name>` against files in `plugin/config/policies/`, writes it to
 `.sdlc/project.json.default_policy`, and exits. It fails if `<name>` does not exist on disk — offer
-`$mmo-codex:policy change` to author it, or name the four selectable presets.
+`$mmo-codex:policy change` to author it, or name the four shipped presets.
 
 # Notes
 

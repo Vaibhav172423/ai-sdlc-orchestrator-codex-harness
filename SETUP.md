@@ -162,8 +162,6 @@ reports token counts but no money, so cost for that tier is derived from tokens 
 `modeled`. The report keeps modeled figures out of the vendor-metered total and shows them as a
 modeled total of their own; only `Run total = dispatched + driver` adds the two.
 
-The `opus-*` files under `plugin/config/policies/` are replay fixtures, not selectable policies.
-
 Store the choice as the project default, or pass `--policy=<name>` per run to override it
 without changing the default. A `routing-policy.yaml` at the project root beats both. See
 [docs/running.md](docs/running.md#which-policy-a-run-uses).
