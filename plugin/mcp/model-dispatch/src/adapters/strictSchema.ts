@@ -20,6 +20,10 @@ const KEYWORDS: Record<string, readonly string[]> = {
 };
 const ANY_TYPE_KEYWORDS = ["type", "description", "title", "enum", "const"];
 const ANNOTATIONS = new Set(["description", "title"]);
+// OpenAI's documented strict-mode limits. Past one the API refuses the request outright.
+const MAX_NESTING = 10;
+const MAX_PROPERTIES = 5000;
+const MAX_ENUM_VALUES = 1000;
 
 /** Sent in place of a schema strict mode would refuse; the packet's value travels JSON-encoded inside it. */
 export const STRICT_RESULT_ENVELOPE = {
@@ -37,7 +41,27 @@ export function strictSchemaProblems(schema: unknown): string[] {
     if (!isNode(schema)) return problems;
   }
   check(schema, "schema", problems);
+  const size = { depth: 0, properties: 0, enums: 0 };
+  measure(schema, 0, size);
+  if (size.depth > MAX_NESTING) problems.push(`schema: nests ${size.depth} objects and arrays deep, past strict mode's ${MAX_NESTING}`);
+  if (size.properties > MAX_PROPERTIES) problems.push(`schema: has ${size.properties} properties, past strict mode's ${MAX_PROPERTIES}`);
+  if (size.enums > MAX_ENUM_VALUES) problems.push(`schema: has ${size.enums} enum values, past strict mode's ${MAX_ENUM_VALUES}`);
   return problems;
+}
+
+/** Each object or array level counts toward the nesting limit; anyOf branches share their parent's level. */
+function measure(node: unknown, level: number, size: { depth: number; properties: number; enums: number }): void {
+  if (!isNode(node)) return;
+  const types: unknown[] = typeof node.type === "string" ? [node.type] : Array.isArray(node.type) ? node.type : [];
+  const here = types.includes("object") || types.includes("array") ? level + 1 : level;
+  size.depth = Math.max(size.depth, here);
+  if (Array.isArray(node.enum)) size.enums += node.enum.length;
+  if (isNode(node.properties)) {
+    size.properties += Object.keys(node.properties).length;
+    for (const child of Object.values(node.properties)) measure(child, here, size);
+  }
+  if (isNode(node.items)) measure(node.items, here, size);
+  if (Array.isArray(node.anyOf)) for (const branch of node.anyOf) measure(branch, level, size);
 }
 
 function check(node: unknown, path: string, problems: string[]): void {

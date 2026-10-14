@@ -113,6 +113,29 @@ for (const [name, schema, problem] of REFUSED) {
   });
 }
 
+/** `levels` objects nested one inside the next, the root counted. */
+const nested = (levels) => {
+  let node = obj({ leaf: { type: "string" } });
+  for (let i = 1; i < levels; i++) node = obj({ inner: node });
+  return node;
+};
+
+test("strict mode's documented limits: 10 levels of nesting, 5000 properties, 1000 enum values", () => {
+  assert.deepEqual(strictSchemaProblems(nested(10)), []);
+  assert.ok(strictSchemaProblems(nested(11)).includes("schema: nests 11 objects and arrays deep, past strict mode's 10"));
+  const arrays = obj({ a: { type: "array", items: { type: "array", items: nested(9) } } });
+  assert.ok(strictSchemaProblems(arrays).some((p) => p.startsWith("schema: nests 12 objects and arrays deep")), "an array is a level too");
+
+  const wide = (n) => obj(Object.fromEntries(Array.from({ length: n }, (_, i) => [`p${i}`, { type: "string" }])));
+  assert.deepEqual(strictSchemaProblems(wide(5000)), []);
+  assert.ok(strictSchemaProblems(obj({ a: wide(2500), b: wide(2500) })).includes("schema: has 5002 properties, past strict mode's 5000"));
+
+  const values = (n) => Array.from({ length: n }, (_, i) => `v${i}`);
+  assert.deepEqual(strictSchemaProblems(obj({ e: { type: "string", enum: values(1000) } })), []);
+  assert.ok(strictSchemaProblems(obj({ e: { type: "string", enum: values(600) }, f: { anyOf: [{ type: "string", enum: values(401) }, { type: "null" }] } }))
+    .includes("schema: has 1001 enum values, past strict mode's 1000"));
+});
+
 test("the envelope instruction carries the packet's schema", () => {
   const schema = { type: "object", properties: { packets: { type: "array", items: { type: "object" } } } };
   const text = envelopeInstruction(schema);

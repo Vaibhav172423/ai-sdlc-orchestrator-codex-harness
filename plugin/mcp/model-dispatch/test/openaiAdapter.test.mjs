@@ -453,3 +453,12 @@ test("strict structured output rides every attempt of the output-cap doubling", 
   for (const req of client.calls) assert.equal(req.text.format.strict, true);
   assert.equal(out.success, true);
 });
+
+test("a schema past strict mode's limits goes without a text format, as any schema strict mode refuses", async () => {
+  let deep = { type: "object", properties: { leaf: { type: "string" } }, required: ["leaf"], additionalProperties: false };
+  for (let i = 1; i < 11; i++) deep = { type: "object", properties: { inner: deep }, required: ["inner"], additionalProperties: false };
+  const client = fakeClient(answer({ inner: {} }));
+  const out = await new OpenAIAdapter(BASE_CONFIG, { client }).execute({ ...PACKET, outputSchema: deep });
+  assert.equal("text" in client.calls[0], false);
+  assert.equal(out.success, true);
+});
