@@ -20,6 +20,7 @@
 import { existsSync, realpathSync, rmSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { abandonCommand, guardCheckCommand } from "./lib/contract-commands.mjs";
 import { OFF_LIMITS_DEFAULT } from "./lib/off-limits.mjs";
 import { GATES_FILE, gatesOutcome, parseGateLines } from "./lib/gate-record.mjs";
 import { isRunId, runDirFor } from "./lib/run-id.mjs";
@@ -36,12 +37,7 @@ export const EXIT_REFUSED = 2;
 /** End outcomes a resumed run may not reopen: the run finished, or the person ended it. */
 const FINAL_OUTCOMES = new Set(["completed", "aborted"]);
 
-const SCRIPT_PATH = fileURLToPath(import.meta.url);
-const shq = (s) => `'${String(s).replace(/'/g, "'\\''")}'`;
-/** The command the person runs to end a run, ready to paste. */
-export const abandonCommand = (runId, root) => `node ${shq(SCRIPT_PATH)} --abandon --run-id=${runId} --project-root=${shq(root)}`;
-/** The guard check, run in a shell call of its own after a freeze or a resume. */
-export const guardCheckCommand = (runId, root) => `node ${shq(SCRIPT_PATH)} --assert-guard-live --run-id=${runId} --project-root=${shq(root)}`;
+export { abandonCommand, guardCheckCommand };
 
 const PERSON_DECIDES = "A wider scope is the person's decision, for a new run with its own Gate 0: stop and tell the person which path is needed and why.";
 

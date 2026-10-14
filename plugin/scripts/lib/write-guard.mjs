@@ -5,7 +5,7 @@
 import { lstatSync, mkdirSync, readdirSync, readlinkSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, isAbsolute, join, parse, relative, resolve, sep } from "node:path";
-import { fileURLToPath } from "node:url";
+import { abandonCommand } from "./contract-commands.mjs";
 import { CREATABLE_WHEN_ABSENT, firstMatch, hardcodedHit } from "./off-limits.mjs";
 import {
   CONTRACT_REL_PATH, DECISIONS_REL_PATH, FROZEN_FILE, LOCK_FILE, appendRegular, contractTampered, gitRoot, liveLock,
@@ -18,6 +18,15 @@ export const WIRED_BY_RUN_FLAG = "--wired-by=run";
 
 const SCOPE_IS_THE_PERSONS =
   "A wider scope is the person's decision, for a new run with its own Gate 0: stop and tell the person which path is needed and why.";
+
+/** A held project whose run is over (a killed session never closes its lock) is freed by the person, with this. */
+const endingIsThePersons = (runId, root) =>
+  `If run ${runId} is no longer running, ending it is the person's decision: ${abandonCommand(runId, root)}`;
+
+/** A refusal a live run causes, with the command that ends the run when its id is known. */
+const endable = (message, runId, root) => (runId && root ? `${message} ${endingIsThePersons(runId, root)}` : message);
+
+const CROSS_PROJECT = "Cross-project writes are refused: a brownfield run writes only inside the repo whose contract it holds.";
 
 // ── what a call writes ──────────────────────────────────────────────────────
 
@@ -414,14 +423,19 @@ function guardedReach(word, cwd, sessionRoot, session, { containing = false, rem
   return null;
 }
 
+/** The refusal of a removal that would take a record a live run keeps. */
+const removalRefusal = (target, g, runId, root) =>
+  `${target} would remove or move ${g}, which run ${runId ?? "?"} keeps while it is live. ` +
+  `${runId ? endingIsThePersons(runId, root) : "Ending a run is the person's decision."} Stop and tell the person.`;
+
 function reachRefusal(target, hit, removal) {
-  const runId = (hit.st.binds ? hit.st.runId : hit.st.live?.run_id) ?? "?";
-  const what = `${hit.g}, which run ${runId} keeps while it is live`;
+  const runId = (hit.st.binds ? hit.st.runId : hit.st.live?.run_id) ?? null;
+  const what = `${hit.g}, which run ${runId ?? "?"} keeps while it is live`;
   const deny = hit.open
     ? `${target} names a path the hook cannot read before the shell expands it (a variable or a command substitution), ` +
       `and it may reach ${what}. Write the path out in full and try again.`
     : removal
-      ? `${target} would remove or move ${what}. Ending a run is the person's decision. Stop and tell the person.`
+      ? removalRefusal(target, hit.g, runId, hit.st.root)
       : `${target} may expand to ${what} (the write contract, or the run's lock, frozen copy, rendered skills, ` +
         `provenance or backups). ${SCOPE_IS_THE_PERSONS}`;
   return { deny, rule: hit.g, state: hit.st };
@@ -503,7 +517,8 @@ function verdict(st, rel, mayCreate, narrow, folder = false) {
   const off = firstMatch(file, c.off_limits, { ci: true });
   if (off) {
     if (c.strict === false) return { warn: `${shown} matches off-limits pattern "${off}". Allowed because contract.strict = false.` };
-    return { deny: `${shown} matches off-limits pattern "${off}" (run ${runId ?? "?"}). ${SCOPE_IS_THE_PERSONS}`, rule: off };
+    const deny = `${shown} matches off-limits pattern "${off}" (run ${runId ?? "?"}). ${SCOPE_IS_THE_PERSONS}`;
+    return { deny: endable(deny, runId, st.root), rule: off };
   }
   if (firstMatch(file, c.allowlist)) return {};
   if (c.strict === false) return { warn: `${shown} is not in the confirmed allowlist. Allowed because contract.strict = false.` };
@@ -514,29 +529,16 @@ function verdict(st, rel, mayCreate, narrow, folder = false) {
         `${endingIsThePersons(runId, st.root)} Stop and tell the person.`,
     };
   }
-  return {
-    deny: `${shown} is not in the confirmed allowlist for run ${runId ?? "?"}. ${SCOPE_IS_THE_PERSONS}` +
-      (runId ? ` ${endingIsThePersons(runId, st.root)}` : ""),
-  };
+  return { deny: endable(`${shown} is not in the confirmed allowlist for run ${runId ?? "?"}. ${SCOPE_IS_THE_PERSONS}`, runId, st.root) };
 }
-
-const WRITE_CONTRACT_SCRIPT = fileURLToPath(new URL("../write-contract.mjs", import.meta.url));
-const shq = (s) => `'${String(s).replace(/'/g, "'\\''")}'`;
-
-/** A held project whose run is over (a killed session never closes its lock) is freed by the person, with this. */
-const endingIsThePersons = (runId, root) =>
-  `If run ${runId} is no longer running, ending it is the person's decision: ` +
-  `node ${shq(WRITE_CONTRACT_SCRIPT)} --abandon --run-id=${runId} --project-root=${shq(root)}`;
 
 function decide(st, abs, target, mayCreate, narrow, folder = false) {
   if (st.tampered) return { deny: st.tampered, rule: "tampered" };
   const { paths, leaves, real } = judgedPaths(st.root, abs);
   if (leaves) {
     if (st.binds && !narrow) {
-      return {
-        deny: `${target} leads OUTSIDE the contract's repo root (${st.root}) through a link. Cross-project writes are ` +
-          `refused: a brownfield run writes only inside the repo whose contract it holds.`,
-      };
+      const deny = `${target} leads OUTSIDE the contract's repo root (${st.root}) through a link. ${CROSS_PROJECT}`;
+      return { deny: endable(deny, st.runId, st.root) };
     }
     const hit = hardFor(toPosix(real), st.binds, mayCreate, folder);
     if (hit) return { deny: hardMessage(target, hit), rule: hit };
@@ -572,11 +574,8 @@ function checkWrite(target, cwd, sessionRoot, session, { mayCreate = false, narr
   const abs = joinRaw(cwd, target);
   if (!narrow && session && (session.binds || session.tampered) && insidePath(sessionRoot, abs) === null) {
     if (session.tampered) return { deny: session.tampered, rule: "tampered", state: session };
-    return {
-      deny: `${abs} resolves OUTSIDE the calling session's contracted repo (${sessionRoot}). Cross-project writes are ` +
-        `refused: a brownfield run writes only inside the repo whose contract it holds.`,
-      state: session,
-    };
+    const deny = `${abs} resolves OUTSIDE the calling session's contracted repo (${sessionRoot}). ${CROSS_PROJECT}`;
+    return { deny: endable(deny, session.runId, sessionRoot), state: session };
   }
   if (shellWord && !isLiteralWord(target)) {
     const hit = guardedReach(target, cwd, sessionRoot, session, { containing: folder, open: !narrow });
@@ -617,12 +616,7 @@ function checkRemoval(target, cwd, sessionRoot, session) {
     for (const rel of judgedPaths(st.root, abs).paths) {
       const g = guardedHit(rel, runId, { containing: true });
       if (g) {
-        return {
-          deny: `${target} would remove or move ${g}, which run ${runId ?? "?"} keeps while it is live. ` +
-            `Ending a run is the person's decision. Stop and tell the person.`,
-          rule: g,
-          state: st,
-        };
+        return { deny: removalRefusal(target, g, runId, st.root), rule: g, state: st };
       }
     }
     if (st.binds && insidePath(st.root, abs) !== null) bound.push({ ...statusOf(st), target, abs });

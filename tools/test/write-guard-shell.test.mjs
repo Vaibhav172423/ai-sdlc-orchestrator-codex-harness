@@ -352,3 +352,24 @@ test("a refusal under a live lock names the command that ends the run, ready to 
     assert.equal(write("docs/x.md").decision, "allow", "the ended run binds nothing");
   } finally { cleanup(base); }
 });
+
+test("every refusal a live run causes names the command that ends it; one that holds without a contract does not", () => {
+  const base = mkdtempSync(join(tmpdir(), "guard-abandon-"));
+  const dir = join(base, "repo");
+  try {
+    mkdirSync(join(dir, ".git"), { recursive: true });
+    mkdirSync(join(base, "elsewhere"));
+    symlinkSync(join(base, "elsewhere"), join(dir, "out"));
+    freezeContract({ projectRoot: dir, runId: "r1", allowlist: ["src/**"], offLimits: ["dist/**", "node_modules/**"], strict: true });
+    const ask = (command) => decideCall({ cwd: dir, ...bash(command) });
+    for (const command of [
+      `echo x > ${join(base, "elsewhere", "a.log")}`, "echo x > out/a.log", "echo x > dist/a.js", "echo x > node_modules/a.js",
+      "echo x > docs/a.md", "rm -rf .sdlc/runs/r1", "rm -f .sdlc/runs/r1/*.json",
+    ]) {
+      const out = ask(command);
+      assert.equal(out.decision, "deny", command);
+      assert.match(out.reason, / If run r1 is no longer running, ending it is the person's decision: node '[^']*write-contract\.mjs' --abandon --run-id=r1 --project-root='/, command);
+    }
+    assert.doesNotMatch(ask("echo x > .env").reason, /--abandon/);
+  } finally { cleanup(base); }
+});
