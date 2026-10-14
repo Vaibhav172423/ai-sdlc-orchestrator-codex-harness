@@ -162,6 +162,8 @@ test("scan: what the shell runs from a string or a here-document is read as shel
   assert.deepEqual(targets("sh -c 'cp a b'"), ["b"]);
   assert.deepEqual(targets("bash -o pipefail -c 'echo x > b'"), ["b"]);
   assert.deepEqual(targets("eval 'cp a' b"), ["b"]);
+  assert.deepEqual(targets("trap 'echo x > b' EXIT; trap - EXIT"), ["b"]);
+  assert.deepEqual(targets("echo [[ > b"), ["b"], "[[ compares only where it is the command");
   assert.deepEqual(targets("bash <<'EOF'\necho x > b\nEOF"), ["b"]);
   assert.deepEqual(targets("bash <<< 'echo x > b'"), ["b"]);
   assert.deepEqual(targets("echo 'echo x > b' | sh"), ["b"]);

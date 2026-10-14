@@ -1,7 +1,7 @@
 /**
  * What a shell command writes, removes and patches, read as sh, bash and zsh split it. Quoted text, comments and
  * here-document bodies are data. What the shell runs from them is read again as shell: a command substitution, the
- * string `sh -c` or `eval` runs, and the here-document or piped text a shell reads as its script.
+ * string `sh -c`, `eval` or `trap` runs, and the here-document or piped text a shell reads as its script.
  *
  * `scanShell` returns effects in command order: `{kind: "write", path, tight}` (a redirect, `tee`, `touch`; `tight`
  * when no blank comes before the operator), `{kind: "copy", tool, flags, args}` (`cp`, `mv`, `git mv`),
@@ -244,7 +244,8 @@ function lex(text, from, stop, ctx, level) {
     if (tight && op[0] === ">" && (text[j - 1] === "-" || text[j - 1] === "=")) tok.arrow = true;
     let k = j + op.length;
     while (text[k] === " " || text[k] === "\t") k++;
-    if (k < text.length && !WORD_END.has(text[k]) && text[k] !== "(" || ((text[k] === "<" || text[k] === ">") && text[k + 1] === "(")) {
+    const procSubTarget = (text[k] === "<" || text[k] === ">") && text[k + 1] === "(";
+    if ((k < text.length && !WORD_END.has(text[k]) && text[k] !== "(") || procSubTarget) {
       const w = lexWord(text, k, ctx, level);
       if (op === "<<" || op === "<<-") {
         tok.doc = { delim: w.value, strip: op === "<<-", quoted: !w.plain, body: "" };
@@ -303,7 +304,8 @@ function lex(text, from, stop, ctx, level) {
       i = redirect(w.end, op, glued(i));
       continue;
     }
-    if (w.plain && w.value === "[[") test = true;
+    const atCommand = !last || last.tok.t === "op" || (last.tok.t === "word" && last.tok.plain && RESERVED.has(last.tok.v));
+    if (w.plain && w.value === "[[" && atCommand) test = true;
     else if (w.plain && w.value === "]]") test = false;
     push({ t: "word", v: w.value, raw: w.raw, plain: w.plain }, w.end);
     i = w.end;
@@ -499,6 +501,7 @@ function simple(cmd, out, depth, feedsShell) {
   }
   if (feedsShell) for (const v of vals) visit(v, out, depth + 1);
   if (name === "eval") visit(vals.join(" "), out, depth + 1);
+  if (name === "trap" && vals[0] && !vals[0].startsWith("-")) visit(vals[0], out, depth + 1);
   if (name === "tee") for (const p of operands(args).ops) add(out, { kind: "write", path: p, tight: false });
   else if (name === "touch") for (const p of operands(args, "rtdA", ["--reference", "--date"]).ops) add(out, { kind: "write", path: p, tight: false });
   else if (name === "cp" || name === "mv") copy(name, args, out);
