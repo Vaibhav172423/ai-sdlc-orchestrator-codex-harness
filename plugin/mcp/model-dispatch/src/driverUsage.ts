@@ -57,6 +57,11 @@ export interface DriverTurn {
   /** What this turn added to the thread; null for an incomplete turn. */
   delta: DriverUsage | null;
   flags: DriverTurnFlag[];
+  /**
+   * An incomplete turn's tokens are in the delta of this later complete turn on
+   * the same thread. Set when that turn arrives, so a live reader sees null first.
+   */
+  covered_by?: { invocation: number; turn: number } | null;
 }
 
 export function normalizeUsage(raw: unknown): DriverUsage {
@@ -163,6 +168,8 @@ const NO_THREAD = "(no thread id)";
 export class DriverTurnTracker {
   private readonly prev = new Map<string, DriverUsage>();
   private readonly seen = new Set<string>();
+  /** Per thread, incomplete turns since its last running total. */
+  private readonly uncovered = new Map<string, DriverTurn[]>();
   private readonly baselines: Record<string, Partial<DriverUsage>>;
   private inv: InvocationState | null = null;
 
@@ -303,6 +310,12 @@ export class DriverTurnTracker {
       }
       this.prev.set(key, usage);
     }
+    // A total that dropped may have lost them; zeros carry nothing yet, so the next total still can.
+    if (inv.thread && !flags.includes("zero_usage")) {
+      const covers = flags.includes("cumulative_reset") ? [] : (this.uncovered.get(inv.thread) ?? []);
+      for (const t of covers) t.covered_by = { invocation: inv.invocation, turn: open.turn };
+      this.uncovered.delete(inv.thread);
+    }
     return {
       invocation: inv.invocation,
       turn: open.turn,
@@ -320,7 +333,7 @@ export class DriverTurnTracker {
   private closeOpen(done: DriverTurn[], reason: string, at: string | null = null): void {
     const inv = this.inv;
     if (!inv?.open) return;
-    done.push({
+    const turn: DriverTurn = {
       invocation: inv.invocation,
       turn: inv.open.turn,
       thread_id: inv.thread,
@@ -331,7 +344,10 @@ export class DriverTurnTracker {
       cumulative: null,
       delta: null,
       flags: [],
-    });
+      covered_by: null,
+    };
+    done.push(turn);
+    if (inv.thread) this.uncovered.set(inv.thread, [...(this.uncovered.get(inv.thread) ?? []), turn]);
     inv.open = null;
   }
 }
@@ -418,6 +434,8 @@ export interface DriverUsageSummary {
   turns: number;
   turns_complete: number;
   turns_incomplete: number;
+  /** Incomplete turns a later running total on the same thread carries, so they are in cost_usd. */
+  turns_incomplete_covered: number;
   /** Complete turns no card priced; their cost is left out of cost_usd. */
   turns_unpriced: number;
   /** Turns whose summed input crossed a tier threshold with no per-response sizes to prove which card bills. */
@@ -452,6 +470,7 @@ export function summarizeDriverTurns(turns: DriverTurn[], pricing: ModelPricing 
     turns: turns.length,
     turns_complete: complete,
     turns_incomplete: turns.length - complete,
+    turns_incomplete_covered: turns.filter((t) => t.status === "incomplete" && t.covered_by).length,
     turns_unpriced: unpriced,
     turns_tier_unverified: unverified,
     turns_long_context: long,

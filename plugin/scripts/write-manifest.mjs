@@ -195,6 +195,7 @@ function driverBlock(dm) {
     codex_invocations: dm.codex_invocations ?? null,
     driver_turns: dm.driver_turns ?? null,
     driver_turns_incomplete: dm.driver_turns_incomplete ?? null,
+    driver_turns_incomplete_covered: dm.driver_turns_incomplete_covered ?? null,
     driver_cost_usd_modeled: finite(dm.driver_cost_usd_modeled),
     driver_cost_complete: dm.driver_cost_complete ?? null,
     outcome: dm.outcome ?? null,
@@ -224,6 +225,13 @@ function unpricedIncompleteTurns(usage) {
     .reduce((n, t) => n + (Number.isInteger(t.unreported_invocations) ? t.unreported_invocations : 0), 0);
 }
 
+/** Incomplete turns no later running total on their thread carries: the ones missing from driver-manifest.json's figure. */
+function uncoveredIncompleteTurns(dm) {
+  if (!Number.isInteger(dm.driver_turns_incomplete)) return null;
+  const covered = Number.isInteger(dm.driver_turns_incomplete_covered) ? dm.driver_turns_incomplete_covered : 0;
+  return Math.max(0, dm.driver_turns_incomplete - covered);
+}
+
 /**
  * The conductor's modeled cost: the session collector's driver-usage.json,
  * which books the session file where the exec stream disagrees with it, else
@@ -249,7 +257,7 @@ function driverTotals(runDir, dm) {
   if (dm && finite(dm.driver_cost_usd_modeled) !== null) {
     return {
       driver_cost_usd_modeled: dm.driver_cost_usd_modeled,
-      driver_turns_incomplete: dm.driver_turns_incomplete ?? null,
+      driver_turns_incomplete: uncoveredIncompleteTurns(dm),
       driver_cost_source: "driver-manifest.json",
       driver_usage: null,
     };

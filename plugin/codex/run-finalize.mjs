@@ -143,6 +143,7 @@ export function runCost(runDir) {
     modeled_usd: t.modeled_usd,
     driver_turns_incomplete: driver.turns_incomplete,
     driver_turns_incomplete_unpriced: driver.turns_incomplete_unpriced,
+    driver_turns_incomplete_covered: driver.turns_incomplete_covered,
   };
 }
 

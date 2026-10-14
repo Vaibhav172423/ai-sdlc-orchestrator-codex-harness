@@ -411,6 +411,13 @@ function driverSummary(run) {
   const manifestIncomplete = [d.driver_turns_incomplete, d.incomplete_turns].find((v) => Number.isInteger(v) && v >= 0) ?? 0;
   const stream = streamIncompleteTurns(run.driverStream);
   const incomplete = Math.max(incompleteRows.length, manifestIncomplete, stream.total);
+  // A later running total on the same thread holds these turns' tokens, so the figure has them.
+  const coveredByThread = {};
+  for (const r of incompleteRows) {
+    if (str(r.covered_by)) coveredByThread[str(r.thread_id) ?? ""] = (coveredByThread[str(r.thread_id) ?? ""] ?? 0) + 1;
+  }
+  const manifestCovered = Number.isInteger(d.driver_turns_incomplete_covered) ? d.driver_turns_incomplete_covered : 0;
+  const covered = Math.min(incomplete, Math.max(Object.values(coveredByThread).reduce((n, c) => n + c, 0), manifestCovered));
   const rowThreads = strings(rows.map((r) => r.thread_id));
   const collected = usableUsage(run.driverUsage);
   // A resumed run spent past an older collection; its live rows are the newer figure.
@@ -418,7 +425,7 @@ function driverSummary(run) {
   const usage = staleUsage && run.driverFile ? null : collected;
   const base = {
     measured: false, booked_from: null, source: null, cost_source: null, verification: null,
-    turns: 0, turns_incomplete: incomplete, turns_incomplete_unpriced: incomplete,
+    turns: 0, turns_incomplete: incomplete, turns_incomplete_unpriced: incomplete - covered, turns_incomplete_covered: covered,
     m: null, input_tokens: null, cached_input_tokens: null, output_tokens: null,
     thread_ids: strings(d.thread_ids).length ? strings(d.thread_ids) : rowThreads,
     window: null, unpriced: [], cross_check: d.driver_cross_check ?? null, flags: {},
@@ -438,16 +445,21 @@ function driverSummary(run) {
     // The session file holds the usage of turns the exec stream never completed, so only
     // incomplete turns on threads booked from the exec stream are missing from the figure.
     const booked = sessionBookedThreads(usage);
-    let unpricedIncomplete = incomplete;
-    if (booked === "all") unpricedIncomplete = 0;
-    else if (booked.size) {
+    let unpricedIncomplete = base.turns_incomplete_unpriced;
+    let coveredIncomplete = covered;
+    if (booked === "all") {
+      unpricedIncomplete = 0;
+      coveredIncomplete = 0;
+    } else if (booked.size) {
       const rowsByThread = {};
       for (const r of incompleteRows) rowsByThread[str(r.thread_id) ?? ""] = (rowsByThread[str(r.thread_id) ?? ""] ?? 0) + 1;
       const keys = [...new Set([...Object.keys(stream.byThread), ...Object.keys(rowsByThread)])];
       const perThread = (k) => Math.max(stream.byThread[k] ?? 0, rowsByThread[k] ?? 0);
+      const coveredIn = (k) => Math.min(perThread(k), coveredByThread[k] ?? 0);
       const attributed = keys.reduce((n, k) => n + perThread(k), 0);
-      unpricedIncomplete = keys.filter((k) => !booked.has(k)).reduce((n, k) => n + perThread(k), 0)
-        + Math.max(0, incomplete - attributed);
+      const fromStream = keys.filter((k) => !booked.has(k));
+      coveredIncomplete = fromStream.reduce((n, k) => n + coveredIn(k), 0);
+      unpricedIncomplete = fromStream.reduce((n, k) => n + perThread(k) - coveredIn(k), 0) + Math.max(0, incomplete - attributed);
     }
     driver = {
       ...base,
@@ -458,6 +470,7 @@ function driverSummary(run) {
       verification: verificationOf(costSource, usage.verified, crossCheck),
       turns: Array.isArray(usage.turns) ? usage.turns.filter((t) => isNum(t?.cost_usd)).length : count(usage.turns) ?? complete.length,
       turns_incomplete_unpriced: unpricedIncomplete,
+      turns_incomplete_covered: coveredIncomplete,
       m: micros(usage.cost_usd_modeled),
       // Fresh input, as driver-cost-modeled.jsonl and telemetry.jsonl store it.
       input_tokens: tokIn == null ? null : Math.max(0, tokIn - tokCached),
@@ -809,6 +822,14 @@ function checkCells(buckets) {
 function incompleteNote(dr) {
   const priced = dr.turns_incomplete - dr.turns_incomplete_unpriced;
   const floor = dr.bound === "floor";
+  const covered = dr.turns_incomplete_covered ?? 0;
+  if (covered > 0) {
+    const session = priced - covered;
+    const parts = [`${covered === dr.turns_incomplete ? "" : `${covered} `}held in a later running total on the same thread`];
+    if (session > 0) parts.push(`${session} priced from the session file`);
+    if (dr.turns_incomplete_unpriced > 0) parts.push(`${dr.turns_incomplete_unpriced} with no usage anywhere, ${floor ? "a floor" : "missing from the figure"}`);
+    return `no usage reported; ${parts.join("; ")}`;
+  }
   if (priced <= 0) return floor ? "no usage reported; the cost is a floor" : "no usage reported; their cost is missing from the figure";
   if (dr.turns_incomplete_unpriced === 0) return "no exec-stream usage; priced from the session file";
   return `${dr.turns_incomplete_unpriced} with no usage anywhere, ${floor ? "a floor" : "missing from the figure"}; the rest priced from the session file`;

@@ -112,7 +112,7 @@ export function driverLine(m) {
     return `Conductor (driver) cost, modeled from driver-usage.json: ${usd(cost)}.${basis} Modeled means token counts at the dated price list's rates, not a bill.${seat}`;
   }
   if (d && Number.isFinite(cost)) {
-    const incomplete = Number(d.driver_turns_incomplete) || 0;
+    const incomplete = Math.max(0, (Number(d.driver_turns_incomplete) || 0) - (Number(d.driver_turns_incomplete_covered) || 0));
     const floor = incomplete ? `, ${incomplete} incomplete: their cost is not known, so this figure is a floor` : "";
     const head = `Conductor (driver) cost, modeled: ${usd(cost)} over ${plural(Number(d.driver_turns) || 0, "turn")}${floor}.`;
     const tail = " Modeled means token counts at the dated price list's rates, not a bill." + seat;

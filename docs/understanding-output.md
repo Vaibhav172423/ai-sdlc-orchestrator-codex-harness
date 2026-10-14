@@ -53,14 +53,14 @@ The `Prov` column is the provenance of that phase's events:
 
 The conductor's own token consumption. The report books `driver-usage.json` when the run folder has one and nothing was recorded in `driver-events.jsonl` or `driver-session.jsonl` after it was collected, and `driver-cost-modeled.jsonl` otherwise; the `Source` line says which reading that is. A `driver-usage.json` a resumed run spent past is named in a note under the run total.
 
-codex reports each turn's usage as the thread's running total, and `codex exec resume` carries that total into the next invocation, so each turn is priced as the difference from the previous total. A turn that failed or was cut off mid-way is recorded as incomplete: its cost is unknown, not $0. Tokens of a failed turn show up in the next completed turn's running total.
+codex reports each turn's usage as the thread's running total, and `codex exec resume` carries that total into the next invocation, so each turn is priced as the difference from the previous total. A turn that failed or was cut off mid-way is recorded as incomplete. Its tokens show up in the next completed turn's running total on the same thread, so once that turn completes they are in the figure; an incomplete turn with no later total on its thread has an unknown cost, not $0.
 
 | Line | Meaning |
 |---|---|
 | `Cost source` | The collector's own description of the reading, from `driver-usage.json`, including its `LOWER BOUND`, `INCOMPLETE`, `PROVISIONAL`, `TIER UNVERIFIED` or `upper bound` qualifiers |
 | `Verification` | `verified` when the exec stream and the session file agree, `UNVERIFIED` otherwise (always so on the interactive route, which has no exec stream), followed by the qualifiers above |
 | `Turns` | Driver turns with a priced usage record |
-| `Incomplete turns` | Turns that started and never reported usage in the exec stream: a failed turn, or one cut off by a signal. When the session file priced them the note says so and the total is unaffected; otherwise the run total becomes a floor. |
+| `Incomplete turns` | Turns that started and never reported usage in the exec stream: a failed turn, or one cut off by a signal. When a later running total on the same thread holds them, or the session file priced them, the note says so and the total is unaffected; otherwise the run total becomes a floor. |
 | `Tokens (in / out)` | Fresh input and output, every turn the reading counted, unpriced ones included |
 | `Cached input` | Cached input, kept out of the input figure |
 | `Unpriced` | Turns on a model with no price, left out of the figure. The run total becomes a floor. |
@@ -92,7 +92,7 @@ node plugin/scripts/report.mjs .sdlc/runs/<run-id> --markdown > .sdlc/runs/<run-
 
 | Qualifier | Meaning |
 |---|---|
-| `at least` | Cost is missing: an incomplete or unpriced driver turn, an unread conductor thread, a window that opens late, a turn still running, a last turn that reported zero usage, a driver turn whose summed input crossed a long-context threshold with no per-response sizes (billed at the standard card), a `driver-usage.json` a resumed run spent past, or a dispatched call with partial usage |
+| `at least` | Cost is missing: an incomplete driver turn no later running total holds, an unpriced driver turn, an unread conductor thread, a window that opens late, a turn still running, a last turn that reported zero usage, a driver turn whose summed input crossed a long-context threshold with no per-response sizes (billed at the standard card), a `driver-usage.json` a resumed run spent past, or a dispatched call with partial usage |
 | `at most` | The figure can include cost from outside this run: a resumed thread priced at its whole running total (`baseline_unknown`, or the collector's `upper bound`), or a driver window that covers the whole conductor thread |
 | `about` | Reasons of both kinds apply, or a thread's running total dropped (`cumulative_reset`), so the figure can be off either way |
 
@@ -134,7 +134,7 @@ In each run's folder, `.sdlc/runs/<run-id>/`:
 | `skills/` | The playbooks rendered with this run's paths (`pipeline.md`, `brownfield-guide.md`, `discovery.md`, `roles/*.md`). The conductor reads these copies, never the plugin's own `SKILL.md` files. |
 | `driver-events.jsonl` | `run.mjs` runs: one JSON line per record. `invocation_start` and `invocation_end` bracket each `codex exec`, `codex` lines carry each raw event with its arrival time, and `run_end` names the outcome and exit code. Written as events arrive. |
 | `driver-stderr.log` | `run.mjs` runs: what codex wrote to stderr, with a header line per invocation. |
-| `driver-cost-modeled.jsonl` | `run.mjs` runs: one modeled row per conductor turn, `status` `complete` or `incomplete`, priced from the exec stream with `price_basis`, `price_tier` and `price_verified`. |
+| `driver-cost-modeled.jsonl` | `run.mjs` runs: one modeled row per conductor turn, `status` `complete` or `incomplete`, priced from the exec stream with `price_basis`, `price_tier` and `price_verified`. An incomplete row whose tokens a later row's delta holds names that row in `covered_by`. |
 | `driver-manifest.json` | `run.mjs` runs: the pins, how the run ended (`outcome`, `exit_code`), incomplete turns, codex warnings, the thread ids, the model and effort codex's session file shows for each thread (`driver_model_observed`: `match`, `mismatch` or `unverified` against the pin), the driver's price record (`driver_price`, `price_list_verified`), and the modeled driver cost. After the run end it holds the booked figure (`driver_cost_usd_modeled`, `driver_cost_source`, `driver_verified`) beside the exec stream's own (`driver_cost_usd_exec_stream`). |
 | `driver-session.jsonl` | One line per `start-run.mjs`, dispatch or collection run in a codex shell: the time and the codex thread (`CODEX_THREAD_ID`). It names the conductor's session file and scopes its window. |
 | `driver-usage.json` | Written at every run end (and by `node plugin/scripts/collect-driver-usage.mjs <run-folder>`): the conductor's modeled cost read from its codex session file, per response at the dated price list's rates; on a `run.mjs` run, the token-for-token cross-check against the exec stream per thread and per invocation. `excluded_threads` names any thread it left out as not the conductor's, such as a nested codex-cli dispatch's. |

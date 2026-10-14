@@ -683,16 +683,18 @@ function money(usd, bound) {
   return usd == null ? "not measured" : `${BOUND_WORD[bound] ?? ""}$${usd.toFixed(4)}`;
 }
 
-/** Which incomplete turns the booked figure holds: the session file can price a turn the exec stream never completed. */
+/** Which incomplete turns the booked figure holds: a later running total on the thread, or the session file, can carry them. */
 function incompleteText(m, cost) {
   const n = cost ? cost.driver_turns_incomplete : m.driver_turns_incomplete;
   if (!n) return "";
-  const unpriced = cost ? cost.driver_turns_incomplete_unpriced : m.driver_cost_complete === true ? 0 : n;
-  const priced = n - unpriced;
-  const parts = [];
-  if (priced > 0) parts.push(`${unpriced > 0 ? `${priced} ` : ""}priced from the session file`);
-  if (unpriced > 0) parts.push(`${priced > 0 ? `${unpriced} ` : ""}not priced, cost not known, not $0`);
-  return ` (${n} incomplete: ${parts.join("; ")})`;
+  const covered = Math.min(n, (cost ? cost.driver_turns_incomplete_covered : m.driver_turns_incomplete_covered) ?? 0);
+  const unpriced = cost ? cost.driver_turns_incomplete_unpriced : m.driver_cost_complete === true ? 0 : n - covered;
+  const groups = [
+    [covered, "in a later turn's running total"],
+    [n - unpriced - covered, "priced from the session file"],
+    [unpriced, "not priced, cost not known, not $0"],
+  ].filter(([k]) => k > 0);
+  return ` (${n} incomplete: ${groups.map(([k, text]) => `${groups.length > 1 ? `${k} ` : ""}${text}`).join("; ")})`;
 }
 
 /** The conductor's figure and how it was checked, as the run's last lines say it; `cost` is the report's booking. */

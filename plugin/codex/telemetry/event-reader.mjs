@@ -153,6 +153,8 @@ export function driverCostRow(turn, opts) {
     thread_id: turn.thread_id,
     status: complete ? "complete" : "incomplete",
     incomplete_reason: complete ? null : turn.incomplete_reason,
+    // The task_id of the later row whose tokens hold this turn's.
+    ...(!complete && turn.covered_by ? { covered_by: `driver-i${turn.covered_by.invocation}-t${turn.covered_by.turn}` } : {}),
     usage_source: "exec-stream",
     ...(turn.flags?.length ? { driver_flags: turn.flags } : {}),
   };
