@@ -1,5 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 
 import {
   envelopeInstruction,
@@ -38,6 +39,13 @@ const ACCEPTED = [
     }),
   ],
 ];
+
+for (const mode of ["greenfield", "brownfield"]) {
+  ACCEPTED.push([
+    `the shipped ${mode} plan schema`,
+    JSON.parse(readFileSync(new URL(`../../../config/schemas/plan-packets.${mode}.json`, import.meta.url), "utf8")),
+  ]);
+}
 
 for (const [name, schema] of ACCEPTED) {
   test(`strict mode accepts ${name}`, () => {

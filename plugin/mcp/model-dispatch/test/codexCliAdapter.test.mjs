@@ -425,6 +425,20 @@ test("a schema strict mode would refuse is replaced by the envelope, and the val
   });
 });
 
+test("the shipped plan schemas take the enforced path: sent to --output-schema as they are, never enveloped", async () => {
+  const plan = { packets: [] };
+  for (const mode of ["greenfield", "brownfield"]) {
+    const schema = JSON.parse(readFileSync(new URL(`../../../config/schemas/plan-packets.${mode}.json`, import.meta.url), "utf8"));
+    await withCodexStub(plan, async (codexBin, captured) => {
+      const out = await new CodexCliAdapter(BASE_CONFIG, { codexBin }).execute({ ...PACKET, phase: "plan_task_packets", outputSchema: schema });
+      assert.deepEqual(captured().schema, schema, mode);
+      assert.doesNotMatch(captured().prompt, /result_json/, mode);
+      assert.equal(out.success, true);
+      assert.deepEqual(out.result, plan);
+    });
+  }
+});
+
 test("result_json that is not JSON degrades to a raw wrapper, as a non-JSON final message does", async () => {
   const spawnFn = fakeSpawn(() => ({
     lastMessage: JSON.stringify({ result_json: "not json at all" }),
