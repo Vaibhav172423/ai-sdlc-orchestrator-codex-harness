@@ -1,6 +1,7 @@
 // Interactive conductor cost when several runs share one codex thread: every
-// response the session file records is booked by at most one run, and a
-// thread whose turns the figure leaves out marks it incomplete.
+// response the session file records is booked by at most one run, a thread
+// whose turns the figure leaves out marks it incomplete, and the cap counts
+// the headless invocation still running.
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
@@ -10,7 +11,7 @@ import { fileURLToPath } from "node:url";
 
 import { driverSpendForCap, measureDriverUsage } from "../dist/sessionUsage.js";
 import { loadPolicyFromPath } from "../dist/policy.js";
-import { SyntheticRollout, inside, marker, u, writeJsonl } from "./fixtures/syntheticRollout.mjs";
+import { SyntheticRollout, driverEventLines, inside, marker, u, writeJsonl } from "./fixtures/syntheticRollout.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const POLICY = loadPolicyFromPath(join(HERE, "..", "..", "..", "config", "policies", "gpt-plus-flash.yaml"));
@@ -238,6 +239,83 @@ test("conductor turns in a thread run.json never started are left out, and the f
     const only = driverSpendForCap(run, POLICY, { codexHome: s.home });
     assert.deepEqual([only.source, only.unmeasured], ["none", true], "with nothing else to book, the cap reports the conductor unmeasured");
     assert.match(only.note, /run\.json records no start of this run in/);
+  } finally {
+    s.done();
+  }
+});
+
+test("headless: the cap adds the running invocation's session-file turns to the driver rows, and stops once its row lands", () => {
+  const s = sandbox("r1");
+  try {
+    const [run] = s.runs;
+    const r = new SyntheticRollout({ threadId: T1 });
+    const t1 = r.turn({ responses: [{ usage: u(100_000) }] });
+    const t2 = r.turn({ responses: Array.from({ length: 4 }, () => ({ usage: u(250_000) })), end: null });
+    r.write(s.home);
+    const events = (invs) => writeJsonl(join(run, "driver-events.jsonl"), driverEventLines(T1, invs));
+    events([{ turn: t1 }, { turn: t2, incomplete: true, open: true }]);
+    const row = (invocation, usd, extra = {}) => ({ invocation, thread_id: T1, status: "complete", cost_usd: usd, provenance: "modeled", ...extra });
+    writeJsonl(join(run, "driver-cost-modeled.jsonl"), [row(1, 0.2)]);
+
+    const live = driverSpendForCap(run, POLICY, { codexHome: s.home });
+    assert.equal(live.source, "driver-cost-modeled");
+    assert.equal(live.usd, 2.2, "$0.20 reported plus 1M fresh input still running");
+    assert.match(live.note, /plus the session file's turns of 1 invocation\(s\) not yet reported \(2\)/);
+    assert.deepEqual(live.not_counted, []);
+
+    events([{ turn: t1 }, { turn: t2 }]);
+    writeJsonl(join(run, "driver-cost-modeled.jsonl"), [row(1, 0.2), row(2, 2)]);
+    const reported = driverSpendForCap(run, POLICY, { codexHome: s.home });
+    assert.equal(reported.usd, 2.2, "never both the row and the session file");
+    assert.equal(reported.note, "2 complete driver turn(s)");
+  } finally {
+    s.done();
+  }
+});
+
+test("headless: a killed invocation before the running one is counted from the session file, not named as left out", () => {
+  const s = sandbox("r1");
+  try {
+    const [run] = s.runs;
+    const r = new SyntheticRollout({ threadId: T1 });
+    const t1 = r.turn({ responses: [{ usage: u(100_000) }] });
+    const t2 = r.turn({ responses: [{ usage: u(200_000) }], end: "aborted" });
+    const t3 = r.turn({ responses: [{ usage: u(150_000) }], end: null });
+    r.write(s.home);
+    writeJsonl(join(run, "driver-events.jsonl"), driverEventLines(T1, [{ turn: t1 }, { turn: t2, incomplete: true }, { turn: t3, incomplete: true, open: true }]));
+    writeJsonl(join(run, "driver-cost-modeled.jsonl"), [
+      { invocation: 1, thread_id: T1, status: "complete", cost_usd: 0.2 },
+      { invocation: 2, thread_id: T1, status: "incomplete", cost_usd: null },
+    ]);
+    const spend = driverSpendForCap(run, POLICY, { codexHome: s.home });
+    assert.equal(spend.usd, r6(0.2 + cost(u(350_000))));
+    assert.deepEqual(spend.not_counted, []);
+
+    writeJsonl(join(run, "driver-cost-modeled.jsonl"), [
+      { invocation: 1, thread_id: T1, status: "complete", cost_usd: 0.2 },
+      { invocation: 2, thread_id: T1, status: "incomplete", cost_usd: null },
+      { invocation: 3, thread_id: T1, status: "complete", cost_usd: r6(cost(u(350_000))) },
+    ]);
+    const after = driverSpendForCap(run, POLICY, { codexHome: s.home });
+    assert.equal(after.usd, r6(0.2 + cost(u(350_000))));
+    assert.deepEqual(after.not_counted, [], "the later running total holds the killed turn's tokens");
+  } finally {
+    s.done();
+  }
+});
+
+test("headless: a running invocation with no readable session file is named as not counted", () => {
+  const s = sandbox("r1");
+  try {
+    const [run] = s.runs;
+    const r = new SyntheticRollout({ threadId: T1 });
+    const t1 = r.turn({ responses: [{ usage: u(100_000) }] });
+    const t2 = r.turn({ responses: [{ usage: u(50_000) }], end: null });
+    writeJsonl(join(run, "driver-events.jsonl"), driverEventLines(T1, [{ turn: t1 }, { turn: t2, incomplete: true, open: true }]));
+    writeJsonl(join(run, "driver-cost-modeled.jsonl"), [{ invocation: 1, thread_id: T1, status: "complete", cost_usd: 0.2 }]);
+    const spend = driverSpendForCap(run, POLICY, { codexHome: s.home });
+    assert.equal(spend.usd, 0.2);
+    assert.deepEqual(spend.not_counted, ["invocation(s) 2 not yet reported (no readable session file)"]);
   } finally {
     s.done();
   }

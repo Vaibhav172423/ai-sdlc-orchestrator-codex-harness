@@ -2126,11 +2126,74 @@ function leftOutThreads(excluded: unknown): number {
   return Array.isArray(excluded) ? excluded.filter((e) => e?.conductor_turns_left_out === true).length : 0;
 }
 
+interface RunningSpend {
+  usd: number;
+  invocations: number[];
+  /** Incomplete driver rows whose tokens this figure, or a later row's running total, holds. */
+  counted: Set<number>;
+  not_counted: string[];
+}
+
+const ZERO_USAGE_FLAG = "zero_usage";
+
+/**
+ * The session-file cost of the invocations no complete driver row reports
+ * yet: the one running now, and a killed or zero-usage one before it, whose
+ * tokens only a later running total would carry. `rows` are the parsed
+ * driver-cost-modeled.jsonl lines.
+ */
+function runningInvocationSpend(runDir: string, policy: Policy, rows: any[], opts: DriverSpendOptions): RunningSpend {
+  const out: RunningSpend = { usd: 0, invocations: [], counted: new Set(), not_counted: [] };
+  const invs = parseDriverEvents(readJsonl(join(runDir, DRIVER_EVENTS_FILE))).filter(
+    (i) => !i.legacy && typeof i.invocation === "number" && isThreadId(i.thread_id),
+  );
+  const reporting = rows.filter(
+    (r) => r?.status === "complete" && !(Array.isArray(r.driver_flags) && r.driver_flags.includes(ZERO_USAGE_FLAG)),
+  );
+  if (invs.length === 0 || reporting.some((r) => typeof r.invocation !== "number")) return out;
+  const reportedUpTo = (thread: string) =>
+    reporting.filter((r) => r.thread_id === thread || r.thread_id == null).reduce((n, r) => Math.max(n, r.invocation), -Infinity);
+  for (const r of rows) {
+    if (r?.status === "incomplete" && typeof r.invocation === "number" && isThreadId(r.thread_id) && r.invocation < reportedUpTo(r.thread_id)) {
+      out.counted.add(r.invocation);
+    }
+  }
+  const pending = invs.filter((i) => (i.invocation as number) > reportedUpTo(i.thread_id as string));
+  if (pending.length === 0) return out;
+  out.invocations = pending.map((i) => i.invocation as number);
+  const label = `invocation(s) ${out.invocations.join(", ")}`;
+  const measured = measureDriverUsage({
+    runDir,
+    policy,
+    codexHome: opts.codexHome ?? defaultCodexHome(opts.env),
+    env: opts.env,
+    priceFn: opts.priceFn,
+    crossCheck: false,
+    ignoreLegacy: true,
+  });
+  if (!measured.ok) {
+    out.not_counted.push(`${label} not yet reported (no readable session file)`);
+    return out;
+  }
+  const read = new Set(measured.report.threads.filter((t) => t.booked_from === "session-file").map((t) => t.thread_id));
+  const unread = pending.filter((i) => !read.has(i.thread_id as string)).map((i) => i.invocation as number);
+  const wanted = new Set(out.invocations.filter((n) => !unread.includes(n)));
+  const turns = measured.report.turns.filter((t) => t.usage_source === "session-file" && t.invocation !== null && wanted.has(t.invocation));
+  out.usd = turns.reduce((s, t) => s + (t.cost_usd ?? 0), 0);
+  for (const n of wanted) out.counted.add(n);
+  const unpriced = turns.filter((t) => t.unpriced_reason).length;
+  if (unpriced > 0) out.not_counted.push(`${unpriced} unpriced turn(s) of ${label}`);
+  if (unread.length > 0) out.not_counted.push(`invocation(s) ${unread.join(", ")} not yet reported (no readable session file)`);
+  return out;
+}
+
 /**
  * The conductor's modeled spend for a run folder, from one source only, in
  * the order the cost report books it: driver-usage.json while nothing was
- * recorded after it, else the complete rows of driver-cost-modeled.jsonl,
- * else the session file read live (which also covers the turn still running).
+ * recorded after it, else the complete rows of driver-cost-modeled.jsonl
+ * plus the session file's turns of the invocations no row reports yet (the
+ * one running), else the session file read live (which also covers the turn
+ * still running).
  */
 export function driverSpendForCap(runDir: string, policy: Policy, opts: DriverSpendOptions = {}): DriverSpend {
   const usage = readDriverUsageFile(runDir);
@@ -2148,17 +2211,24 @@ export function driverSpendForCap(runDir: string, policy: Policy, opts: DriverSp
   const rows = all.filter((r) => r?.status === "complete" && typeof r.cost_usd === "number" && Number.isFinite(r.cost_usd));
   if (rows.length > 0) {
     const usd = rows.reduce((s, r) => s + r.cost_usd, 0);
-    // A covered row's tokens are in the covering complete row's delta.
-    const incomplete = all.filter((r) => r?.status === "incomplete" && !str(r.covered_by)).length;
+    const running = runningInvocationSpend(runDir, policy, all, opts);
+    // A covered row's tokens are in the covering complete row's delta; a running invocation's are read live.
+    const incomplete = all.filter(
+      (r) => r?.status === "incomplete" && !str(r.covered_by) && !running.counted.has(r.invocation),
+    ).length;
     const unpricedRows = all.filter((r) => r?.status === "complete" && r.cost_usd == null).length;
     const notCountedRows = [
       ...(incomplete > 0 ? [`${incomplete} incomplete driver turn(s)`] : []),
       ...(unpricedRows > 0 ? [`${unpricedRows} unpriced driver turn(s)`] : []),
+      ...running.not_counted,
     ];
+    const pending = running.invocations.length
+      ? `, plus the session file's turns of ${running.invocations.length} invocation(s) not yet reported (${running.invocations.join(", ")})`
+      : "";
     return {
-      usd: round6(usd),
+      usd: round6(usd + running.usd),
       source: "driver-cost-modeled",
-      note: `${rows.length} complete driver turn(s)`,
+      note: `${rows.length} complete driver turn(s)${pending}`,
       not_counted: notCountedRows,
       unmeasured: false,
     };
