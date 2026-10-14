@@ -102,6 +102,124 @@ test("--policy finds none of the Claude harness policies, and refuses one placed
   } finally { cleanup(policiesDir); cleanup(dir); }
 });
 
+const GPT_MODEL = ["  - id: gpt", "    adapter: openai", "    model_name: gpt-5.6-terra", "    auth: { env: OPENAI_API_KEY }"];
+
+function policyFile(name, lines) {
+  return ["version: 1", `name: ${name}`, ...lines, ""].join("\n");
+}
+
+function seedDriverPolicies() {
+  const dir = newTmpDir();
+  writeFileSync(join(dir, "gpt-driver.yaml"), policyFile("gpt-driver", [
+    "driver:",
+    "  model_name: gpt-5.6-terra",
+    "  reasoning: { effort: high }",
+    "models:",
+    ...GPT_MODEL,
+  ]));
+  writeFileSync(join(dir, "claude-driver.yaml"), policyFile("claude-driver", [
+    "driver:",
+    "# the conductor",
+    "  model_name: claude-opus-5",
+    "  reasoning: { effort: high }",
+    "models:",
+    ...GPT_MODEL,
+    "  - id: flash",
+    "    adapter: mcp:model-dispatch",
+    "    model_name: gemini-3.7-flash",
+  ]));
+  writeFileSync(join(dir, "inline-driver.yaml"), policyFile("inline-driver", [
+    'driver: { model_name: "claude-opus-5", reasoning: { effort: high } }',
+    "models:",
+    ...GPT_MODEL,
+  ]));
+  writeFileSync(join(dir, "unpinned-driver.yaml"), policyFile("unpinned-driver", [
+    "driver:",
+    "  reasoning: { effort: high }",
+    "models:",
+    ...GPT_MODEL,
+  ]));
+  return dir;
+}
+
+test("--policy refuses a policy whose driver pins a non-GPT model, and no list offers it", () => {
+  const dir = newTmpDir();
+  const policiesDir = seedDriverPolicies();
+  const env = { SDLC_POLICIES_DIR_FOR_TESTS: policiesDir };
+  try {
+    for (const [name, pin] of [
+      ["claude-driver", "pins the conductor to 'claude-opus-5', which is not a GPT model"],
+      ["inline-driver", "pins the conductor to 'claude-opus-5', which is not a GPT model"],
+      ["unpinned-driver", "has a driver: block with no model_name"],
+    ]) {
+      const r = run(dir, [`--policy=${name}`], env);
+      assert.notEqual(r.code, 0, name);
+      assert.ok(
+        r.stderr.includes(`policy "${name}" ${pin}: this harness runs its conductor in codex on a GPT model only. Runnable policies: gpt-driver.`),
+        r.stderr,
+      );
+    }
+    assert.equal(existsSync(join(dir, ".sdlc", "project.json")), false, "nothing is written");
+    assert.match(run(dir, ["--policy=nonexistent"], env).stderr, /Available: gpt-driver\n/);
+
+    const list = JSON.parse(run(dir, ["--list-json"], env).stdout);
+    const byName = Object.fromEntries(list.map((p) => [p.name, p]));
+    assert.deepEqual(
+      Object.fromEntries(list.map((p) => [p.name, [p.driver_model, p.non_gpt_driver]])),
+      {
+        "claude-driver": ["claude-opus-5", true],
+        "gpt-driver": ["gpt-5.6-terra", false],
+        "inline-driver": ["claude-opus-5", true],
+        "unpinned-driver": [null, true],
+      },
+    );
+    assert.deepEqual(byName["claude-driver"].adapters, ["mcp:model-dispatch", "openai"]);
+
+    const home = homeWithoutAdc();
+    try {
+      const parsed = checkCreds("claude-driver", { home, policiesDir, env: { OPENAI_API_KEY: "sk-test-dummy-not-a-real-key" } });
+      assert.equal(parsed.ok, false);
+      assert.deepEqual(parsed.missing.map((m) => m.kind), ["policy"], JSON.stringify(parsed));
+      assert.match(parsed.missing[0].fix, /pins the conductor to 'claude-opus-5', which is not a GPT model/);
+    } finally { cleanup(home); }
+
+    assert.equal(run(dir, ["--policy=gpt-driver"], env).code, 0, "a GPT driver is accepted");
+  } finally { cleanup(policiesDir); cleanup(dir); }
+});
+
+test("--policy sees an Anthropic adapter written as an item's first key, quoted, or in a flow mapping", () => {
+  const dir = newTmpDir();
+  const policiesDir = newTmpDir();
+  const env = { SDLC_POLICIES_DIR_FOR_TESTS: policiesDir };
+  try {
+    writeFileSync(join(policiesDir, "first-key.yaml"), policyFile("first-key", [
+      "models:",
+      "  - adapter: builtin-anthropic",
+      "    id: opus",
+      "    model_name: claude-opus-5",
+      '  - { id: sonnet, adapter: "claude-cli", model_name: claude-sonnet-5 }',
+      "  - id: gpt",
+      "    adapter: 'openai' # judgment",
+      "    model_name: gpt-5.6-terra",
+    ]));
+    writeFileSync(join(policiesDir, "gpt-only.yaml"), policyFile("gpt-only", ["models:", ...GPT_MODEL]));
+
+    const list = JSON.parse(run(dir, ["--list-json"], env).stdout);
+    const firstKey = list.find((p) => p.name === "first-key");
+    assert.ok(!firstKey.error, JSON.stringify(firstKey));
+    assert.deepEqual(firstKey.adapters, ["builtin-anthropic", "claude-cli", "openai"]);
+    assert.deepEqual(firstKey.anthropic_adapters, ["builtin-anthropic", "claude-cli"]);
+
+    const r = run(dir, ["--policy=first-key"], env);
+    assert.notEqual(r.code, 0);
+    assert.ok(
+      r.stderr.includes(`policy "first-key" names an Anthropic adapter (builtin-anthropic, claude-cli), and this harness runs no Anthropic model. Runnable policies: gpt-only.`),
+      r.stderr,
+    );
+    assert.equal(existsSync(join(dir, ".sdlc", "project.json")), false, "nothing is written");
+  } finally { cleanup(policiesDir); cleanup(dir); }
+});
+
 test("--policy is idempotent — running twice with the same name is safe", () => {
   const dir = newTmpDir();
   try {
@@ -141,7 +259,10 @@ test("--list-json on the shipped policies dir lists the four runnable policies, 
     const list = JSON.parse(r.stdout);
     assert.ok(Array.isArray(list), "must be an array");
     assert.deepEqual(list.map((p) => p.name).sort(), RUNNABLE);
-    for (const p of list) assert.deepEqual(p.anthropic_adapters, [], p.name);
+    for (const p of list) {
+      assert.deepEqual(p.anthropic_adapters, [], p.name);
+      assert.deepEqual([p.driver_model, p.non_gpt_driver], ["gpt-5.6-terra", false], p.name);
+    }
     const gptPlusFlash = list.find((p) => p.name === "gpt-plus-flash");
     assert.deepEqual(gptPlusFlash.adapters, ["antigravity-worker", "mcp:model-dispatch", "openai"]);
     assert.deepEqual(gptPlusFlash.required_env, ["GEMINI_API_KEY", "OPENAI_API_KEY"]);

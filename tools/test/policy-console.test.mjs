@@ -1,12 +1,16 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
+import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parse as parseYaml } from "yaml";
 
-const SERVER = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "plugin", "policy-console", "policy-server.mjs");
+const TEST_DIR = dirname(fileURLToPath(import.meta.url));
+const SERVER = join(TEST_DIR, "..", "..", "plugin", "policy-console", "policy-server.mjs");
+const SHIPPED_POLICIES = join(TEST_DIR, "..", "..", "plugin", "config", "policies");
 
 function freePort() {
   return new Promise((resolvePort, reject) => {
@@ -19,9 +23,12 @@ function freePort() {
   });
 }
 
-async function withConsole(fn) {
+async function withConsole(fn, env = {}) {
   const port = await freePort();
-  const child = spawn(process.execPath, [SERVER, "--host", "127.0.0.1", "--port", String(port)], { stdio: ["ignore", "ignore", "pipe"] });
+  const child = spawn(process.execPath, [SERVER, "--host", "127.0.0.1", "--port", String(port)], {
+    stdio: ["ignore", "ignore", "pipe"],
+    env: { ...process.env, ...env },
+  });
   try {
     await new Promise((ready, fail) => {
       let err = "";
@@ -107,4 +114,24 @@ test("the console refuses an Anthropic adapter on a new model", async () => {
     assert.equal(out.ok, false);
     assert.ok(out.errors.some((e) => /Model "opus" names adapter "builtin-anthropic"/.test(e)), JSON.stringify(out.errors));
   });
+});
+
+test("the console offers no base whose driver pins a non-GPT model or that names an Anthropic adapter", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "policy-console-test-"));
+  try {
+    const gptPlusFlash = readFileSync(join(SHIPPED_POLICIES, "gpt-plus-flash.yaml"), "utf8");
+    const claudeDriver = gptPlusFlash
+      .replace(/^name: gpt-plus-flash$/m, "name: claude-driver")
+      .replace(/^(driver:\n\s+model_name:) gpt-5\.6-terra$/m, "$1 claude-opus-5");
+    assert.match(claudeDriver, /^driver:\n\s+model_name: claude-opus-5$/m, "the fixture pins a Claude conductor");
+    writeFileSync(join(dir, "gpt-plus-flash.yaml"), gptPlusFlash);
+    writeFileSync(join(dir, "claude-driver.yaml"), claudeDriver);
+    writeFileSync(join(dir, "opus-only.yaml"), readFileSync(join(TEST_DIR, "fixtures", "policies", "claude", "opus-only.yaml"), "utf8"));
+    await withConsole(async (base) => {
+      const data = await (await fetch(`${base}/api/policies`)).json();
+      assert.deepEqual(data.policies.map((p) => p.id), ["gpt-plus-flash"]);
+    }, { SDLC_POLICIES_DIR_FOR_TESTS: dir });
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });

@@ -10,7 +10,10 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { parse as parseYaml, stringify as stringifyYaml } from "yaml";
 
 const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
-const POLICIES_DIR = resolve(SCRIPT_DIR, "..", "config", "policies");
+// Test-only override, shared with setup-policy.mjs, which passes its env to this server.
+const POLICIES_DIR = process.env.SDLC_POLICIES_DIR_FOR_TESTS
+  ? resolve(process.env.SDLC_POLICIES_DIR_FOR_TESTS)
+  : resolve(SCRIPT_DIR, "..", "config", "policies");
 const INDEX_HTML = resolve(SCRIPT_DIR, "index.html");
 const INTENTS_PATH = resolve(SCRIPT_DIR, "..", "config", "intents.json");
 const PRICES_JS = resolve(SCRIPT_DIR, "..", "mcp", "model-dispatch", "dist", "prices.js");
@@ -85,11 +88,14 @@ const GEMINI_TIERS = ["off", "minimal", "low", "medium", "high"];
 const SHIPPED_PRESETS = ["gpt-plus-flash", "gpt-plus-flash-38", "gpt-seat-plus-flash", "flash-agsdk-only"];
 const NAME_PATTERN = /^[a-z0-9][a-z0-9-]*$/;
 
-// This harness runs no Anthropic model (D9), so a policy file naming either
-// Anthropic adapter is not offered as a base: a run refuses it.
+// A run refuses a policy naming either Anthropic adapter (D9) or pinning its
+// conductor to a non-GPT model, and a custom policy keeps its base's driver,
+// so neither kind is offered as a base.
 const ANTHROPIC_ADAPTERS = new Set(["builtin-anthropic", "claude-cli"]);
-function usesAnthropicAdapter(policy) {
-  return (policy.models ?? []).some((m) => ANTHROPIC_ADAPTERS.has(m.adapter));
+function isRunnableBase(policy) {
+  if ((policy?.models ?? []).some((m) => ANTHROPIC_ADAPTERS.has(m?.adapter))) return false;
+  const driverModel = policy?.driver?.model_name;
+  return policy?.driver === undefined || (typeof driverModel === "string" && /^gpt-/.test(driverModel));
 }
 
 // A GPT model's effort is its model entry's reasoning.effort; the GPT adapters read no per-rule reasoning.
@@ -264,7 +270,7 @@ function loadAllPolicySummaries() {
       const policy = parseYaml(raw);
       return { id, policy, raw };
     })
-    .filter(({ policy }) => !usesAnthropicAdapter(policy))
+    .filter(({ policy }) => isRunnableBase(policy))
     .map(({ id, policy, raw }) => summarizePolicy(id, policy, extractHeaderComment(raw)));
 }
 

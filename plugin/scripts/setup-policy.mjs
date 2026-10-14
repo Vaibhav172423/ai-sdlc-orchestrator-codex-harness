@@ -301,29 +301,53 @@ function waitForPolicySave(before, timeoutMs) {
 
 // ── policy YAML introspection (line-based, avoids a runtime dep) ─────
 //
-// --list-json / --check-creds need three signals per policy:
+// --list-json / --check-creds need four signals per policy:
 //   1. every model's auth.env
 //   2. any model uses adapter: antigravity-worker          → requires_vertex_adc
 //   3. any model uses adapter: builtin-anthropic/claude-cli → anthropic_adapters
+//   4. the top-level driver: block's model_name             → driver_model, non_gpt_driver
 //
 // Bringing in the `yaml` package would work but the plugin cache doesn't
 // have a top-level node_modules — only plugin/policy-console does, and only
 // after the browser flow runs `npm install` there. Line-scanning stays free
 // of that dependency.
 
+// Block form, `- adapter:` as an item's first key, and flow-mapping items.
+const ADAPTER_KEY = /(?:^[ \t]*(?:-[ \t]+)?|[{,][ \t]*)adapter[ \t]*:[ \t]*["']?([A-Za-z0-9_.:-]+)/gm;
+
+function withoutComments(text) {
+  return text.split(/\r?\n/).map((line) => line.replace(/(^|\s)#.*$/, "")).join("\n");
+}
+
+/** The top-level driver: block's model_name, in block or flow form; `present: false` when there is no block. */
+function driverModel(lines) {
+  const at = lines.findIndex((l) => /^driver\s*:/.test(l));
+  if (at === -1) return { present: false, model: null };
+  const block = [lines[at].replace(/^driver\s*:/, "")];
+  for (const line of lines.slice(at + 1)) {
+    if (/^\S/.test(line)) break;
+    block.push(line);
+  }
+  const m = /(?:^|[\s{,])model_name\s*:\s*["']?([^"'\s,{}]+)/.exec(block.join("\n"));
+  return { present: true, model: m?.[1] ?? null };
+}
+
 function introspectPolicy(name, path) {
   let text;
   try { text = readFileSync(path, "utf8"); }
   catch (e) { return { name, error: `read failed: ${e?.message ?? e}` }; }
 
-  if (!/^\s*models\s*:/m.test(text) || !/^\s*-?\s*adapter\s*:/m.test(text)) {
+  const code = withoutComments(text);
+  const adapters = new Set();
+  for (const m of code.matchAll(ADAPTER_KEY)) {
+    adapters.add(m[1]);
+  }
+
+  if (!/^\s*models\s*:/m.test(code) || adapters.size === 0) {
     return { name, error: "not a recognizable policy (missing models: or adapter:)" };
   }
 
-  const adapters = new Set();
-  for (const m of text.matchAll(/^\s*adapter\s*:\s*([A-Za-z0-9_.:-]+)/gm)) {
-    adapters.add(m[1]);
-  }
+  const driver = driverModel(code.split("\n"));
 
   // `auth:` appears in two shapes:
   //   auth: { env: GEMINI_API_KEY }
@@ -343,6 +367,9 @@ function introspectPolicy(name, path) {
     required_env: [...envVars].sort(),
     requires_vertex_adc: adapters.has("antigravity-worker"),
     anthropic_adapters: anthropicAdapters(adapters),
+    driver_model: driver.model,
+    // Same rule as shippedPresetNames in the bridge's policy.ts: a driver block must pin a GPT model.
+    non_gpt_driver: driver.present && !/^gpt-/.test(driver.model ?? ""),
   };
 }
 
@@ -353,18 +380,31 @@ function anthropicAdapters(adapters) {
   return ANTHROPIC_ADAPTERS.filter((a) => adapters.has(a));
 }
 
+function isRunnable(info) {
+  return !info.error && info.anthropic_adapters.length === 0 && !info.non_gpt_driver;
+}
+
 function runnablePolicyNames() {
   return introspectAllPolicies()
-    .filter((p) => !p.error && p.anthropic_adapters.length === 0)
+    .filter(isRunnable)
     .map((p) => p.name)
     .sort();
 }
 
-function anthropicRefusal(info) {
-  return (
-    `policy "${info.name}" names an Anthropic adapter (${info.anthropic_adapters.join(", ")}), and this harness ` +
-    `runs no Anthropic model. Runnable policies: ${runnablePolicyNames().join(", ")}.`
-  );
+/** Why a recognizable policy cannot run here, or null when it can. */
+function runRefusal(info) {
+  if (info.error || isRunnable(info)) return null;
+  const runnable = `Runnable policies: ${runnablePolicyNames().join(", ")}.`;
+  if (info.anthropic_adapters.length > 0) {
+    return (
+      `policy "${info.name}" names an Anthropic adapter (${info.anthropic_adapters.join(", ")}), and this harness ` +
+      `runs no Anthropic model. ${runnable}`
+    );
+  }
+  const pin = info.driver_model
+    ? `pins the conductor to '${info.driver_model}', which is not a GPT model`
+    : `has a driver: block with no model_name`;
+  return `policy "${info.name}" ${pin}: this harness runs its conductor in codex on a GPT model only. ${runnable}`;
 }
 
 function introspectAllPolicies() {
@@ -541,8 +581,9 @@ async function checkCredsForFile({ name: policyName, path }, projectRoot) {
   if (lineInfo.error) {
     return { ok: false, missing: [{ kind: "policy", name: policyName, fix: lineInfo.error }] };
   }
-  if (lineInfo.anthropic_adapters.length > 0) {
-    return { ok: false, missing: [{ kind: "policy", name: policyName, fix: anthropicRefusal(lineInfo) }] };
+  const refusal = runRefusal(lineInfo);
+  if (refusal) {
+    return { ok: false, missing: [{ kind: "policy", name: policyName, fix: refusal }] };
   }
   // The order a dispatch sees: bridgeEnv injects the stored file whenever MMO_SELECT is unset.
   const selectSpec = process.env.MMO_SELECT || readMmoSelectFile(projectRoot) || process.env.SDLC_SELECT;
@@ -623,7 +664,7 @@ async function scriptedFlow(policyName, resolved) {
   if (!existing.includes(policyName)) {
     fail(`policy "${policyName}" not found in ${POLICIES_DIR}. Available: ${runnablePolicyNames().join(", ")}`);
   }
-  refuseAnthropic(policyName);
+  refuseUnrunnable(policyName);
   if (!resolved.hasGit) noteGitFallback(resolved.root);
   const path = saveDefaultPolicy(resolved.root, policyName);
   log(`wrote default_policy="${policyName}" to ${path}`);
@@ -642,9 +683,9 @@ async function printOnlyFlow(resolved) {
   }
 }
 
-function refuseAnthropic(policyName) {
-  const info = introspectPolicy(policyName, join(POLICIES_DIR, policyName + ".yaml"));
-  if (!info.error && info.anthropic_adapters.length > 0) fail(anthropicRefusal(info));
+function refuseUnrunnable(policyName) {
+  const refusal = runRefusal(introspectPolicy(policyName, join(POLICIES_DIR, policyName + ".yaml")));
+  if (refusal) fail(refusal);
 }
 
 function noteGitFallback(root) {
