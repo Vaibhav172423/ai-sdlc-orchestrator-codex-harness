@@ -462,3 +462,28 @@ test("a schema past strict mode's limits goes without a text format, as any sche
   assert.equal("text" in client.calls[0], false);
   assert.equal(out.success, true);
 });
+
+test("a strict-mode refusal is a failed dispatch that keeps the model's reason, priced as the reply it was", async () => {
+  const refused = () => ({
+    status: "completed",
+    output: [{ type: "message", role: "assistant", content: [{ type: "refusal", refusal: "I can't help with that request." }] }],
+    output_text: "",
+    incomplete_details: null,
+    usage: USAGE,
+  });
+  const client = fakeClient(refused);
+  const out = await new OpenAIAdapter(BASE_CONFIG, { client }).execute({ ...PACKET, phase: "plan_task_packets", outputSchema: planSchema("brownfield") });
+  assert.equal(client.calls.length, 1, "a refusal is not retried");
+  assert.equal(out.success, false);
+  assert.equal(out.terminal_reason, "vendor_error");
+  assert.equal(out.error, "openai: the model refused the request under strict structured output: I can't help with that request.");
+  assert.deepEqual(out.result, { refusal: "I can't help with that request." });
+  assert.equal(out.attempts[0].success, false);
+  assert.equal(out.tokens.output, USAGE.output_tokens, "the refusal's tokens are billed and counted");
+  assert.ok(out.cost_usd > 0);
+
+  const loose = fakeClient(refused);
+  const looseOut = await new OpenAIAdapter(BASE_CONFIG, { client: loose }).execute(PACKET);
+  assert.equal(looseOut.success, true, "without a text format the reply reads as it always has");
+  assert.deepEqual(looseOut.result, { raw: "" });
+});

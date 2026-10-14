@@ -215,6 +215,7 @@ export class OpenAIAdapter implements ModelAdapter {
         output_reasoning: reasoningTokens,
       };
       const hitOutputCap = resp.incomplete_details?.reason === "max_output_tokens";
+      const refusal = format && !hitOutputCap ? refusalText(resp) : null;
       // The >272K tier is decided per request on its whole prompt, cached tokens included.
       const promptTokens = typeof usage?.input_tokens === "number" ? usage.input_tokens : undefined;
       const price = this.pricer.require(
@@ -232,7 +233,8 @@ export class OpenAIAdapter implements ModelAdapter {
         tokens: attemptTokens,
         cost_usd: computeCostUsd(attemptTokens, price.pricing),
         latency_ms: Date.now() - attemptStart,
-        success: !hitOutputCap,
+        success: !hitOutputCap && refusal === null,
+        ...(refusal !== null ? { error: `openai: the model refused the request under strict structured output: ${refusal || "(no reason given)"}` } : {}),
         ...priceFields(price),
         ...(promptTokens !== undefined ? { prompt_tokens: promptTokens } : {}),
         ...(attemptEstimated ? { cost_provenance: "estimated" as const } : {}),
@@ -240,6 +242,9 @@ export class OpenAIAdapter implements ModelAdapter {
       };
       record(attempt);
 
+      if (refusal !== null) {
+        return this.finalizeResult(attempts, { refusal }, attemptTokens.input_cached > 0, "vendor_error", usedEstimate);
+      }
       if (!hitOutputCap) {
         let parsed: any;
         try {
@@ -308,6 +313,17 @@ export class OpenAIAdapter implements ModelAdapter {
       ...(usedEstimate ? { cost_provenance: "estimated" as const } : {}),
     };
   }
+}
+
+/** A strict-mode refusal comes back as a message part that the SDK leaves out of `output_text`. */
+export function refusalText(resp: OpenAI.Responses.Response): string | null {
+  for (const item of resp.output ?? []) {
+    if (item.type !== "message") continue;
+    for (const part of item.content ?? []) {
+      if (part.type === "refusal") return part.refusal ?? "";
+    }
+  }
+  return null;
 }
 
 /** Strict structured output for a schema strict mode accepts, else undefined: the request goes as it always has. */
