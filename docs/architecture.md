@@ -76,6 +76,8 @@ One per way of reaching a model. A policy names an adapter per model entry.
 
 The `openai` and `codex-cli` adapters reach the same model. They are separate because they bill differently, and keeping them distinct is what makes per-phase cost attribution honest — one produces metered figures, the other modeled ones.
 
+Both hold a reply to the packet's `outputSchema` when OpenAI strict mode accepts that schema (`src/adapters/strictSchema.ts`): `openai` sends it as the Responses API's `text.format` with `strict: true`, and `codex-cli` passes it to `codex exec --output-schema`. A schema strict mode would refuse goes unenforced through `openai`, and inside a one-field envelope through `codex-cli`. The Phase 4 plan schemas in `plugin/config/schemas/` pass strict mode. `plugin/scripts/plan-packets.mjs` builds the planner's packet around them and checks the plan it returns (phases, task types, targets against the frozen allowlist, off-limits inputs, each child's schema) before it writes `packets.json`.
+
 ## 5. Routing — `plugin/config/policies/*.yaml`
 
 Routing is data, not code. Each policy declares `models:` (id, adapter, model name, auth, and a `pricing:` block that records the dated price list's card in `src/prices.ts` and is billed only under `pricing_override: true`) and `rules:` (a `when:` clause matched against phase and retry count, and the model to `use:`). First match wins; a bare `when:` is the fallback.
