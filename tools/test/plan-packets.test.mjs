@@ -15,7 +15,7 @@ import { fileURLToPath } from "node:url";
 
 import {
   buildPlanPacket, childSchemaProblem, judgePlan, loadPlanSchema, main, MAX_INPUT_BYTES, PLAN_ATTEMPTS, PLAN_FLAGS,
-  readRunFacts,
+  readRunFacts, relPath,
 } from "../../plugin/scripts/plan-packets.mjs";
 import { renderedSkillPath, renderSkills } from "../../plugin/codex/render.mjs";
 import { strictSchemaProblems } from "../../plugin/mcp/model-dispatch/dist/adapters/strictSchema.js";
@@ -73,7 +73,7 @@ function brownfieldRun({ contract = {}, headless = false, intent = "bugfix", bri
   return { root, runDir };
 }
 
-function greenfieldRun() {
+function greenfieldRun({ codeDir = "src" } = {}) {
   const root = tempDir("plan-packets-gf-");
   const runId = "gf-20261014-1";
   const runDir = join(root, ".sdlc", "runs", runId);
@@ -82,17 +82,22 @@ function greenfieldRun() {
   writeFileSync(join(runDir, "design.md"), "# Design\n\n## 1. Modules\n\nOne ping module.\n");
   writeFileSync(join(runDir, "run.json"), JSON.stringify({
     schema_version: 1, run_id: runId, route: "interactive", mode: "greenfield", intent: null, project_root: root,
-    code_dir: join(root, "src"), brief_path: join(root, "brief.md"),
+    code_dir: join(root, codeDir), brief_path: join(root, "brief.md"),
   }));
   return { root, runDir, runId };
 }
 
 /** A dispatch result as dispatch.mjs --out writes it, holding `reply` as the planner's answer. */
-function dispatchResult(reply, { retry = 0, pass = RUN_ID, phase = "plan_task_packets", success = true, terminal = "success" } = {}) {
+function dispatchResult(reply, {
+  retry = 0, pass = RUN_ID, phase = "plan_task_packets", success = true, terminal = "success", taskId = null,
+  error = "codex-cli timeout after 840s",
+} = {}) {
   return {
     decision: { modelId: "gpt", reason: "Needs full context to slice work cleanly", ruleIndex: 2 },
-    result: { result: reply, success, terminal_reason: terminal, ...(success ? {} : { error: "codex-cli timeout after 840s" }) },
-    events: [{ phase, pass, task_id: `tp_plan_00${retry + 1}`, retry_count: retry, model: "gpt-5.6-terra" }],
+    result: { result: reply, success, terminal_reason: terminal, ...(success ? {} : { error }) },
+    events: [{
+      ts: new Date().toISOString(), phase, pass, task_id: taskId ?? `tp_plan_00${retry + 1}`, retry_count: retry, model: "gpt-5.6-terra",
+    }],
     terminal_reason: terminal,
   };
 }
@@ -123,7 +128,7 @@ function validPlan() {
         phase: "debug", task_type: "bug_diagnose", instruction: "Write the root cause of the 500 as a note.",
         inputs: [
           { path: "src/auth.js", content: "", reason: "Where the TypeError starts." },
-          { path: "src/index.js", content: "", reason: "Where every error becomes a 500." },
+          { path: "src/index.js", content: "// the slice the planner chose\n", reason: "Where every error becomes a 500." },
           { path: `.sdlc/runs/${RUN_ID}/requirements.md`, content: "", reason: "The approved scope." },
         ],
         artifact_path: `${notes}/diagnosis.md`,
@@ -136,7 +141,7 @@ function validPlan() {
       }),
       child({
         phase: "tests", task_type: "test_add", instruction: "Add a missing-username test to src/auth.spec.js.",
-        inputs: [{ path: "src/auth.spec.js", content: "// the slice the planner chose\n", reason: "The test file." }],
+        inputs: [{ path: "src/auth.spec.js", content: "", reason: "The test file." }],
         artifact_path: "src/auth.spec.js",
       }),
     ],
@@ -243,7 +248,9 @@ test("a valid brownfield plan becomes canonical packets.json, ids, run id and in
   assert.equal(packets[0].inputs[0].content, auth, "an empty slice is read from disk");
   assert.equal(packets[0].inputs[2].content, readFileSync(join(runDir, "requirements.md"), "utf8"));
   assert.deepEqual(packets[1].inputs[1], { path: `${notes}/diagnosis.md`, content: "", reason: "The diagnosis." }, "an earlier packet's file waits for that packet");
-  assert.equal(packets[3].inputs[0].content, "// the slice the planner chose\n", "a slice the planner wrote is kept");
+  assert.equal(packets[2].inputs[1].content, "", "so does a source file an earlier packet fixes");
+  assert.equal(packets[0].inputs[1].content, "// the slice the planner chose\n", "a slice of a file no earlier packet writes is kept");
+  assert.equal(packets[3].inputs[0].content, readFileSync(join(root, "src", "auth.spec.js"), "utf8"), "the file a packet rewrites is read whole");
 });
 
 test("the id, pass_id, intent and retry_count a planner wrote are replaced from the run record", async () => {
@@ -268,6 +275,16 @@ test("a headless run's intent comes from driver-events.jsonl, and from provenanc
   const r = await accept(b.runDir, dispatchResult({ packets: [child({ phase: "tests", task_type: "test_backfill", artifact_path: "src/auth.spec.js" })] }));
   assert.equal(r.code, 0, r.err);
   assert.equal(JSON.parse(readFileSync(join(b.runDir, "packets.json"), "utf8"))[0].intent, "test");
+});
+
+test("packets carry the intent Gate 0 confirmed, from provenance.json, over the handover's", async () => {
+  const { runDir } = brownfieldRun({ intent: "bugfix", contract: { allowlist: ["src/**"] } });
+  writeFileSync(join(runDir, "provenance.json"), JSON.stringify({ schema_version: 1, run_id: RUN_ID, intent: "feature-extend" }));
+  assert.equal((await run(writeConductorFiles(runDir, []))).code, 0);
+  assert.equal(JSON.parse(readFileSync(join(runDir, "tp-plan-001.json"), "utf8")).intent, "feature-extend");
+  const r = await accept(runDir, dispatchResult({ packets: [child()] }));
+  assert.equal(r.code, 0, r.err);
+  assert.equal(JSON.parse(readFileSync(join(runDir, "packets.json"), "utf8"))[0].intent, "feature-extend");
 });
 
 // ── every drift the bf5 run recorded ────────────────────────────────────────
@@ -376,6 +393,38 @@ test("output_schema_json must parse to a JSON Schema object", async () => {
   }
 });
 
+test("a child schema is checked under every keyword that holds one, and a nested problem names its path with dots", async () => {
+  for (const [schema, want] of [
+    [{ type: "object", additionalProperties: { type: "nope" } }, 'additionalProperties type "nope" is not a JSON Schema type'],
+    [{ type: "object", additionalProperties: "x" }, "additionalProperties is not a JSON Schema object"],
+    [{ type: "object", not: 5 }, "not is not a JSON Schema object"],
+    [{ type: "array", prefixItems: [5] }, "prefixItems[0] is not a JSON Schema object"],
+    [{ type: "array", prefixItems: 5 }, "prefixItems is not a list"],
+    [{ type: "object", $defs: { a: 5 }, properties: { x: { $ref: "#/$defs/a" } } }, "$defs.a is not a JSON Schema object"],
+    [{ type: "object", definitions: { a: { kind: "x" } } }, "definitions.a names no type"],
+    [{ type: "array", items: true }, "items is not a JSON Schema object"],
+    [{ type: "object", properties: { a: { type: "object", additionalProperties: { type: "nope" } } } }, 'properties.a.additionalProperties type "nope" is not a JSON Schema type'],
+    [{ type: "object", properties: { files: { type: "array", items: { type: "object", properties: { path: "string" } } } } }, "properties.files.items.properties.path is not a JSON Schema object"],
+    [{ anyOf: [{ type: "string" }, { type: "object", properties: { a: {} } }] }, "anyOf[1].properties.a names no type"],
+  ]) {
+    const got = childSchemaProblem(schema);
+    assert.ok(got?.startsWith(want), `${JSON.stringify(schema)}: ${got}`);
+  }
+  for (const ok of [
+    { type: "object", additionalProperties: false },
+    { type: "object", additionalProperties: { type: "string" } },
+    { $defs: { a: { type: "string" } }, $ref: "#/$defs/a" },
+    { type: "array", prefixItems: [{ type: "string" }], items: { type: "number" } },
+  ]) {
+    assert.equal(childSchemaProblem(ok), null, JSON.stringify(ok));
+  }
+  const { runDir } = brownfieldRun();
+  const nested = JSON.stringify({ type: "object", properties: { files: { type: "array", items: { type: "object", properties: { path: "string" } } } } });
+  await assertRefused(await accept(runDir, dispatchResult({ packets: [child({ output_schema_json: nested })] })), runDir, [
+    "packets[0].output_schema_json properties.files.items.properties.path is not a JSON Schema object.",
+  ]);
+});
+
 // ── targets ─────────────────────────────────────────────────────────────────
 
 test("a target must be repo-relative, normalised, allowlisted or a note, and never off-limits", async () => {
@@ -420,13 +469,58 @@ test("a target is judged with links resolved, as the write guard judges a write"
   ]);
 });
 
-test("two packets writing one file are refused, whatever the case", async () => {
+test("a second packet for one file must start from the first one's file, and spell it the same way", async () => {
   const { runDir } = brownfieldRun({ contract: { allowlist: ["src/**"] } });
-  const plan = { packets: [child(), child({ instruction: "Second edit." }), child({ artifact_path: "src/Auth.js" })] };
+  const plan = { packets: [child(), child({ instruction: "Second edit.", inputs: [] }), child({ artifact_path: "src/Auth.js" })] };
   await assertRefused(await accept(runDir, dispatchResult(plan)), runDir, [
-    'packets[0] and packets[1] both write "src/auth.js". Plan one packet per file.',
-    'packets[0] and packets[2] both write "src/Auth.js".',
+    'packets[1] writes "src/auth.js" after packets[0] does; list "src/auth.js" among its inputs with content "" so it starts from the file that packet leaves, or plan one packet for the file.',
+    'packets[2] writes "src/Auth.js", the file packets[0] writes as "src/auth.js". Spell one file one way.',
   ]);
+});
+
+test("the bugfix cell on a repo with one test file: the reproduction and the regression test share it", async () => {
+  const { root, runDir } = brownfieldRun();
+  const spec = { path: "src/auth.spec.js", content: "", reason: "The test file." };
+  const plan = {
+    packets: [
+      child({ phase: "tests", task_type: "bug_reproduce", artifact_path: "src/auth.spec.js", inputs: [spec, { path: "src/auth.js", content: "", reason: "The bug." }] }),
+      child({ phase: "debug", task_type: "bug_diagnose", artifact_path: `${notes}/diagnosis.md`, inputs: [spec] }),
+      child({ inputs: [{ path: "src/auth.js", content: "", reason: "The fix." }, { path: `${notes}/diagnosis.md`, content: "", reason: "Why." }] }),
+      child({ phase: "tests", task_type: "test_add", artifact_path: "src/auth.spec.js", inputs: [spec] }),
+    ],
+  };
+  const r = await accept(runDir, dispatchResult(plan));
+  assert.equal(r.code, 0, r.err);
+  const packets = JSON.parse(readFileSync(join(runDir, "packets.json"), "utf8"));
+  assert.equal(packets[0].inputs[0].content, readFileSync(join(root, "src", "auth.spec.js"), "utf8"), "the first writer reads the file whole");
+  assert.equal(packets[1].inputs[0].content, "", "a later reader waits for the reproduction");
+  assert.equal(packets[3].inputs[0].content, "", "so does the second writer");
+});
+
+test("the file a packet writes, or an earlier packet writes, is never given as a slice", async () => {
+  const { root, runDir } = brownfieldRun();
+  const spec = readFileSync(join(root, "src", "auth.spec.js"), "utf8");
+  const auth = readFileSync(join(root, "src", "auth.js"), "utf8");
+  const head = spec.split("\n").slice(0, 3).join("\n");
+  await assertRefused(await accept(runDir, dispatchResult({
+    packets: [child({ phase: "tests", task_type: "test_add", artifact_path: "src/auth.spec.js", inputs: [{ path: "src/auth.spec.js", content: head, reason: "The test file." }] })],
+  })), runDir, ['packets[0].inputs[0] gives content for "src/auth.spec.js", the file this packet writes; leave content "" so the worker gets the whole file.']);
+
+  await assertRefused(await accept(runDir, dispatchResult({
+    packets: [
+      child({ phase: "debug", task_type: "bug_diagnose", artifact_path: `${notes}/diagnosis.md` }),
+      child({ inputs: [{ path: "src/auth.js", content: "", reason: "r" }, { path: `${notes}/diagnosis.md`, content: "See the diagnosis written by the previous packet.", reason: "r" }] }),
+      child({ task_type: "existing_file_edit", artifact_path: "src/index.js", inputs: [{ path: "src/index.js", content: "", reason: "r" }, { path: "src/auth.js", content: auth, reason: "The fixed auth module." }] }),
+    ],
+  })), runDir, [
+    `packets[1].inputs[1] gives content for "${notes}/diagnosis.md", which packets[0] writes first; leave content "" so the worker gets the file as that packet leaves it.`,
+    'packets[2].inputs[1] gives content for "src/auth.js", which packets[1] writes first;',
+  ]);
+
+  const wide = brownfieldRun({ contract: { allowlist: ["src/**"] } });
+  await assertRefused(await accept(wide.runDir, dispatchResult({
+    packets: [child({ phase: "tests", task_type: "test_add", artifact_path: "src/login.spec.js", inputs: [{ path: "src/login.spec.js", content: "", reason: "r" }] })],
+  })), wide.runDir, ['packets[0].inputs[0].path "src/login.spec.js" is the file this packet creates, so there is nothing on disk to read yet; leave it out of inputs.']);
 });
 
 test("a contract that is not strict lets a target outside the allowlist through, with a warning", async () => {
@@ -436,6 +530,75 @@ test("a contract that is not strict lets a target outside the allowlist through,
   assert.match(r.err, /^warning: packets\[0\]\.artifact_path "README\.md" is not in the run's frozen allowlist.*Allowed because the contract is not strict\./m);
   const off = await accept(runDir, dispatchResult({ packets: [child({ artifact_path: "package.json" })] }));
   assert.equal(off.code, 1, "off-limits stays refused");
+});
+
+test("a case alias of the run folder is the run folder, under a broad allowlist, a loose contract, or a greenfield code dir at the root", async () => {
+  const wide = brownfieldRun({ contract: { allowlist: ["**/*.md", "**/*.json"] } });
+  for (const target of [`.SDLC/runs/${RUN_ID}/requirements.md`, `.sdlc/runs/${RUN_ID.toUpperCase()}/requirements.md`, `.sdlc/RUNS/${RUN_ID}/report.md`]) {
+    await assertRefused(await accept(wide.runDir, dispatchResult({ packets: [child({ task_type: "doc_update", phase: "docs", artifact_path: target })] })), wide.runDir, [
+      `packets[0].artifact_path ${JSON.stringify(target)} is in the run folder beside the run's own records; a note that is not shipped code goes under ${notes}/`,
+    ]);
+  }
+  await assertRefused(await accept(wide.runDir, dispatchResult({ packets: [child({ phase: "debug", task_type: "bug_diagnose", artifact_path: `.sdlc/runs/${RUN_ID}/NOTES/diagnosis.md` })] })), wide.runDir, [
+    `spells this run's notes folder another way; write it under ${notes}/`,
+  ]);
+
+  const loose = brownfieldRun({ contract: { strict: false } });
+  const r = await accept(loose.runDir, dispatchResult({ packets: [child({ artifact_path: `.SDLC/runs/${RUN_ID}/run.json` })] }));
+  await assertRefused(r, loose.runDir, ["is in the run folder beside the run's own records"]);
+  assert.doesNotMatch(r.err, /Allowed because the contract is not strict/);
+
+  const gf = greenfieldRun({ codeDir: "." });
+  for (const target of [`.SDLC/runs/${gf.runId}/run.json`, `.Sdlc/runs/${gf.runId}/design.md`, ".SDLC/project.json"]) {
+    await assertRefused(await accept(gf.runDir, dispatchResult({ packets: [child({ task_type: "dto", artifact_path: target, inputs: [] })] }, { pass: gf.runId })), gf.runDir, [
+      `packets[0].artifact_path ${JSON.stringify(target)} is among the run records`,
+    ]);
+  }
+});
+
+test("a path with a control character, or space around a name, is refused as a target and as an input", async () => {
+  const gf = greenfieldRun();
+  for (const target of ["src/a.ts\n", "src/a.ts ", "src/\ta.ts", " src/a.ts", "src/ x/a.ts"]) {
+    const want = /[\t\n]/.test(target) ? "holds a control character (a tab, a newline or a NUL); write the path on one line" : "has a space at the start or end of a name";
+    await assertRefused(await accept(gf.runDir, dispatchResult({ packets: [child({ task_type: "dto", artifact_path: target, inputs: [] })] }, { pass: gf.runId })), gf.runDir, [
+      `packets[0].artifact_path ${JSON.stringify(target)} ${want}`,
+    ]);
+  }
+  const bf = brownfieldRun({ contract: { allowlist: ["src/**"] } });
+  await assertRefused(await accept(bf.runDir, dispatchResult({ packets: [child({ artifact_path: "src/auth.js " })] })), bf.runDir, [
+    'packets[0].artifact_path "src/auth.js " has a space at the start or end of a name; write "src/auth.js"',
+  ]);
+  await assertRefused(await accept(bf.runDir, dispatchResult({ packets: [child({ inputs: [{ path: "src/index.js\t", content: "", reason: "r" }] })] })), bf.runDir, [
+    'packets[0].inputs[0].path "src/index.js\\t" holds a control character',
+  ]);
+  assert.match(relPath("src/auth.js\u0000x").problem, /holds a control character/, "a NUL is not reported as a backslash");
+  assert.match(relPath("src\\auth.js").problem, /holds a backslash/);
+});
+
+test("a greenfield plan may write .env.example and .env.test, never .env", async () => {
+  const { runDir, runId } = greenfieldRun();
+  for (const [target, pattern] of [["src/.env", ".env"], ["src/.git/.env.example", ".git/**"], ["src/.agents/.env.test", ".agents/**"]]) {
+    await assertRefused(await accept(runDir, dispatchResult({ packets: [child({ phase: "docs", task_type: "env_docs", artifact_path: target, inputs: [] })] }, { pass: runId })), runDir, [
+      `packets[0].artifact_path ${JSON.stringify(target)} matches always-off-limits pattern ${JSON.stringify(pattern)}`,
+    ]);
+  }
+  const plan = {
+    packets: [
+      child({ phase: "docs", task_type: "env_docs", artifact_path: "src/.env.example", inputs: [] }),
+      child({ phase: "tests", task_type: "env_test_fixture", artifact_path: "src/.env.test", inputs: [{ path: "src/.env.example", content: "", reason: "Every key it lists." }] }),
+      child({ phase: "tests", task_type: "test_unit", artifact_path: "src/ping.spec.ts", inputs: [{ path: "src/.env.test", content: "", reason: "The test values." }] }),
+    ],
+  };
+  const r = await accept(runDir, dispatchResult(plan, { pass: runId }));
+  assert.equal(r.code, 0, r.err);
+  const packets = JSON.parse(readFileSync(join(runDir, "packets.json"), "utf8"));
+  assert.deepEqual(packets[1].inputs, [{ path: "src/.env.example", content: "", reason: "Every key it lists." }], "filled at Phase 5, once the first packet wrote it");
+  assert.equal(packets[2].inputs[0].content, "");
+
+  writeFileSync(join(dirname(dirname(dirname(runDir))), "src", ".env.example"), "API_KEY=\n");
+  await assertRefused(await accept(runDir, dispatchResult({ packets: [child({ task_type: "dto", artifact_path: "src/a.dto.ts", inputs: [{ path: "src/.env.example", content: "", reason: "r" }] })] }, { pass: runId })), runDir, [
+    'packets[0].inputs[0].path "src/.env.example" is off-limits (pattern ".env.*")',
+  ]);
 });
 
 // ── inputs ──────────────────────────────────────────────────────────────────
@@ -453,7 +616,8 @@ test("an input is never read from, or named as, an off-limits path, outside the 
     [{ path: "config/.env.production", content: "", reason: "r" }, `${at}.path "config/.env.production" is off-limits (pattern ".env.*")`],
     [{ path: "package.json", content: "", reason: "r" }, `${at}.path "package.json" is off-limits (pattern "package.json")`],
     [{ path: "../outside/secret.txt", content: "", reason: "r" }, `${at}.path "../outside/secret.txt" climbs out of its folder with ".."`],
-    [{ path: "/etc/hosts", content: "", reason: "r" }, `${at}.path "/etc/hosts" is absolute`],
+    [{ path: "/etc/hosts", content: "", reason: "r" }, `${at}.path "/etc/hosts" is outside the project, the run folder and the plugin's stack guides.`],
+    [{ path: join(root, ".env"), content: "", reason: "r" }, `${at}.path ".env" is off-limits (pattern ".env")`],
     [{ path: "src/escape/secret.txt", content: "", reason: "r" }, `${at}.path "src/escape/secret.txt" leads outside the project through a link`],
     [{ path: "src/missing.js", content: "", reason: "r" }, `${at}.path "src/missing.js" has no file on disk to read`],
     [{ path: "src", content: "", reason: "r" }, `${at}.path "src" is not a file`],
@@ -484,7 +648,7 @@ test("a slice that holds a secret-shaped string does not go to a model, whoever 
   await assertRefused(await accept(runDir, dispatchResult({ packets: [child({ inputs: [{ path: "src/aws.js", content: "", reason: "r" }] })] })), runDir, [
     'packets[0].inputs[0].content "src/aws.js" holds what looks like a secret (aws-access-key-id, line 1), so it does not go to a model',
   ]);
-  await assertRefused(await accept(runDir, dispatchResult({ packets: [child({ inputs: [{ path: "src/auth.js", content: `const k = "${key}";`, reason: "r" }] })] })), runDir, [
+  await assertRefused(await accept(runDir, dispatchResult({ packets: [child({ inputs: [{ path: "src/index.js", content: `const k = "${key}";`, reason: "r" }] })] })), runDir, [
     "holds what looks like a secret (aws-access-key-id, line 1)",
   ]);
   const r = await run(writeConductorFiles(runDir, [{ path: "src/aws.js", reason: "r" }]));
@@ -503,6 +667,33 @@ test("an input a later packet writes is a dependency-order problem", async () =>
   };
   await assertRefused(await accept(runDir, dispatchResult(plan)), runDir, [
     `packets[0].inputs[0] reads "${notes}/diagnosis.md", which packets[1] writes later. List the packets in dependency order.`,
+  ]);
+});
+
+test("a child input may name the stack guide by the absolute path the planner was given, or a project file absolutely", async () => {
+  const { root, runDir } = brownfieldRun();
+  const guide = join(PLUGIN, "skills", "pipeline", "stacks", "generic.md");
+  const r = await run(writeConductorFiles(runDir, [{ path: guide, reason: "The stack's placement rules." }]));
+  assert.equal(r.code, 0, r.err);
+  const given = JSON.parse(readFileSync(join(runDir, "tp-plan-001.json"), "utf8")).inputs[0].path;
+  assert.equal(given, guide);
+  const plan = {
+    packets: [child({
+      inputs: [
+        { path: join(root, "src", "auth.js"), content: "", reason: "The file the fix changes." },
+        { path: given, content: "", reason: "Placement rules." },
+        { path: given, content: "Keep tests beside the source.", reason: "Placement rules, the part that matters." },
+      ],
+    })],
+  };
+  const ok = await accept(runDir, dispatchResult(plan));
+  assert.equal(ok.code, 0, ok.err);
+  const [p] = JSON.parse(readFileSync(join(runDir, "packets.json"), "utf8"));
+  assert.equal(p.inputs[0].path, "src/auth.js", "a project file is named relative to the project root");
+  assert.deepEqual(p.inputs[1], { path: guide, content: readFileSync(guide, "utf8"), reason: "Placement rules." });
+  assert.equal(p.inputs[2].content, "Keep tests beside the source.");
+  await assertRefused(await accept(runDir, dispatchResult({ packets: [child({ inputs: [{ path: join(PLUGIN, "config", "policies", "gpt-plus-flash.yaml"), content: "x", reason: "r" }] })] })), runDir, [
+    "is outside the project, the run folder and the plugin's stack guides",
   ]);
 });
 

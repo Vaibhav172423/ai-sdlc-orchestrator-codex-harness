@@ -60,11 +60,11 @@
               "properties": {
                 "path": {
                   "type": "string",
-                  "description": "Relative to the project root."
+                  "description": "Relative to the project root. A stack guide keeps the absolute path it was given under."
                 },
                 "content": {
                   "type": "string",
-                  "description": "The slice, or an empty string to have the whole file read from disk."
+                  "description": "An empty string to have the whole file read when the packet runs, or a slice. Always empty for the file this packet writes and for a file an earlier packet writes."
                 },
                 "reason": {
                   "type": "string",

@@ -22,7 +22,7 @@ import { fileURLToPath } from "node:url";
 
 import { parseFlags, readRunJson, UsageError } from "../codex/interactive-run.mjs";
 import { FROZEN_FILE, readRegular } from "./lib/contract-lock.mjs";
-import { CREATABLE_WHEN_ABSENT, firstMatch, hardcodedHit } from "./lib/off-limits.mjs";
+import { firstMatch, hardcodedHit } from "./lib/off-limits.mjs";
 import { isRunId } from "./lib/run-id.mjs";
 import { guardedHit, insidePath, judgedPaths, realPath } from "./lib/write-guard.mjs";
 import { projectOffLimits } from "./write-contract.mjs";
@@ -41,6 +41,8 @@ export const MAX_INPUT_BYTES = 128 * 1024;
 export const PLAN_FLAGS = Object.freeze({ value: ["run-dir", "instruction", "inputs", "previous", "accept"], boolean: ["build"] });
 
 const MAX_PACKET_INPUT_BYTES = 384 * 1024;
+/** The env files a plan may write. `.env` itself is the Phase 7 bootstrap's copy of `.env.test`, never a packet's. */
+const PLAN_ENV_FILES = [".env.example", ".env.test"];
 const MAX_PACKETS = 200;
 // Reasoning tokens count against the ceiling; the OpenAI adapter doubles it on truncation.
 const PLAN_OUTPUT_TOKENS = 8000;
@@ -153,7 +155,9 @@ export async function readRunFacts(runDirArg, { pluginRoot = PLUGIN_ROOT } = {})
   };
 
   if (mode === "brownfield") {
-    const intent = rec.intent ?? readJsonFile(join(runDir, "provenance.json"))?.intent ?? null;
+    // Gate 0 re-confirms the intent and the freeze records that value, which can differ from the handover's.
+    const confirmed = readJsonFile(join(runDir, "provenance.json"))?.intent;
+    const intent = typeof confirmed === "string" && confirmed ? confirmed : (rec.intent ?? null);
     if (typeof intent !== "string" || !intent) {
       throw new UsageError(`run ${runId} records no intent (run record or provenance.json): a brownfield plan carries one on every packet.`);
     }
@@ -180,11 +184,25 @@ export async function readRunFacts(runDirArg, { pluginRoot = PLUGIN_ROOT } = {})
 
 // ── paths ───────────────────────────────────────────────────────────────────
 
+const CONTROL_CHARS = /[\u0000-\u001f\u007f]/;
+
+/** What is wrong with a path's text, however it is anchored: a control character, or space around a name. */
+function pathTextProblem(raw) {
+  if (CONTROL_CHARS.test(raw)) return `${quote(raw)} holds a control character (a tab, a newline or a NUL); write the path on one line`;
+  const names = raw.split("/");
+  if (names.some((n) => n !== n.trim())) {
+    return `${quote(raw)} has a space at the start or end of a name; write ${quote(names.map((n) => n.trim()).join("/"))}`;
+  }
+  return null;
+}
+
 /** A path as written, made project-relative, or the reason it cannot be one. A leading `./` is dropped. */
 export function relPath(raw) {
   if (typeof raw !== "string") return { problem: `is ${quote(raw)}, not a path` };
   if (raw.trim() === "") return { problem: "is empty" };
-  if (raw.includes("\0") || raw.includes("\\")) return { problem: `${quote(raw)} holds a backslash; write the path with / between folders` };
+  const text = pathTextProblem(raw);
+  if (text) return { problem: text };
+  if (raw.includes("\\")) return { problem: `${quote(raw)} holds a backslash; write the path with / between folders` };
   if (isAbsolute(raw) || /^[A-Za-z]:/.test(raw)) return { problem: `${quote(raw)} is absolute; write it relative to the project root` };
   const rel = raw.replace(/^(?:\.\/)+/, "");
   const names = rel.split("/");
@@ -195,40 +213,70 @@ export function relPath(raw) {
   return { rel };
 }
 
-function offLimitsHit(facts, rel) {
-  const hard = hardcodedHit(rel);
-  if (hard) return hard;
-  return firstMatch(rel, facts.offLimits, { ci: true });
+const ENV_PATTERNS = [".env", ".env.*"];
+const isPlanEnvFile = (rel) => PLAN_ENV_FILES.includes(posix.basename(rel).toLowerCase());
+
+/** The always-off-limits pattern `rel` matches. `envFile`: one a plan may write, so only its folder is judged. */
+function hardHit(rel, { envFile = false } = {}) {
+  if (!envFile) return hardcodedHit(rel);
+  const folder = posix.dirname(rel);
+  return folder === "." ? null : hardcodedHit(folder);
+}
+
+function offLimitsHit(facts, rel, { envFile = false } = {}) {
+  const patterns = envFile ? facts.offLimits.filter((p) => !ENV_PATTERNS.includes(p)) : facts.offLimits;
+  return hardHit(rel, { envFile }) ?? firstMatch(rel, patterns, { ci: true });
 }
 
 /**
- * Where a slice is read from: a project-relative path, or (`absoluteOk`) an absolute one inside the project, the run
- * folder or the plugin's stack guides. Checked as written and with links resolved, as the write guard checks a write.
+ * What a slice names: a project-relative path, or (`absoluteOk`) an absolute one inside the project, the run folder
+ * or the plugin's stack guides. `rel` is set for a file in the project, which is then named by it; any other keeps
+ * its absolute path as its `label`.
  */
-function locateRead(facts, raw, { absoluteOk = false } = {}) {
-  let abs;
-  let label;
-  if (absoluteOk && typeof raw === "string" && isAbsolute(raw)) {
-    const inProject = insidePath(facts.projectRoot, raw);
-    if (inProject === null && insidePath(facts.runDir, raw) === null && insidePath(facts.stacksDir, raw) === null) {
-      return { problem: `${quote(raw)} is outside the project, the run folder and the plugin's stack guides` };
-    }
-    abs = raw;
-    label = inProject ?? raw;
-  } else {
+function slicePath(facts, raw, { absoluteOk = false } = {}) {
+  if (!(absoluteOk && typeof raw === "string" && isAbsolute(raw))) {
     const r = relPath(raw);
-    if (r.problem) return r;
-    abs = join(facts.projectRoot, r.rel);
-    label = r.rel;
+    return r.problem ? r : { abs: join(facts.projectRoot, r.rel), rel: r.rel, label: r.rel };
   }
-  const root = [facts.projectRoot, facts.runDir, facts.stacksDir].find((d) => insidePath(d, abs) !== null);
-  const { paths, leaves } = judgedPaths(root, abs);
-  if (leaves) return { problem: `${quote(label)} leads outside ${root === facts.projectRoot ? "the project" : "its folder"} through a link` };
+  const text = pathTextProblem(raw);
+  if (text) return { problem: text };
+  const inProject = insidePath(facts.projectRoot, raw);
+  if (inProject === "") return { problem: `${quote(raw)} is the project folder, not a file` };
+  if (inProject !== null) {
+    const r = relPath(inProject);
+    return r.problem ? r : { abs: join(facts.projectRoot, r.rel), rel: r.rel, label: r.rel };
+  }
+  if (insidePath(facts.runDir, raw) === null && insidePath(facts.stacksDir, raw) === null) {
+    return { problem: `${quote(raw)} is outside the project, the run folder and the plugin's stack guides` };
+  }
+  return { abs: resolve(raw), rel: null, label: raw };
+}
+
+const sliceRoot = (facts, abs) => [facts.projectRoot, facts.runDir, facts.stacksDir].find((d) => insidePath(d, abs) !== null);
+
+/** The off-limits pattern a slice's path matches as written, or null. */
+function sliceHit(facts, at) {
+  if (at.rel !== null) return offLimitsHit(facts, at.rel);
+  return hardcodedHit(insidePath(sliceRoot(facts, at.abs), at.abs) ?? at.abs);
+}
+
+/** Why a slice's file may not go to a model: off-limits, or a link out of its folder, judged as the write guard judges a write. */
+function readProblem(facts, at) {
+  const root = sliceRoot(facts, at.abs);
+  const { paths, leaves } = judgedPaths(root, at.abs);
+  if (leaves) return `${quote(at.label)} leads outside ${root === facts.projectRoot ? "the project" : "its folder"} through a link`;
   for (const p of paths) {
     const hit = root === facts.projectRoot ? offLimitsHit(facts, p) : hardcodedHit(p);
-    if (hit) return { problem: `${quote(label)} is off-limits (pattern ${quote(hit)}), so it does not go to a model` };
+    if (hit) return `${quote(at.label)} is off-limits (pattern ${quote(hit)}), so it does not go to a model`;
   }
-  return { abs, label };
+  return null;
+}
+
+function locateRead(facts, raw, opts) {
+  const at = slicePath(facts, raw, opts);
+  if (at.problem) return at;
+  const problem = readProblem(facts, at);
+  return problem ? { problem } : at;
 }
 
 function secretProblem(label, content) {
@@ -236,17 +284,23 @@ function secretProblem(label, content) {
   return found ? `${quote(label)} holds what looks like a secret (${found.name}, line ${found.line}), so it does not go to a model; give a slice without it` : null;
 }
 
-function readText(abs, label) {
+/** `whole`: the file a packet rewrites, which it must read in full. */
+function readText(abs, label, { whole = false } = {}) {
   const real = realPath(abs);
   let st;
   try {
     st = lstatSync(real);
   } catch {
-    return { problem: `${quote(label)} has no file on disk to read` };
+    return { problem: `${quote(label)} has no file on disk to read`, missing: true };
   }
   if (!st.isFile()) return { problem: `${quote(label)} is not a file` };
   if (st.size > MAX_INPUT_BYTES) {
-    return { problem: `${quote(label)} is ${Math.ceil(st.size / 1024)} KB, over the ${MAX_INPUT_BYTES / 1024} KB a slice read from disk may hold; give the part the worker needs as content` };
+    const kb = Math.ceil(st.size / 1024);
+    return {
+      problem: whole
+        ? `${quote(label)} is ${kb} KB, over the ${MAX_INPUT_BYTES / 1024} KB a packet that rewrites a whole file may read; plan a smaller file or a narrower change`
+        : `${quote(label)} is ${kb} KB, over the ${MAX_INPUT_BYTES / 1024} KB a slice read from disk may hold; give the part the worker needs as content`,
+    };
   }
   const bytes = readRegular(real, MAX_INPUT_BYTES);
   if (!bytes) return { problem: `${quote(label)} could not be read` };
@@ -257,14 +311,21 @@ function readText(abs, label) {
 /**
  * The reason `rel` is not a path this run's plan may write, `{warning}` for a miss a non-strict contract allows, or {}.
  * Brownfield follows the write guard's order: the run's guarded records, the always-off-limits list, the run folder,
- * the contract's off-limits, then its allowlist.
+ * the contract's off-limits, then its allowlist. The run folder is matched without regard to case, as the disk does.
  */
 export function targetProblem(facts, rel) {
-  const inNotes = facts.notesPrefix && rel.startsWith(facts.notesPrefix) && rel.length > facts.notesPrefix.length;
-  const inRunFolder = facts.runRel && (rel === facts.runRel || rel.startsWith(`${facts.runRel}/`));
+  const lower = rel.toLowerCase();
+  const runLower = facts.runRel === null ? null : facts.runRel.toLowerCase();
+  const inNotes = facts.notesPrefix !== null && rel.startsWith(facts.notesPrefix) && rel.length > facts.notesPrefix.length;
+  const inRunFolder = runLower !== null && (lower === runLower || lower.startsWith(`${runLower}/`));
   const notes = facts.notesPrefix
     ? `a note that is not shipped code goes under ${facts.notesPrefix}`
     : "this run's folder is outside the project, so a plan writes no notes";
+  const misspeltNotes = facts.notesPrefix !== null && lower.startsWith(facts.notesPrefix.toLowerCase());
+  const runFolder = (what) =>
+    misspeltNotes
+      ? { problem: `${quote(rel)} spells this run's notes folder another way; write it under ${facts.notesPrefix}` }
+      : { problem: `${quote(rel)} ${what}; ${notes}` };
   if (facts.mode === "brownfield") {
     const c = facts.contract;
     const g = guardedHit(rel, facts.runId);
@@ -272,19 +333,17 @@ export function targetProblem(facts, rel) {
     const hard = hardcodedHit(rel);
     if (hard) return { problem: `${quote(rel)} matches always-off-limits pattern ${quote(hard)}` };
     if (inNotes) return {};
-    if (inRunFolder) return { problem: `${quote(rel)} is in the run folder beside the run's own records; ${notes}` };
+    if (inRunFolder) return runFolder("is in the run folder beside the run's own records");
     const off = firstMatch(rel, c.off_limits, { ci: true });
     if (off) return { problem: `${quote(rel)} matches off-limits pattern ${quote(off)}` };
     if (firstMatch(rel, c.allowlist)) return {};
     const why = `${quote(rel)} is not in the run's frozen allowlist (${c.allowlist.map(quote).join(", ")}); ${notes}`;
     return c.strict === false ? { warning: `${why}. Allowed because the contract is not strict.` } : { problem: why };
   }
-  const hard = hardcodedHit(rel);
-  if (hard && !CREATABLE_WHEN_ABSENT.includes(rel.slice(rel.lastIndexOf("/") + 1).toLowerCase())) {
-    return { problem: `${quote(rel)} matches always-off-limits pattern ${quote(hard)}` };
-  }
+  const hard = hardHit(rel, { envFile: isPlanEnvFile(rel) });
+  if (hard) return { problem: `${quote(rel)} matches always-off-limits pattern ${quote(hard)}` };
   if (inNotes) return {};
-  if (inRunFolder || rel === ".sdlc" || rel.startsWith(".sdlc/")) return { problem: `${quote(rel)} is among the run records; ${notes}` };
+  if (inRunFolder || lower === ".sdlc" || lower.startsWith(".sdlc/")) return runFolder("is among the run records");
   if (facts.codeRel === "" || rel.startsWith(`${facts.codeRel}/`)) return {};
   return { problem: `${quote(rel)} is outside the code directory ${facts.codeRel}/; ${notes}` };
 }
@@ -307,6 +366,7 @@ function checkTarget(facts, raw) {
 
 export function childSchemaProblem(node, at = "", depth = 0) {
   const where = at ? `${at} ` : "";
+  const sub = (name) => (at ? `${at}.${name}` : name);
   if (depth > 32) return `${where}nests too deep`;
   if (!isObject(node)) return `${where}is not a JSON Schema object`;
   // GeminiFlashAdapter's marker for a markdown reply.
@@ -318,30 +378,39 @@ export function childSchemaProblem(node, at = "", depth = 0) {
     const types = Array.isArray(node.type) ? node.type : [node.type];
     if (types.length === 0 || !types.every((t) => JSON_TYPES.has(t))) return `${where}type ${quote(node.type)} is not a JSON Schema type`;
   }
-  if ("properties" in node) {
-    if (!isObject(node.properties)) return `${where}properties is not an object`;
-    for (const [k, v] of Object.entries(node.properties)) {
-      const p = childSchemaProblem(v, `${at}properties.${k}`.replace(/^\./, ""), depth + 1);
-      if (p) return p;
-    }
-  }
   if ("required" in node && !(Array.isArray(node.required) && node.required.every((r) => typeof r === "string"))) {
     return `${where}required is not a list of property names`;
   }
-  if ("items" in node && typeof node.items !== "boolean") {
-    const list = Array.isArray(node.items) ? node.items : [node.items];
-    for (const [i, v] of list.entries()) {
-      const p = childSchemaProblem(v, `${at}items${Array.isArray(node.items) ? `[${i}]` : ""}`, depth + 1);
-      if (p) return p;
-    }
+  const kids = [];
+  if ("properties" in node) {
+    if (!isObject(node.properties)) return `${where}properties is not an object`;
+    for (const [k, v] of Object.entries(node.properties)) kids.push([v, sub(`properties.${k}`)]);
+  }
+  if ("additionalProperties" in node && typeof node.additionalProperties !== "boolean") {
+    kids.push([node.additionalProperties, sub("additionalProperties")]);
+  }
+  if ("items" in node) {
+    if (Array.isArray(node.items)) node.items.forEach((v, i) => kids.push([v, sub(`items[${i}]`)]));
+    else kids.push([node.items, sub("items")]);
+  }
+  if ("prefixItems" in node) {
+    if (!Array.isArray(node.prefixItems)) return `${where}prefixItems is not a list`;
+    node.prefixItems.forEach((v, i) => kids.push([v, sub(`prefixItems[${i}]`)]));
+  }
+  if ("not" in node) kids.push([node.not, sub("not")]);
+  for (const k of ["$defs", "definitions"]) {
+    if (!(k in node)) continue;
+    if (!isObject(node[k])) return `${where}${k} is not an object`;
+    for (const [name, v] of Object.entries(node[k])) kids.push([v, sub(`${k}.${name}`)]);
   }
   for (const k of ["anyOf", "oneOf", "allOf"]) {
     if (!(k in node)) continue;
     if (!Array.isArray(node[k]) || node[k].length === 0) return `${where}${k} is not a non-empty list`;
-    for (const [i, v] of node[k].entries()) {
-      const p = childSchemaProblem(v, `${at}${k}[${i}]`, depth + 1);
-      if (p) return p;
-    }
+    node[k].forEach((v, i) => kids.push([v, sub(`${k}[${i}]`)]));
+  }
+  for (const [v, path] of kids) {
+    const p = childSchemaProblem(v, path, depth + 1);
+    if (p) return p;
   }
   return null;
 }
@@ -381,6 +450,7 @@ function planValue(result) {
   return { value };
 }
 
+/** The plan in a dispatch result: `packets` in the canonical shape when it passes, else `problems`. */
 export function judgePlan(facts, result) {
   const events = Array.isArray(result.events) ? result.events.filter(isObject) : [];
   const event = events[0] ?? null;
@@ -423,13 +493,28 @@ export function judgePlan(facts, result) {
   children.forEach((c, i) => {
     if (!c?.artifact_path) return;
     const key = c.artifact_path.toLowerCase();
-    if (writers.has(key)) {
-      problems.push(`packets[${writers.get(key)}] and packets[${i}] both write ${quote(c.artifact_path)}. Plan one packet per file.`);
-    } else writers.set(key, i);
+    const w = writers.get(key);
+    if (!w) writers.set(key, { path: c.artifact_path, indices: [i] });
+    else if (w.path !== c.artifact_path) {
+      problems.push(`packets[${i}] writes ${quote(c.artifact_path)}, the file packets[${w.indices[0]}] writes as ${quote(w.path)}. Spell one file one way.`);
+    } else w.indices.push(i);
   });
   children.forEach((c, i) => {
     if (c) c.inputs = judgeInputs(facts, c.rawInputs, `packets[${i}]`, i, writers, problems);
   });
+  for (const w of writers.values()) {
+    for (let n = 1; n < w.indices.length; n++) {
+      const i = w.indices[n];
+      const raw = Array.isArray(children[i].rawInputs) ? children[i].rawInputs : [];
+      const lists = raw.some((s) => isObject(s) && slicePath(facts, s.path, { absoluteOk: true }).rel?.toLowerCase() === w.path.toLowerCase());
+      if (!lists) {
+        problems.push(
+          `packets[${i}] writes ${quote(w.path)} after packets[${w.indices[n - 1]}] does; list ${quote(w.path)} among its inputs ` +
+            'with content "" so it starts from the file that packet leaves, or plan one packet for the file.',
+        );
+      }
+    }
+  }
   if (problems.length > 0) return out;
 
   const seq = {};
@@ -545,6 +630,11 @@ function judgeFields(facts, raw, at, problems, warnings) {
   return c;
 }
 
+/**
+ * A worker writes the whole file it is given, so the file a packet writes, and a file an earlier packet writes, reach
+ * it whole: the first read from disk here, the second at Phase 5, once that packet has run. Either one given as a
+ * slice is refused.
+ */
 function judgeInputs(facts, inputs, at, index, writers, problems) {
   if (!Array.isArray(inputs)) return null;
   const out = [];
@@ -561,40 +651,58 @@ function judgeInputs(facts, inputs, at, index, writers, problems) {
     }
     for (const k of Object.keys(s)) if (!["path", "content", "reason"].includes(k)) problems.push(`${where} has a field ${quote(k)}; a slice holds path, content and reason.`);
     if (!nonEmpty(s.reason)) problems.push(`${where}.reason is empty; say why the worker needs it.`);
-    const r = relPath(s.path);
-    if (r.problem) {
-      problems.push(`${where}.path ${r.problem}.`);
+    const loc = slicePath(facts, s.path, { absoluteOk: true });
+    if (loc.problem) {
+      problems.push(`${where}.path ${loc.problem}.`);
       return;
     }
-    const hit = offLimitsHit(facts, r.rel);
+    const w = loc.rel === null ? undefined : writers.get(loc.rel.toLowerCase());
+    const earlier = w ? w.indices.filter((k) => k < index) : [];
+    const own = w ? w.indices.includes(index) : false;
+    const given = s.content.trim() !== "";
+    // A plan's own .env.example holds no values, and its .env.test only test ones.
+    const planFixture = earlier.length > 0 && isPlanEnvFile(loc.rel);
+    const hit = planFixture ? offLimitsHit(facts, loc.rel, { envFile: true }) : sliceHit(facts, loc);
     if (hit) {
-      problems.push(`${where}.path ${quote(r.rel)} is off-limits (pattern ${quote(hit)}), so it does not go to a model.`);
+      problems.push(`${where}.path ${quote(loc.label)} is off-limits (pattern ${quote(hit)}), so it does not go to a model.`);
       return;
     }
-    const writer = writers.get(r.rel.toLowerCase());
-    let content = s.content;
-    if (content.trim() === "") {
-      if (writer !== undefined && writer < index) {
-        content = "";
-      } else {
-        const where2 = locateRead(facts, r.rel);
-        const read = where2.problem ? where2 : readText(where2.abs, r.rel);
-        if (read.problem) {
-          problems.push(writer !== undefined && writer > index
-            ? `${where} reads ${quote(r.rel)}, which packets[${writer}] writes later. List the packets in dependency order.`
-            : `${where}.path ${read.problem}.`);
-          return;
-        }
-        content = read.content;
+    if (earlier.length > 0) {
+      if (given) {
+        problems.push(`${where} gives content for ${quote(loc.rel)}, which packets[${earlier.at(-1)}] writes first; leave content "" so the worker gets the file as that packet leaves it.`);
+        return;
       }
+      out.push({ path: loc.rel, content: "", reason: s.reason.trim() });
+      return;
     }
-    const secret = secretProblem(r.rel, content);
+    if (own && given) {
+      problems.push(`${where} gives content for ${quote(loc.rel)}, the file this packet writes; leave content "" so the worker gets the whole file.`);
+      return;
+    }
+    let content = s.content;
+    if (!given) {
+      const blocked = readProblem(facts, loc);
+      const read = blocked ? { problem: blocked } : readText(loc.abs, loc.label, { whole: own });
+      if (read.problem) {
+        const later = w ? w.indices.filter((k) => k > index) : [];
+        problems.push(
+          read.missing && own
+            ? `${where}.path ${quote(loc.rel)} is the file this packet creates, so there is nothing on disk to read yet; leave it out of inputs.`
+            : read.missing && later.length > 0
+              ? `${where} reads ${quote(loc.rel)}, which packets[${later[0]}] writes later. List the packets in dependency order.`
+              : `${where}.path ${read.problem}.`,
+        );
+        return;
+      }
+      content = read.content;
+    }
+    const secret = secretProblem(loc.label, content);
     if (secret) {
       problems.push(`${where}.content ${secret}.`);
       return;
     }
     bytes += Buffer.byteLength(content);
-    out.push({ path: r.rel, content, reason: s.reason.trim() });
+    out.push({ path: loc.label, content, reason: s.reason.trim() });
   });
   if (bytes > MAX_PACKET_INPUT_BYTES) {
     problems.push(`${at}.inputs hold ${Math.ceil(bytes / 1024)} KB, over the ${MAX_PACKET_INPUT_BYTES / 1024} KB one packet may carry. Slice them.`);
@@ -611,9 +719,9 @@ export function planRules(facts) {
     "These hold for every packet. A plan that breaks one is refused and planned again.",
     "",
     "- List the packets in dependency order: each runs only after every packet before it.",
-    "- One packet per file: no two packets share an artifact_path.",
-    "- Paths are relative to the project root, with / between folders, and never climb out with `..`.",
-    `- Leave an input's content empty to have the file read from disk (at most ${MAX_INPUT_BYTES / 1024} KB). A file an earlier packet writes is read once that packet has run.`,
+    "- One packet per file. A later packet changes a file an earlier packet writes only when it lists that file among its inputs with content \"\": it then starts from the file that packet leaves.",
+    "- Paths are relative to the project root, with / between folders, and never climb out with `..`. A stack guide keeps the absolute path it was given to you under.",
+    `- Leave an input's content "" to have the whole file read when the packet runs (at most ${MAX_INPUT_BYTES / 1024} KB). It is always "" for the file the packet writes and for a file an earlier packet writes; any other input may be a slice.`,
     "- output_schema_json is the JSON Schema the worker's reply must match, encoded as a JSON string.",
     "- budget.maxOutputTokens: 3000 for a source, test or doc file; 5000 for a large one. maxInputTokens: about the inputs' size in tokens plus 2000.",
     `- Run id ${facts.runId}. ${facts.runRel ? `The run's records (requirements.md, design.md) are under ${facts.runRel}/.` : ""}`.trimEnd(),
@@ -630,7 +738,7 @@ export function planRules(facts) {
   } else {
     lines.push(
       `- Generated code goes under \`${facts.codeRel || "."}/\`; artifact_path is null only for a packet that writes no file.`,
-      "- Never name secrets or tool config (`.env`, `.git/`, `.codex/`, `.agents/`) as an input or a target; `.env.example` and `.env.test` may be targets.",
+      "- Never name secrets or tool config (`.env`, `.git/`, `.codex/`, `.agents/`) as an input or a target. `.env.example` and `.env.test` may be targets, and a later packet may read one an earlier packet writes.",
     );
   }
   return lines.join("\n");
