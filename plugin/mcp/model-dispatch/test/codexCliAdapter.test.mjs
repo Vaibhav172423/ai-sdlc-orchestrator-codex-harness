@@ -16,6 +16,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { CodexCliAdapter, parseCodexStream, PLUGIN_HOOKS_OFF_CONFIG } from "../dist/adapters/CodexCliAdapter.js";
+import { STRICT_RESULT_ENVELOPE } from "../dist/adapters/strictSchema.js";
 
 // Real `codex exec --json` streams from codex-cli 0.160.1 against a localhost
 // mock: `reconnect-only` dropped the first response stream and recovered;
@@ -39,7 +40,7 @@ const PACKET = {
   module: "cross",
   instruction: "Return {ok:true} as JSON.",
   inputs: [],
-  outputSchema: { type: "object", properties: { ok: { type: "boolean" } } },
+  outputSchema: { type: "object", properties: { ok: { type: "boolean" } }, required: ["ok"], additionalProperties: false },
   acceptance: ["valid JSON"],
   budget: { maxInputTokens: 8000, maxOutputTokens: 2000 },
   pass_id: "test-pass",
@@ -352,4 +353,85 @@ process.stdout.write(fs.readFileSync(${JSON.stringify(new URL("reconnect-only.js
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
+});
+
+// ── strict-mode schemas ──────────────────────────────────────────────
+
+// The brownfield plan packet's schema that OpenAI strict mode refused: its array items are an object with no properties.
+const LOOSE_PLAN_SCHEMA = {
+  type: "object",
+  properties: { packets: { type: "array", items: { type: "object" } } },
+  required: ["packets"],
+  additionalProperties: false,
+};
+
+/**
+ * A real child process standing in for codex: it records the schema file and the prompt it was handed, and answers
+ * with `answer`, inside `result_json` when the schema it got is the envelope.
+ */
+async function withCodexStub(answer, fn) {
+  const dir = mkdtempSync(join(tmpdir(), "codex-cli-stub-"));
+  try {
+    const capture = join(dir, "capture.json");
+    const stub = join(dir, "codex");
+    writeFileSync(
+      stub,
+      `#!/usr/bin/env node
+const fs = require("fs");
+const args = process.argv.slice(2);
+const schema = JSON.parse(fs.readFileSync(args[args.indexOf("--output-schema") + 1], "utf8"));
+fs.writeFileSync(${JSON.stringify(capture)}, JSON.stringify({ schema, prompt: args[args.length - 1] }));
+const answer = ${JSON.stringify(answer)};
+const message = schema.properties && schema.properties.result_json ? { result_json: JSON.stringify(answer) } : answer;
+fs.writeFileSync(args[args.indexOf("--output-last-message") + 1], JSON.stringify(message));
+process.stdout.write(JSON.stringify({ type: "turn.completed", usage: { input_tokens: 1000, cached_input_tokens: 400, output_tokens: 50 } }) + "\\n");
+`,
+    );
+    chmodSync(stub, 0o755);
+    const captured = () => JSON.parse(readFileSync(capture, "utf8"));
+    return await fn(stub, captured);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+const MODELED_COST = (600 / 1e6) * 2.0 + (400 / 1e6) * 0.2 + (50 / 1e6) * 12.0;
+
+test("a schema strict mode accepts reaches --output-schema unchanged, with no envelope in the prompt", async () => {
+  await withCodexStub({ ok: true }, async (codexBin, captured) => {
+    const out = await new CodexCliAdapter(BASE_CONFIG, { codexBin }).execute(PACKET);
+    assert.deepEqual(captured().schema, PACKET.outputSchema);
+    assert.doesNotMatch(captured().prompt, /result_json/);
+    assert.equal(out.success, true);
+    assert.deepEqual(out.result, { ok: true });
+  });
+});
+
+test("a schema strict mode would refuse is replaced by the envelope, and the value inside result_json comes back", async () => {
+  const plan = { packets: [{ id: "p1", files: ["src/a.ts"] }, { id: "p2" }] };
+  await withCodexStub(plan, async (codexBin, captured) => {
+    const out = await new CodexCliAdapter(BASE_CONFIG, { codexBin }).execute({ ...PACKET, outputSchema: LOOSE_PLAN_SCHEMA });
+    assert.deepEqual(captured().schema, STRICT_RESULT_ENVELOPE);
+    assert.match(captured().prompt, /`result_json`/);
+    assert.ok(
+      captured().prompt.includes(JSON.stringify(LOOSE_PLAN_SCHEMA, null, 2)),
+      "the model is told which schema the value inside result_json must match",
+    );
+    assert.equal(out.success, true);
+    assert.equal(out.terminal_reason, "success");
+    assert.deepEqual(out.result, plan);
+    assert.ok(Math.abs(out.cost_usd - MODELED_COST) < 1e-9, "the envelope changes no cost accounting");
+    assert.equal(out.cost_provenance, undefined);
+  });
+});
+
+test("result_json that is not JSON degrades to a raw wrapper, as a non-JSON final message does", async () => {
+  const spawnFn = fakeSpawn(() => ({
+    lastMessage: JSON.stringify({ result_json: "not json at all" }),
+    stdout: usageLine({ input_tokens: 10, output_tokens: 4 }),
+    code: 0,
+  }));
+  const out = await new CodexCliAdapter(BASE_CONFIG, { spawnFn }).execute({ ...PACKET, outputSchema: LOOSE_PLAN_SCHEMA });
+  assert.equal(out.success, true);
+  assert.deepEqual(out.result, { raw: "not json at all" });
 });

@@ -21,7 +21,10 @@
  * Structured output comes from `--output-schema` (the packet's own
  * outputSchema, written to a temp file) plus `--output-last-message`, which
  * is read back from disk rather than scraped out of stdout — the headless
- * file-output rule from the port's gotcha ledger.
+ * file-output rule from the port's gotcha ledger. Codex sends that schema in
+ * OpenAI strict mode, which refuses the whole request over one loose object,
+ * so a schema strict mode would refuse goes as STRICT_RESULT_ENVELOPE instead
+ * (strictSchema.ts) and the value comes back out of its `result_json`.
  */
 
 import { spawn, type ChildProcess } from "node:child_process";
@@ -36,6 +39,7 @@ import { splitStableFromDynamic } from "./BuiltinAnthropicAdapter.js";
 import { log } from "../log.js";
 import { DispatchPricer, priceFields, refusedResult, type Clock } from "./dispatchPricer.js";
 import { dispatchTimeoutMs } from "./deadline.js";
+import { envelopeInstruction, jsonOrRaw, readEnvelope, STRICT_RESULT_ENVELOPE, strictSchemaProblems } from "./strictSchema.js";
 
 type SpawnFn = typeof spawn;
 
@@ -216,7 +220,11 @@ export class CodexCliAdapter implements ModelAdapter {
     // codex exec takes one prompt — so it is prepended. That loses the
     // prompt-caching discount the API adapters get, which is part of why
     // this path is the fallback and not the default.
-    const prompt = stableBlock ? `${stableBlock}\n\n${userPrompt}` : userPrompt;
+    const packetPrompt = stableBlock ? `${stableBlock}\n\n${userPrompt}` : userPrompt;
+    const packetSchema = packet.outputSchema ?? { type: "object" };
+    const schemaProblems = strictSchemaProblems(packetSchema);
+    const enveloped = schemaProblems.length > 0;
+    const prompt = enveloped ? `${packetPrompt}\n\n${envelopeInstruction(packetSchema)}` : packetPrompt;
 
     const dispatchDate = this.pricer.now();
     const listed = this.pricer.price(dispatchDate);
@@ -230,7 +238,7 @@ export class CodexCliAdapter implements ModelAdapter {
     const started = Date.now();
 
     try {
-      writeFileSync(schemaPath, JSON.stringify(packet.outputSchema ?? { type: "object" }), "utf-8");
+      writeFileSync(schemaPath, JSON.stringify(enveloped ? STRICT_RESULT_ENVELOPE : packetSchema), "utf-8");
       const args = this.buildArgs(schemaPath, lastMessagePath, prompt);
 
       log("debug", "api.codex_cli.request", {
@@ -238,6 +246,8 @@ export class CodexCliAdapter implements ModelAdapter {
         model_name: this.modelConfig.model_name,
         reasoning_effort: this.modelConfig.reasoning?.effort,
         prompt_bytes: Buffer.byteLength(prompt),
+        output_schema: enveloped ? "envelope" : "packet",
+        schema_problem: schemaProblems[0],
       });
 
       const run = await this.spawnAndCollect(args, runContext?.signal);
@@ -307,12 +317,7 @@ export class CodexCliAdapter implements ModelAdapter {
         usage: JSON.stringify(usage ?? {}),
       });
 
-      let parsed: any;
-      try {
-        parsed = JSON.parse(raw);
-      } catch {
-        parsed = { raw };
-      }
+      const parsed = enveloped ? readEnvelope(raw) : jsonOrRaw(raw);
 
       // A turn's usage sums every request in it, so it can prove the whole
       // turn stayed under a tier but never that one request crossed it.
