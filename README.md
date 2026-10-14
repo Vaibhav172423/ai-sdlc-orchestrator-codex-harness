@@ -78,7 +78,7 @@ Check that it worked:
 codex login status
 ```
 
-It prints `Logged in using ChatGPT`.
+It prints `Logged in using ChatGPT`. If you have no ChatGPT account, skip these two commands: the end of [Give the plugin your keys](#give-the-plugin-your-keys) signs Codex in with an OpenAI API key instead.
 
 ### Give the plugin your keys
 
@@ -271,7 +271,7 @@ open -e ~/ping-service/.sdlc/runs/<run-id>/requirements.md
 
 On Linux and WSL, use `less` in place of `open -e`, and press q to close it. Finder hides folders whose names start with a dot, such as `.sdlc`. Press Cmd+Shift+. in a Finder window to show them.
 
-To stop a run between gates, press Esc in Codex. A new app's run does not continue after that: start it again in a new empty folder.
+To stop a run between gates, press Esc in Codex. To carry on in the same session, type `continue`. To carry on later from a new session, type `$mmo-codex:pass --resume=<run-id>`, where `<run-id>` is the name of the run's folder under `.sdlc/runs/`.
 
 4. After `accept`, the run writes its cost report, `report.md` in the run folder, and prints a `Cost report:` line with the command that shows it again.
 
@@ -319,6 +319,16 @@ git add -A
 
 ```
 git commit -m "before first run"
+```
+
+If `git commit` says `Author identity unknown`, git needs a name and an email address to record with your history. Run these once, with your own name and address in place of the examples, then run the commit again:
+
+```
+git config --global user.name "Your Name"
+```
+
+```
+git config --global user.email "you@example.com"
 ```
 
 `git init` starts a history for the folder, `git add -A` picks up every file, and `git commit` saves them as a point you can return to. In a project that is already a repository, run the last two before each run. The run backs up any file with uncommitted changes before it first changes it, but a commit gives you a clean point to return to.
@@ -434,6 +444,7 @@ Outside the run folders, `.sdlc/local/guard-decisions.jsonl` lists every write t
 
 | What you see | Why | What to do |
 |---|---|---|
+| `npm install -g @openai/codex` fails with `EACCES` or `permission denied` | Node.js was installed for every user of the computer, so npm may not add programs to its folder | On a Mac, install Node.js with [Homebrew](https://brew.sh) instead (`brew install node`), open a new terminal window, and run the Codex install again. On Linux and WSL, run the install with `sudo` in front. |
 | `codex: command not found` after you install Codex | The terminal window was open before the install, or npm's folder for installed programs is not on your terminal's search path | Open a new terminal window and run `codex --version` again. If it still fails, follow the `codex: command not found` row of [docs/troubleshooting.md](docs/troubleshooting.md#install-and-prerequisites). |
 | A run on an existing project stops after Gate 0 with `The write guard did not run in this session` | The plugin's hook is not trusted yet, or a plugin update changed it | Quit Codex, start it with the command from step 9, and choose **Trust all and continue**. Or type `/hooks` and trust the mmo-codex hook. Then start the job again. |
 | `no run started: this session must run gpt-5.6-terra at effort high` | Codex was started without the model settings | Type `/model`, choose `gpt-5.6-terra` and effort `high`, send one message, then start the command again. Or quit and use the command from step 9. |
@@ -441,7 +452,7 @@ Outside the run folders, `.sdlc/local/guard-decisions.jsonl` lists every write t
 | `No Gemini credentials found` | No Gemini key reached Codex | Add `GEMINI_API_KEY` to your startup file as in [Give the plugin your keys](#give-the-plugin-your-keys), start Codex again as in [Coming back later](#coming-back-later), and type `$mmo-codex:setup`. Or run `gcloud auth application-default login`. |
 | `OPENAI_API_KEY is not set` | This project's policy pays for GPT with an API key, and none is set | Add the key the same way. Or move to your ChatGPT plan: `$mmo-codex:policy change`, then `gpt-seat-plus-flash`. |
 | `The bundled MCP server is not built`, or runs fail after a plugin update | An update replaces the plugin's files and removes the built helper program | Type `$mmo-codex:setup`, which builds it again. |
-| A run stops and the message mentions a usage limit | Your Codex session runs on your ChatGPT plan, and on `gpt-seat-plus-flash` the run's GPT work does too | Wait for the limit to reset, then start the run again. A policy with an API key takes the judgment work off your plan. Signing Codex in with an API key (`printenv OPENAI_API_KEY \| codex login --with-api-key`) takes the session off it too. |
+| A run stops and the message mentions a usage limit | Your Codex session runs on your ChatGPT plan, and on `gpt-seat-plus-flash` the run's GPT work does too | Wait for the limit to reset, then type `continue` in the same session, or `$mmo-codex:pass --resume=<run-id>` in a new one. A policy with an API key takes the judgment work off your plan. Signing Codex in with an API key (`printenv OPENAI_API_KEY \| codex login --with-api-key`) takes the session off it too. |
 | The `$mmo-codex:` commands do not appear when you type `$` | The plugin was installed after this session started, or it is not installed | Quit and start Codex again with the command from step 9. If the commands are still missing, run `codex plugin list` in a terminal. It lists `mmo-codex@tilicho-ai-labs` as installed and enabled; if it does not, paste the setup sentence again. |
 
 [docs/troubleshooting.md](docs/troubleshooting.md) lists every message the plugin can show, with its cause and its fix.
