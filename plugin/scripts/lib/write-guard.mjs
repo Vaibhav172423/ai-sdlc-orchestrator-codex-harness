@@ -12,7 +12,7 @@ import {
   readContractBytes, readLock,
 } from "./contract-lock.mjs";
 import { isRunId } from "./run-id.mjs";
-import { scanShell } from "./shell-scan.mjs";
+import { MAX_DEPTH, scanShell } from "./shell-scan.mjs";
 
 export const WIRED_BY_RUN_FLAG = "--wired-by=run";
 
@@ -162,6 +162,13 @@ function bashWriteTargets(raw, cwd = null) {
 export function extractBashTightRedirects(raw) {
   return effects(raw).filter((e) => e.kind === "write" && e.tight && !DEVICE_RE.test(e.path)).map((e) => e.path);
 }
+
+/** Whether a shell command nests text past what the scan reads, so what it writes is unknown. */
+export const unreadShell = (raw) => effects(raw).some((e) => e.kind === "unread");
+
+const UNREAD_MESSAGE =
+  `The command nests command substitutions or shells more than ${MAX_DEPTH} levels deep, past what the write hook ` +
+  `reads, so the hook cannot tell what it writes. Split it into simpler commands and try again.`;
 
 /** Paths a shell command removes or moves away: `rm`/`unlink`/`git rm` arguments and `mv` sources. */
 export function extractBashRemovals(raw) {
@@ -724,8 +731,10 @@ export function decideCall(call, { wiredBy = "plugin" } = {}) {
   const bound = [];
   const folders = [];
   const removed = [];
-  let refusal = null;
-  for (const target of targets) {
+  let refusal = shell && unreadShell(callCommand(call))
+    ? { deny: UNREAD_MESSAGE, rule: "unread", state: session, root: sessionRoot, target: null }
+    : null;
+  for (const target of refusal ? [] : targets) {
     const v = checkWrite(target, cwd, sessionRoot, session, {
       mayCreate: mayCreateWhenAbsent(call, target, cwd), shellWord: !!shell && !patched.has(target),
     });

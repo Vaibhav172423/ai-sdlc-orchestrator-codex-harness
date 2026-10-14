@@ -8,11 +8,12 @@
  * when no blank comes before the operator), `{kind: "copy", tool, flags, args}` (`cp`, `mv`, `git mv`),
  * `{kind: "remove", path}` (`rm`, `unlink`, `git rm`, `mv` sources) and `{kind: "patch", text}` (the text an
  * `apply_patch` run through the shell is given or piped). Paths are shell words with quotes and backslashes resolved;
- * `$`, globs and braces stay in them, and a command substitution reads `$*`.
+ * `$`, globs and braces stay in them, and a command substitution reads `$*`. `{kind: "unread"}` marks text nested
+ * past MAX_DEPTH, which the scan does not read.
  */
 
 /** Past this depth of substitutions and nested shells, the inner text is not read. */
-const MAX_DEPTH = 8;
+export const MAX_DEPTH = 8;
 
 const SHELLS = new Set(["sh", "bash", "zsh", "dash", "ksh", "ash", "mksh", "yash"]);
 const RESERVED = new Set(["!", "{", "}", "if", "then", "elif", "else", "fi", "do", "done", "while", "until", "esac", "coproc"]);
@@ -87,7 +88,10 @@ function backtickEnd(text, i) {
 
 /** A `$(`, `<(`, `>(` or `=(` body starting at `j`: lexed into ctx.subs. Returns the index of its `)`. */
 function substitute(text, j, ctx, level) {
-  if (level >= MAX_DEPTH) return balanced(text, j - 1);
+  if (level >= MAX_DEPTH) {
+    ctx.unread = true;
+    return balanced(text, j - 1);
+  }
   const inner = lex(text, j, ")", ctx, level + 1);
   ctx.subs.push({ tokens: inner.tokens, depth: level + 1 });
   return inner.end;
@@ -97,6 +101,7 @@ function substitute(text, j, ctx, level) {
 function backtick(text, i, ctx, level) {
   const end = backtickEnd(text, i);
   if (level < MAX_DEPTH) ctx.subs.push({ text: text.slice(i + 1, end).replace(/\\([`$\\])/g, "$1"), depth: level + 1 });
+  else ctx.unread = true;
   return end;
 }
 
@@ -580,18 +585,27 @@ function runSubs(ctx, out) {
     if (s.tokens) run(s.tokens, out, s.depth, s.feeds);
     else visit(s.text, out, s.depth, s.feeds);
   }
+  if (ctx.unread) out.push({ kind: "unread" });
 }
 
 /** The command substitutions of an unquoted here-document body, which the shell runs before the command reads it. */
 function bodySubstitutions(body, out, depth) {
-  if (!body || depth > MAX_DEPTH) return;
+  if (!body) return;
+  if (depth > MAX_DEPTH) {
+    if (/\$\(|`/.test(body)) out.push({ kind: "unread" });
+    return;
+  }
   const ctx = { subs: [] };
   lexDouble(body, 0, ctx, depth, false);
   runSubs(ctx, out);
 }
 
 function visit(text, out, depth, feeds = null) {
-  if (typeof text !== "string" || !text || depth > MAX_DEPTH) return;
+  if (typeof text !== "string" || !text.trim()) return;
+  if (depth > MAX_DEPTH) {
+    out.push({ kind: "unread" });
+    return;
+  }
   const ctx = { subs: [] };
   run(lex(text, 0, null, ctx, depth).tokens, out, depth, feeds);
   runSubs(ctx, out);

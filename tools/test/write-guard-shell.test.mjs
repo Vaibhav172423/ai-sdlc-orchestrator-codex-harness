@@ -215,6 +215,27 @@ test("scan: what the shell runs from a string or a here-document is read as shel
   );
 });
 
+test("a command nested past what the scan reads is refused, with or without a contract", () => {
+  const live = project({ live: true });
+  const plain = project({ live: false });
+  const nest = (n, inner) => (n === 0 ? inner : `echo $(${nest(n - 1, inner)})`);
+  const quote = (s) => `'${s.replace(/'/g, "'\\''")}'`;
+  const shells = (n, inner) => (n === 0 ? inner : `sh -c ${quote(shells(n - 1, inner))}`);
+  try {
+    for (const dir of [live, plain]) {
+      const decide = (command) => decideCall({ cwd: dir, ...bash(command) });
+      for (const command of [nest(9, "echo x > .env"), nest(9, "echo hi"), shells(9, "echo hi"), `echo "${nest(9, "true")}"`]) {
+        const out = decide(command);
+        assert.equal(out.decision, "deny", command);
+        assert.match(out.reason, /more than 8 levels deep, past what the write hook reads/, command);
+      }
+      assert.match(decide(nest(8, "echo x > .env")).reason, /^\.env matches always-off-limits pattern/);
+      assert.equal(decide(nest(8, "echo hi")).decision, "allow");
+      assert.equal(decide(shells(8, "echo hi")).decision, "allow");
+    }
+  } finally { cleanup(live); cleanup(plain); }
+});
+
 test("scan: only an operator outside quotes redirects, and a glued one stays a narrow target", () => {
   const narrow = (command) => extractNarrowTargets(bash(command));
   assert.deepEqual(extractBashTargets("echo x >| a >> b &> c &>> d >& e >! f <> g 2> h"), ["a", "b", "c", "d", "e", "f", "g", "h"]);
