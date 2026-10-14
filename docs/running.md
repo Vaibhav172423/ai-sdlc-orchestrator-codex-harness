@@ -124,6 +124,12 @@ The skill asks for what it needs, checks the setup before spending anything, sta
 (`end-run.mjs`) reads the conductor's cost from codex's session file. The walkthrough is
 [tutorial-first-run.md](tutorial-first-run.md).
 
+**Keep the session on the pin until the run ends.** `start-run.mjs` checks the session's model
+and effort when a run starts and when it resumes, and at no other point. Switching model with
+`/model` mid-run does not stop the run: every later turn on the other model is listed as unpriced
+in the conductor's figure, not priced at the pin's rates. Those turns add nothing to the cost cap,
+and the run total reads `at least`. To work on another model, start a new codex session.
+
 **Headless — from a shell.** `plugin/codex/run.mjs` spawns its own `codex exec` conductor and
 exits when the run ends. It exists to check the cost figures: codex reports the conductor's tokens
 on its `--json` stream as well as in its session file, and the run's end compares the two token
