@@ -20,7 +20,10 @@ const RESERVED = new Set(["!", "{", "}", "if", "then", "elif", "else", "fi", "do
 const NO_COMMAND = new Set(["for", "select", "case"]);
 const ASSIGNMENT = /^[A-Za-z_][A-Za-z0-9_]*(?:\[[^\]]*\])?\+?=/;
 
-/** Commands that run the words after their options as a command; `short`/`long` are the options that take a value. */
+/**
+ * Commands that run the words after their options as a command. `short`/`long` are the options that take a value,
+ * `positional` the operands before the command, and `code` the options whose value is run as shell.
+ */
 const WRAPPERS = {
   sudo: { short: "ugpCDrtUTR", long: ["--user", "--group", "--prompt", "--close-from", "--chdir", "--role", "--type", "--other-user", "--host", "--command-timeout"], assigns: true },
   doas: { short: "uC" },
@@ -37,6 +40,15 @@ const WRAPPERS = {
   stdbuf: { short: "ioe", long: ["--input", "--output", "--error"] },
   caffeinate: { short: "tw" },
   xargs: { short: "ILnPsdaEJRS", long: ["--max-args", "--max-procs", "--max-chars", "--delimiter", "--arg-file", "--max-lines"] },
+  setsid: {},
+  flock: { short: "wEc", long: ["--timeout", "--conflict-exit-code", "--command"], positional: 1, code: ["-c", "--command"] },
+  arch: { long: ["-arch", "-e", "-d"] },
+  chronic: {},
+  ionice: { short: "cnpPu", long: ["--class", "--classdata", "--pid", "--pgid", "--uid"] },
+  unbuffer: {},
+  busybox: {},
+  taskset: { positional: 1 },
+  chrt: { positional: 1 },
 };
 
 const REDIRECTS = ["&>>", "&>|", "&>!", "&>", ">>|", ">>!", ">>", ">|", ">!", ">&", ">", "<<<", "<<-", "<<", "<>", "<&", "<"];
@@ -354,20 +366,34 @@ function lex(text, from, stop, ctx, level) {
 
 // ── commands ────────────────────────────────────────────────────────────────
 
-const commandName = (v) => v.slice(v.lastIndexOf("/") + 1).toLowerCase();
+/** GNU coreutils under the names Homebrew gives them on macOS (`gcp`, `gtimeout`). */
+const GNU_PREFIXED = /^g(cp|mv|rm|unlink|tee|touch|env|nice|nohup|timeout|stdbuf)$/;
+const commandName = (v) => v.slice(v.lastIndexOf("/") + 1).toLowerCase().replace(GNU_PREFIXED, "$1");
 
-function skipOptions(words, k, spec) {
+/** Index of the first word past a wrapper's options and operands; the values of its `code` options go to `code`. */
+function skipOptions(words, k, spec, code) {
   let positional = spec.positional ?? 0;
+  const runs = (opt) => spec.code?.includes(opt);
   for (; k < words.length; k++) {
     const a = words[k].v;
     if (a === "--") return k + 1;
+    if (spec.long?.includes(a)) {
+      if (runs(a) && words[k + 1]) code.push(words[k + 1]);
+      k++;
+      continue;
+    }
     if (a.startsWith("--")) {
-      if (!a.includes("=") && spec.long?.includes(a)) k++;
+      const eq = a.indexOf("=");
+      if (eq !== -1 && runs(a.slice(0, eq))) code.push({ ...words[k], v: a.slice(eq + 1) });
       continue;
     }
     if (a.startsWith("-") && a.length > 1) {
       const j = [...a.slice(1)].findIndex((ch) => spec.short?.includes(ch));
-      if (j !== -1 && j === a.length - 2) k++;
+      const opt = `-${a[j + 1]}`;
+      if (j !== -1 && j === a.length - 2) {
+        if (runs(opt) && words[k + 1]) code.push(words[k + 1]);
+        k++;
+      } else if (j !== -1 && runs(opt)) code.push({ ...words[k], v: a.slice(j + 2) });
       continue;
     }
     if (spec.assigns && ASSIGNMENT.test(words[k].raw)) continue;
@@ -377,8 +403,11 @@ function skipOptions(words, k, spec) {
   return k;
 }
 
-/** Index of the command word of a simple command, past reserved words, assignments and wrappers, or -1. */
-function commandAt(words) {
+/**
+ * Index of the command word of a simple command, past reserved words, assignments and wrappers, or -1. A wrapper
+ * option that runs its value as shell (`flock -c`) adds that word to `code`.
+ */
+function commandAt(words, code = []) {
   let k = 0;
   while (k < words.length) {
     const w = words[k];
@@ -388,7 +417,7 @@ function commandAt(words) {
     if (ASSIGNMENT.test(w.raw)) { k++; continue; }
     const spec = Object.hasOwn(WRAPPERS, commandName(w.v)) ? WRAPPERS[commandName(w.v)] : null;
     if (!spec) break;
-    k = skipOptions(words, k + 1, spec);
+    k = skipOptions(words, k + 1, spec, code);
   }
   return k < words.length && !words[k].v.startsWith("-") ? k : -1;
 }
@@ -530,7 +559,8 @@ function find(words, out, depth) {
 function simple(cmd, out, depth, feeds) {
   const feedsShell = feeds === "shell";
   const { words, redirs } = cmd;
-  const at = commandAt(words);
+  const code = [];
+  const at = commandAt(words, code);
   const name = at === -1 ? null : commandName(words[at].v);
   const args = at === -1 ? [] : words.slice(at + 1);
   const vals = args.map((w) => w.v);
@@ -565,6 +595,7 @@ function simple(cmd, out, depth, feeds) {
   if (name === "eval") { visit(vals.join(" "), out, depth + 1); args.forEach(runsOutput); }
   if (name === "trap" && vals[0] && !vals[0].startsWith("-")) { visit(vals[0], out, depth + 1); runsOutput(args[0]); }
   if (name === "source" || name === ".") runsOutput(args[0]);
+  for (const w of code) { visit(w.v, out, depth + 1); runsOutput(w); }
   if (name === "tee") for (const p of operands(args).ops) add(out, { kind: "write", path: p, tight: false });
   else if (name === "touch") for (const p of operands(args, "rtdA", ["--reference", "--date"]).ops) add(out, { kind: "write", path: p, tight: false });
   else if (name === "cp" || name === "mv") copy(name, args, out);
