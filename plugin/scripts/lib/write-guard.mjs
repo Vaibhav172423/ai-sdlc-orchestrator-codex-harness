@@ -5,6 +5,7 @@
 import { lstatSync, mkdirSync, readdirSync, readlinkSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, isAbsolute, join, parse, relative, resolve, sep } from "node:path";
+import { fileURLToPath } from "node:url";
 import { CREATABLE_WHEN_ABSENT, firstMatch, hardcodedHit } from "./off-limits.mjs";
 import {
   CONTRACT_REL_PATH, DECISIONS_REL_PATH, FROZEN_FILE, LOCK_FILE, appendRegular, contractTampered, gitRoot, liveLock,
@@ -502,13 +503,23 @@ function verdict(st, rel, mayCreate, narrow, folder = false) {
   const other = /^\.sdlc\/runs\/([^/]+)\//.exec(file)?.[1];
   if (other && runId && other !== runId) {
     return {
-      deny: `${shown} is in run ${other}'s folder, but run ${runId} still holds this project's write contract. If run ` +
-        `${runId} is over, ending it is the person's decision (write-contract.mjs --abandon --run-id=${runId}). ` +
-        `Stop and tell the person.`,
+      deny: `${shown} is in run ${other}'s folder, but run ${runId} still holds this project's write contract. ` +
+        `${endingIsThePersons(runId, st.root)} Stop and tell the person.`,
     };
   }
-  return { deny: `${shown} is not in the confirmed allowlist for run ${runId ?? "?"}. ${SCOPE_IS_THE_PERSONS}` };
+  return {
+    deny: `${shown} is not in the confirmed allowlist for run ${runId ?? "?"}. ${SCOPE_IS_THE_PERSONS}` +
+      (runId ? ` ${endingIsThePersons(runId, st.root)}` : ""),
+  };
 }
+
+const WRITE_CONTRACT_SCRIPT = fileURLToPath(new URL("../write-contract.mjs", import.meta.url));
+const shq = (s) => `'${String(s).replace(/'/g, "'\\''")}'`;
+
+/** A held project whose run is over (a killed session never closes its lock) is freed by the person, with this. */
+const endingIsThePersons = (runId, root) =>
+  `If run ${runId} is no longer running, ending it is the person's decision: ` +
+  `node ${shq(WRITE_CONTRACT_SCRIPT)} --abandon --run-id=${runId} --project-root=${shq(root)}`;
 
 function decide(st, abs, target, mayCreate, narrow, folder = false) {
   if (st.tampered) return { deny: st.tampered, rule: "tampered" };

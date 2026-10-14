@@ -232,3 +232,23 @@ test("an argv-array command and an apply_patch under tool_input.input are judged
     assert.equal(hook(plain, patchInput(".mcp.json")), "deny");
   } finally { cleanup(live); cleanup(plain); }
 });
+
+test("a refusal under a live lock names the command that ends the run, ready to paste, and it frees the project", () => {
+  const base = mkdtempSync(join(tmpdir(), "guard-abandon-"));
+  const dir = join(base, "it's my repo");
+  try {
+    mkdirSync(join(dir, ".git"), { recursive: true });
+    freezeContract({ projectRoot: dir, runId: "r1", allowlist: ["src/**"], offLimits: [], strict: true });
+    const write = (path) => decideCall({ cwd: dir, tool_name: "apply_patch", tool_input: { command: `*** Begin Patch\n*** Add File: ${path}\n+x\n*** End Patch` } });
+    const other = write(".sdlc/runs/r2/notes.md");
+    assert.match(other.reason, /run r1 still holds this project's write contract\. If run r1 is no longer running, ending it is the person's decision: node '.*' --abandon --run-id=r1 /);
+    const refused = write("docs/x.md");
+    assert.equal(refused.decision, "deny");
+    assert.match(refused.reason, /^docs\/x\.md is not in the confirmed allowlist for run r1\. .*stop and tell the person which path is needed and why\. /);
+    const command = /ending it is the person's decision: (node .*)$/.exec(refused.reason)?.[1];
+    assert.ok(command, refused.reason);
+    const r = spawnSync("/bin/sh", ["-c", command], { encoding: "utf8" });
+    assert.equal(r.status, 0, r.stderr);
+    assert.equal(write("docs/x.md").decision, "allow", "the ended run binds nothing");
+  } finally { cleanup(base); }
+});
