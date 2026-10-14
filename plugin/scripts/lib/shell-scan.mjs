@@ -100,17 +100,33 @@ function backtick(text, i, ctx, level) {
 }
 
 /**
+ * Whether the `((` at `i` is arithmetic, as bash and zsh read it: the `)` closing its second `(` is followed by `)`.
+ * Otherwise it is a subshell inside a subshell, `((cmd) > f)`.
+ */
+const arithmetic = (text, i) => text[balanced(text, i + 1) + 1] === ")";
+
+/** Queues the command substitutions inside arithmetic or a `${…}` expansion, which the shell runs. */
+function innerSubstitutions(text, from, to, ctx, level) {
+  lexDouble(text.slice(from, to), 0, ctx, level, false);
+}
+
+/**
  * A `$…` expansion at `i`: `{value, end}`, where `end` is the index after it, or null for a lone `$`. A command
  * substitution and arithmetic read `$*`, since the hook cannot know what they print.
  */
 function dollar(text, i, ctx, level) {
   const n = text[i + 1];
   if (n === "(") {
-    if (text[i + 2] === "(") return { value: "$*", end: balanced(text, i + 1) + 1 };
+    if (text[i + 2] === "(" && arithmetic(text, i + 1)) {
+      const close = balanced(text, i + 2) + 1;
+      innerSubstitutions(text, i + 3, close - 1, ctx, level);
+      return { value: "$*", end: close + 1 };
+    }
     return { value: "$*", end: substitute(text, i + 2, ctx, level) + 1 };
   }
   if (n === "{") {
     const close = balanced(text, i + 1, "{", "}");
+    innerSubstitutions(text, i + 2, close, ctx, level);
     return { value: text.slice(i, close + 1), end: close + 1 };
   }
   return null;
@@ -234,7 +250,14 @@ function lex(text, from, stop, ctx, level) {
   let parens = 0;
   let test = false;
   let last = null;
-  const push = (tok, end) => { tokens.push(tok); last = { tok, end }; };
+  // Where a word is the command word, or a reserved word before it: a `[[` there opens a test.
+  let commandPosition = true;
+  let afterTime = false;
+  const push = (tok, end) => {
+    tokens.push(tok);
+    last = { tok, end };
+    if (tok.t !== "word") { commandPosition = tok.t === "op"; afterTime = false; }
+  };
   const glued = (j) => !!last && last.end === j &&
     (last.tok.t === "word" || last.tok.v === ")" || (last.tok.t === "redir" && last.tok.target !== null));
 
@@ -280,8 +303,10 @@ function lex(text, from, stop, ctx, level) {
       continue;
     }
     const procSub = (c === "<" || c === ">") && text[i + 1] === "(";
-    if (c === "(" && text[i + 1] === "(") {
-      i = balanced(text, i) + 1;
+    if (c === "(" && text[i + 1] === "(" && arithmetic(text, i)) {
+      const close = balanced(text, i + 1) + 1;
+      innerSubstitutions(text, i + 2, close - 1, ctx, level);
+      i = close + 1;
       continue;
     }
     if (c === "(") { parens++; push({ t: "op", v: "(" }, i + 1); i++; continue; }
@@ -304,10 +329,13 @@ function lex(text, from, stop, ctx, level) {
       i = redirect(w.end, op, glued(i));
       continue;
     }
-    const atCommand = !last || last.tok.t === "op" || (last.tok.t === "word" && last.tok.plain && RESERVED.has(last.tok.v));
+    const atCommand = commandPosition;
     if (w.plain && w.value === "[[" && atCommand) test = true;
     else if (w.plain && w.value === "]]") test = false;
     push({ t: "word", v: w.value, raw: w.raw, plain: w.plain }, w.end);
+    const timed = afterTime;
+    afterTime = atCommand && w.plain && w.value === "time";
+    commandPosition = atCommand && w.plain && (RESERVED.has(w.value) || afterTime || (timed && w.value === "-p"));
     i = w.end;
   }
   return { tokens, end: text.length };
@@ -490,12 +518,10 @@ function simple(cmd, out, depth, feeds) {
   const name = at === -1 ? null : commandName(words[at].v);
   const args = at === -1 ? [] : words.slice(at + 1);
   const vals = args.map((w) => w.v);
-  if (name !== "[[") {
-    for (const r of redirs) {
-      if (!WRITES.has(r.op) || r.arrow || r.target === null) continue;
-      if (r.op === ">&" && /^(?:\d+-?|-|\$.*)$/.test(r.target)) continue;
-      add(out, { kind: "write", path: r.target, tight: r.tight });
-    }
+  for (const r of redirs) {
+    if (!WRITES.has(r.op) || r.arrow || r.target === null) continue;
+    if (r.op === ">&" && /^(?:\d+-?|-|\$.*)$/.test(r.target)) continue;
+    add(out, { kind: "write", path: r.target, tight: r.tight });
   }
   const docs = redirs.filter((r) => r.doc).map((r) => r.doc);
   const strings = redirs.filter((r) => r.op === "<<<" && r.target !== null).map((r) => r.target);

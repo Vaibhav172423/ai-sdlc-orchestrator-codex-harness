@@ -62,6 +62,18 @@ const CASES = [
   ["npm test 2>&1 | tail -20", "allow", "allow"],
   ["npm test > /dev/null 2>&1", "allow", "allow"],
   ["ls -la >/dev/null 2>&1", "allow", "allow"],
+  ["time [[ a > b ]] && echo ok", "allow", "allow"],
+  ["time -p [[ a > b ]]", "allow", "allow"],
+  ["if ! [[ 3 > 2 ]]; then echo no; fi", "allow", "allow"],
+  ["echo $(( (1 + 2) > 2 ))", "allow", "allow"],
+  // A redirect after `]]` is real; so is one inside a `((` that is two subshells, or a substitution arithmetic runs.
+  ["[[ -n x ]] > .env", "deny", "deny", ".env"],
+  ["[[ -f src/a.ts ]] > docs/a.md", "deny", "allow", "docs/a.md"],
+  ["((echo hi) > .env)", "deny", "deny", ".env"],
+  ["echo $((echo hi) > docs/a.md)", "deny", "allow", "docs/a.md"],
+  ["x=$(( $(echo 1 > .env) + 1 ))", "deny", "deny", ".env"],
+  ["(( $(echo 1 > docs/a.md) ))", "deny", "allow", "docs/a.md"],
+  ["echo ${x:-$(echo 1 > .env)}", "deny", "deny", ".env"],
   // Real writes outside the allowlist, beside the same text.
   ["echo x > docs/a.md", "deny", "allow", "docs/a.md"],
   ['git commit -m "a > b" > docs/commit.log', "deny", "allow", "docs/commit.log"],
@@ -173,6 +185,7 @@ test("scan: what the shell runs from a string or a here-document is read as shel
   assert.deepEqual(targets("eval 'cp a' b"), ["b"]);
   assert.deepEqual(targets("trap 'echo x > b' EXIT; trap - EXIT"), ["b"]);
   assert.deepEqual(targets("echo [[ > b"), ["b"], "[[ compares only where it is the command");
+  assert.deepEqual(targets("FOO=1 [[ a > b ]]"), ["b"], "bash runs a [[ after an assignment as a command, and opens b");
   assert.deepEqual(targets("bash <<'EOF'\necho x > b\nEOF"), ["b"]);
   assert.deepEqual(targets("bash <<< 'echo x > b'"), ["b"]);
   assert.deepEqual(targets("echo 'echo x > b' | sh"), ["b"]);
