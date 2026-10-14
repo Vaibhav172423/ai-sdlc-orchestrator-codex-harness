@@ -339,7 +339,7 @@ test("the conductor's line says what is known: not measured yet, still being cou
     assert.match(text, /Conductor \(driver\) cost, modeled: \$0\.4321 over 3 turns, 1 incomplete/);
     assert.doesNotMatch(text, /still going/);
     assert.match(text, /a seat bills no money per token/);
-    assert.match(text, /\| Conductor \(driver\) loop — modeled \| \$0\.4321 \|/);
+    assert.match(text, /\| Conductor \(driver\) loop — modeled \| at least \$0\.4321 \|/, "an incomplete turn makes the figure a floor");
     assert.doesNotMatch(text, /Run total/, "the report owns the run total");
   } finally {
     p.cleanup();

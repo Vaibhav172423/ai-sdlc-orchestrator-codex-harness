@@ -211,6 +211,20 @@ function driverBlock(dm) {
 }
 
 /**
+ * Turns missing from driver-usage.json's figure: invocations after a thread's
+ * last reported total, on threads it booked from the exec stream. The session
+ * file prices the turns of every other thread. Null when the file names no threads.
+ */
+function unpricedIncompleteTurns(usage) {
+  if (!Array.isArray(usage.threads)) return null;
+  const fromStream = new Set(usage.threads.filter((t) => t?.booked_from === "exec-stream").map((t) => t.thread_id));
+  const checks = Array.isArray(usage.cross_check?.threads) ? usage.cross_check.threads : [];
+  return checks
+    .filter((t) => fromStream.has(t?.thread_id))
+    .reduce((n, t) => n + (Number.isInteger(t.unreported_invocations) ? t.unreported_invocations : 0), 0);
+}
+
+/**
  * The conductor's modeled cost: the session collector's driver-usage.json,
  * which books the session file where the exec stream disagrees with it, else
  * run.mjs's driver-manifest.json. The cost report reads them in the same
@@ -222,7 +236,7 @@ function driverTotals(runDir, dm) {
   if (usage && !stale && finite(usage.cost_usd_modeled) !== null) {
     return {
       driver_cost_usd_modeled: usage.cost_usd_modeled,
-      driver_turns_incomplete: null,
+      driver_turns_incomplete: unpricedIncompleteTurns(usage),
       driver_cost_source: "driver-usage.json",
       driver_usage: {
         cost_source: typeof usage.cost_source === "string" ? usage.cost_source : null,

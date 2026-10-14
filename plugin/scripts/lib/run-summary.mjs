@@ -85,6 +85,21 @@ function linkedFiles(runDir) {
 
 const plural = (n, word) => `${n} ${word}${n === 1 ? "" : "s"}`;
 
+/** The word the cost report puts before the same driver figure: "at least ", "at most ", "about " or "". */
+export function driverBound(m) {
+  const t = m.totals ?? {};
+  const collected = t.driver_cost_source === "driver-usage.json";
+  const source = collected ? (t.driver_usage?.cost_source ?? "") : "";
+  const ceiling = /\bupper bound\b/i.test(source) || /\bWHOLE THREAD\b/.test(source);
+  const incomplete = collected ? t.driver_usage?.cost_complete === false : m.driver?.driver_cost_complete === false;
+  const floor =
+    /\b(INCOMPLETE|LOWER BOUND|PROVISIONAL|TIER UNVERIFIED)\b/.test(source) ||
+    Number(t.driver_turns_incomplete) > 0 ||
+    (incomplete && !ceiling);
+  if (floor && ceiling) return "about ";
+  return ceiling ? "at most " : floor ? "at least " : "";
+}
+
 /** The conductor's line: a modeled figure, a figure still being counted, or the plain statement that nobody measured it. */
 export function driverLine(m) {
   const t = m.totals ?? {};
@@ -131,7 +146,7 @@ export function renderRunSummary(manifest, { runDir } = {}) {
   if (prov.estimated > 0) L.push(`| ↳ estimated (no usage block returned) | ${usd(prov.estimated)} |`);
   if (prov.modeled > 0) L.push(`| ↳ modeled (token counts at the dated price list's rates) | ${usd(prov.modeled)} |`);
   if (prov.unlabelled > 0) L.push(`| ↳ unlabelled provenance | ${usd(prov.unlabelled)} |`);
-  const driverCost = Number.isFinite(t.driver_cost_usd_modeled) ? usd(t.driver_cost_usd_modeled) : "not measured";
+  const driverCost = Number.isFinite(t.driver_cost_usd_modeled) ? `${driverBound(m)}${usd(t.driver_cost_usd_modeled)}` : "not measured";
   L.push(`| Conductor (driver) loop — modeled | ${driverCost} |`, "");
   L.push(driverLine(m), "");
   L.push("This summary does not add the two lines; the cost report (`scripts/report.mjs` in the plugin) prints the run total.", "");
