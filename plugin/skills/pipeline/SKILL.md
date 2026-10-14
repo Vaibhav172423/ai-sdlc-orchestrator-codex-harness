@@ -160,6 +160,14 @@ validation schema, `.env.example`, and `.env.test` — and the brownfield varian
 
 From `design.md`, emit `<output_dir>/packets.json` — a list of TaskPackets, one per file-sized unit of work.
 
+**Run metadata is yours, not the planner's.** The plan packet's instruction names this run's id,
+`{{RUN_ID}}`, and its run folder, `.sdlc/runs/{{RUN_ID}}/` (repo-relative), so the planner can use
+them. When the plan comes back, set every child packet's `pass_id` to `{{RUN_ID}}`, and put every
+run-record artifact (a reproduce or diagnose note, anything that is not shipped code) under
+`.sdlc/runs/{{RUN_ID}}/`, before you write `packets.json`. Setting those two fields is not authoring
+content. Re-dispatch the plan only when its content is wrong: a code target outside the frozen
+allowlist, a missing target, a wrong phase or task type.
+
 Suggested packet types and one packet per:
 
 | task_type | What |
@@ -206,8 +214,9 @@ The table above is greenfield-Nest-centric. In brownfield mode (`mode: brownfiel
 
 **Framework-owned wiring** — new controllers/routes/views usually need a corresponding
 registration edit in a wiring file (Nest module, Django urls.py, FastAPI main.py's
-include_router). Emit these as **paired packets** with the same `pass_id` — atomic per-pair:
-if the wiring edit fails, roll back the new-file packet within the same pair.
+include_router). Emit these as **paired packets**, the wiring packet listed right after the new
+file it registers and naming it in its `acceptance` — atomic per-pair: if the wiring edit fails,
+roll back the new-file packet within the same pair.
 
 **Every brownfield packet MUST set `artifact_path`** (§7.1) so the write-contract validator can
 reject off-limits paths at dispatch time. Missing `artifact_path` is a planner bug.
@@ -376,7 +385,7 @@ command has run again with `--status=accepted` (see Gate 4).
   acceptance: ["<testable bullet>", ...],
   budget: { maxInputTokens: 4000, maxOutputTokens: 3000 },  // codegen initial; adapter doubles on max_tokens truncation up to 3× (see below)
   retry_count: 0,
-  pass_id: "pass1" | "pass2",
+  pass_id: "{{RUN_ID}}",  // the run id, on every packet
   intent: "docs" | "bugfix" | "feature-extend" | "feature-new" | "refactor" | "test" | "deps"  // brownfield only — omit entirely on greenfield packets
 }
 ```
