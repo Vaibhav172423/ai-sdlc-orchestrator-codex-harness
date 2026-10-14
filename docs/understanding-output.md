@@ -72,6 +72,13 @@ codex reports each turn's usage as the thread's running total, and `codex exec r
 
 Codex reports token counts but no money at all, so this figure is derived rather than measured, and a driver running on a ChatGPT seat may have cost nothing in money. A run folder with neither file shows `Not measured`.
 
+Several runs can share one codex thread: a second `$mmo-codex:*` command in the same chat, or a resume there. Each response the session file records goes to one run only:
+
+- A run's stretch of a thread opens at its `$mmo-codex:*` command turn, else at the turn of its first marker, and closes with the turn of its last marker before another run's marker. A resume there opens a new stretch the same way. A stretch whose first marker is a dispatch's rather than `start-run.mjs`'s, with no command turn, is a `LOWER BOUND`.
+- A turn that holds two runs' markers is split at the earlier run's last marker in it.
+- Turns between two stretches that hold no marker, such as chat after a run ended, belong to neither run. The `Window` line counts the turns inside it that are not this run's.
+- The collection `end-run.mjs` records for a run discarded or ended from another run's session claims none of that session's turns.
+
 On the interactive route the run's end step runs inside the conductor's last turn, so that turn is still open and the figure is marked `PROVISIONAL`. Once the session has moved on, collect it again for the exact figure:
 
 ```bash
@@ -136,8 +143,8 @@ In each run's folder, `.sdlc/runs/<run-id>/`:
 | `driver-stderr.log` | `run.mjs` runs: what codex wrote to stderr, with a header line per invocation. |
 | `driver-cost-modeled.jsonl` | `run.mjs` runs: one modeled row per conductor turn, `status` `complete` or `incomplete`, priced from the exec stream with `price_basis`, `price_tier` and `price_verified`. An incomplete row whose tokens a later row's delta holds names that row in `covered_by`. |
 | `driver-manifest.json` | `run.mjs` runs: the pins, how the run ended (`outcome`, `exit_code`), incomplete turns, codex warnings, the thread ids, the model and effort codex's session file shows for each thread (`driver_model_observed`: `match`, `mismatch` or `unverified` against the pin), the driver's price record (`driver_price`, `price_list_verified`), and the modeled driver cost. After the run end it holds the booked figure (`driver_cost_usd_modeled`, `driver_cost_source`, `driver_verified`) beside the exec stream's own (`driver_cost_usd_exec_stream`). |
-| `driver-session.jsonl` | One line per `start-run.mjs`, dispatch or collection run in a codex shell: the time and the codex thread (`CODEX_THREAD_ID`). It names the conductor's session file and scopes its window. |
-| `driver-usage.json` | Written at every run end (and by `node plugin/scripts/collect-driver-usage.mjs <run-folder>`): the conductor's modeled cost read from its codex session file, per response at the dated price list's rates; on a `run.mjs` run, the token-for-token cross-check against the exec stream per thread and per invocation. `excluded_threads` names any thread it left out as not the conductor's, such as a nested codex-cli dispatch's. |
+| `driver-session.jsonl` | One line per `start-run.mjs`, dispatch or collection run in a codex shell: the time, the codex thread (`CODEX_THREAD_ID`) and the `tool` that wrote it. It names the conductor's session file and scopes its window. |
+| `driver-usage.json` | Written at every run end (and by `node plugin/scripts/collect-driver-usage.mjs <run-folder>`): the conductor's modeled cost read from its codex session file, per response at the dated price list's rates; on a `run.mjs` run, the token-for-token cross-check against the exec stream per thread and per invocation. `excluded_threads` names any thread it left out as not the conductor's, such as a nested codex-cli dispatch's. A window that skips turns of another run on the same thread counts them in `window.left_out_turns`. |
 | `report.md` | The cost report in markdown, written at every run end. |
 | `delegation/` | Agent-path runs only. Per delegated packet: the task brief, the worker's usage sidecar, and a receipt. The sidecar is written for failed sessions too, with `status` (`ok`, `timeout` or `error`) and `usage_source`, and its `sdk_version` decides how its input is priced. |
 

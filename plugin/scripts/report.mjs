@@ -745,7 +745,10 @@ function selectedText(sel, runDir) {
 function windowText(w) {
   if (typeof w === "string") return w;
   const start = str(w?.start), end = str(w?.end);
-  return start || end ? `${start ?? "?"} → ${end ?? "open"}` : null;
+  const leftOut = Number.isInteger(w?.left_out_turns) && w.left_out_turns > 0
+    ? ` (${plural(w.left_out_turns, "turn")} inside it ${w.left_out_turns === 1 ? "is" : "are"} another run's or no run's, and not counted)`
+    : "";
+  return start || end ? `${start ?? "?"} → ${end ?? "open"}${leftOut}` : null;
 }
 
 /** Verdict names proposed for driver-manifest.json driver_cross_check, read as sessionUsage.ts names. */

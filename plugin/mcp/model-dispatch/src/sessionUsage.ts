@@ -520,7 +520,14 @@ export interface SessionMarker {
   tool: string | null;
   policy: string | null;
   pid: number | null;
+  /** The run folder the marker came from, when it was read from another run's. */
+  run?: string;
 }
+
+/** The tool name collect-driver-usage.mjs --from-conductor writes when a run's end is recorded. */
+export const COLLECTION_MARKER_TOOL = "collect_driver_usage";
+/** The tool name start-run.mjs writes when a run starts or resumes in a session. */
+export const START_MARKER_TOOL = "start_run";
 
 export function readSessionMarkers(runDir: string): SessionMarker[] {
   return readJsonl(join(runDir, SESSION_MARKERS_FILE))
@@ -547,7 +554,7 @@ export function otherRunMarkers(runDir: string): SessionMarker[] {
   }
   return entries
     .filter((e) => e.isDirectory() && e.name !== basename(own))
-    .flatMap((e) => readSessionMarkers(join(runs, e.name)));
+    .flatMap((e) => readSessionMarkers(join(runs, e.name)).map((m) => ({ ...m, run: e.name })));
 }
 
 /** One `codex exec` process, read from driver-events.jsonl (v1 lines, or a legacy bare stream). */
@@ -656,11 +663,13 @@ export interface Span {
 export interface DriverWindow {
   start: string | null;
   end: string | null;
-  start_anchor: "command_turn" | "first_dispatch_turn" | "first_marker" | "invocation_start" | "whole_thread";
+  start_anchor: "command_turn" | "start_run_turn" | "first_dispatch_turn" | "first_marker" | "invocation_start" | "whole_thread";
   end_anchor: "last_marker_turn" | "invocation_end" | "open" | "whole_thread";
   exact: boolean;
   lower_bound: boolean;
   provisional: boolean;
+  /** Turns between the window's first and last that belong to another run, or to none. */
+  left_out_turns?: number;
 }
 
 function inSpan(t: number, s: Span): boolean {
@@ -738,42 +747,206 @@ export function execSessionFacts(lines: any[], codexHome: string): ExecSessionFa
   return out;
 }
 
+/** A marker as the interactive window reads it; `run` names the run folder it came from. */
+export interface RunMarker {
+  ts: string;
+  run?: string | null;
+  tool?: string | null;
+}
+
+interface TaggedMarker {
+  t: number;
+  run: string;
+  closing: boolean;
+  start: boolean;
+}
+
+interface MarkerSegment {
+  run: string;
+  first: number;
+  last: number;
+  /** The segment opens with start-run.mjs's marker, so nothing of the run comes before its turn. */
+  started: boolean;
+}
+
+const THIS_RUN = "(this run)";
+const ANOTHER_RUN = "(another run)";
+
+function tagMarkers(markers: RunMarker[], run: (m: RunMarker) => string): TaggedMarker[] {
+  return markers
+    .map((m) => ({ t: ms(m.ts), run: run(m), closing: m.tool === COLLECTION_MARKER_TOOL, start: m.tool === START_MARKER_TOOL }))
+    .filter((m) => !Number.isNaN(m.t));
+}
+
 /**
- * Interactive route. Opens at the latest `$mmo-codex:<run skill>` turn at or
- * before the first marker, else at the turn holding that marker (a lower
- * bound: interview turns come before the first dispatch). A run-skill turn
- * counts only when it starts after every earlier run's marker on the same
- * thread, so a second run started in plain words does not open at the first
- * run's command. Closes at the end of the turn holding the last marker, or
- * stays open while that turn runs.
+ * Every run's markers on one thread, in time order, merged into segments of
+ * consecutive markers from one run. A collection marker only extends the
+ * segment before it: after another run's marker, or with none before it, it
+ * was written from a session doing other work (a discard, or the end of a run
+ * resumed elsewhere), so it claims no turn.
+ */
+function markerSegments(markers: TaggedMarker[]): MarkerSegment[] {
+  const sorted = [...markers].sort((a, b) => a.t - b.t || (a.run < b.run ? -1 : a.run > b.run ? 1 : 0));
+  const out: MarkerSegment[] = [];
+  for (const m of sorted) {
+    const prev = out.at(-1);
+    if (prev?.run === m.run) prev.last = m.t;
+    else if (!m.closing) out.push({ run: m.run, first: m.t, last: m.t, started: m.start });
+  }
+  return out;
+}
+
+interface MarkerAttribution {
+  window: DriverWindow;
+  turns: RolloutTurn[];
+  /** For a turn this run shares with another run's segment, the responses that are this run's. */
+  records: Map<string, UsageRecord[]>;
+}
+
+interface TurnShare {
+  lo: number;
+  hi: number;
+  records: UsageRecord[] | null;
+}
+
+/**
+ * Interactive route. Each segment of this run's markers opens at the latest
+ * `$mmo-codex:<run skill>` turn after the previous segment's last marker and
+ * at or before its own first one, else at the turn holding that first marker
+ * (a lower bound unless start-run.mjs wrote it: interview turns come before
+ * the first dispatch), and closes at the end of the turn holding its last
+ * marker. A turn two segments share is
+ * split at the earlier segment's last marker: each response goes to the run
+ * whose marker follows it, so every response belongs to exactly one run.
+ */
+function attributeMarkers(rollout: Rollout, own: RunMarker[], others: RunMarker[], ownRun: string): MarkerAttribution | null {
+  const mine = tagMarkers(own, () => ownRun);
+  if (mine.length === 0) return null;
+  const segments = markerSegments([...mine, ...tagMarkers(others, (m) => str(m.run) ?? ANOTHER_RUN)]);
+  const turns = rollout.turns.filter((t) => !Number.isNaN(ms(t.started_at)));
+  const containing = (t: number) => {
+    let k = -1;
+    for (let i = 0; i < turns.length && ms(turns[i].started_at) <= t; i++) k = i;
+    return k;
+  };
+  const ranges = segments.map((seg, g) => {
+    const floor = g > 0 ? segments[g - 1].last : -Infinity;
+    let command = -1;
+    for (let i = 0; i < turns.length && ms(turns[i].started_at) <= seg.first; i++) {
+      if (turns[i].invokes_run_skill && ms(turns[i].started_at) > floor) command = i;
+    }
+    const at = containing(seg.first);
+    const anchored = command !== -1 || (seg.started && at !== -1);
+    return { seg, open: command !== -1 ? command : Math.max(at, 0), close: containing(seg.last), command: command !== -1, anchored, atTurn: at !== -1 };
+  });
+
+  const recordsOf = new Map<string, UsageRecord[]>();
+  for (const r of rollout.records) {
+    if (!r.turn_id) continue;
+    const list = recordsOf.get(r.turn_id) ?? [];
+    list.push(r);
+    recordsOf.set(r.turn_id, list);
+  }
+  const shares = new Map<number, TurnShare>();
+  const claimedBy: typeof ranges = [];
+  ranges.forEach((r, g) => {
+    if (r.seg.run !== ownRun) return;
+    const prev = ranges[g - 1];
+    const next = ranges[g + 1];
+    const after = prev && prev.close === r.open ? prev.seg.last : -Infinity;
+    const upTo = next && next.open === r.close ? r.seg.last : Infinity;
+    let claimed = false;
+    for (let i = r.open; i <= r.close; i++) {
+      const lo = i === r.open ? after : -Infinity;
+      const hi = i === r.close ? upTo : Infinity;
+      let records: UsageRecord[] | null = null;
+      if (lo !== -Infinity || hi !== Infinity) {
+        const all = recordsOf.get(turns[i].turn_id) ?? [];
+        // A response with no timestamp goes with the end of its turn.
+        records = all.filter((x) => {
+          const t = ms(x.ts);
+          const at = Number.isNaN(t) ? Infinity : t;
+          return at > lo && at <= hi;
+        });
+        if (records.length === 0 && (all.length > 0 || hi !== Infinity)) continue;
+      }
+      claimed = true;
+      const held = shares.get(i);
+      if (!held) shares.set(i, { lo, hi, records });
+      else {
+        held.lo = Math.min(held.lo, lo);
+        held.hi = Math.max(held.hi, hi);
+        held.records = held.records && records ? [...held.records, ...records] : null;
+      }
+    }
+    if (claimed) claimedBy.push(r);
+  });
+
+  const idx = [...shares.keys()].sort((a, b) => a - b);
+  const records = new Map<string, UsageRecord[]>();
+  const owned = idx.map((i) => {
+    const share = shares.get(i) as TurnShare;
+    if (!share.records) return turns[i];
+    records.set(turns[i].turn_id, share.records);
+    return share.hi === Infinity ? turns[i] : { ...turns[i], web_search_calls: 0 };
+  });
+  const iso = (t: number) => new Date(t).toISOString();
+  if (idx.length === 0) {
+    const times = mine.map((m) => m.t);
+    return {
+      window: {
+        start: iso(Math.min(...times)),
+        end: iso(Math.max(...times)),
+        start_anchor: "first_marker",
+        end_anchor: "last_marker_turn",
+        exact: false,
+        lower_bound: false,
+        provisional: false,
+      },
+      turns: [],
+      records,
+    };
+  }
+  const first = claimedBy[0];
+  const head = shares.get(idx[0]) as TurnShare;
+  const tail = shares.get(idx[idx.length - 1]) as TurnShare;
+  const lastTurn = turns[idx[idx.length - 1]];
+  const end = lastTurn.ended_at ?? (tail.hi !== Infinity ? iso(tail.hi) : null);
+  const leftOut = idx[idx.length - 1] - idx[0] + 1 - idx.length;
+  return {
+    window: {
+      start: head.lo !== -Infinity ? iso(head.lo) : first.command || first.atTurn ? turns[idx[0]].started_at : iso(first.seg.first),
+      end,
+      start_anchor: first.command ? "command_turn" : first.anchored ? "start_run_turn" : first.atTurn ? "first_dispatch_turn" : "first_marker",
+      end_anchor: end ? "last_marker_turn" : "open",
+      exact: claimedBy.every((r) => r.anchored) && end !== null,
+      lower_bound: claimedBy.some((r) => !r.anchored),
+      provisional: end === null,
+      ...(leftOut > 0 ? { left_out_turns: leftOut } : {}),
+    },
+    turns: owned,
+    records,
+  };
+}
+
+/** True when this run's markers on a thread claim any of it once every run's markers there are merged. */
+function claimsThread(own: RunMarker[], others: RunMarker[], ownRun: string): boolean {
+  const tagged = [...tagMarkers(own, () => ownRun), ...tagMarkers(others, (m) => str(m.run) ?? ANOTHER_RUN)];
+  return markerSegments(tagged).some((s) => s.run === ownRun);
+}
+
+/**
+ * The interactive window of `markers` on one thread, given the markers other
+ * runs left on it (each with the `run` folder it came from); null when no
+ * marker has a usable time.
  */
 export function windowFromMarkers(
   rollout: Rollout,
-  markers: { ts: string }[],
-  otherRuns: { ts: string }[] = [],
+  markers: RunMarker[],
+  otherRuns: RunMarker[] = [],
+  ownRun: string = THIS_RUN,
 ): DriverWindow | null {
-  const times = markers.map((m) => ms(m.ts)).filter((t) => !Number.isNaN(t));
-  if (times.length === 0) return null;
-  const first = Math.min(...times);
-  const last = Math.max(...times);
-  const floor = otherRuns.map((m) => ms(m.ts)).filter((t) => t < first).reduce((a, b) => Math.max(a, b), -Infinity);
-  const started = rollout.turns.filter((t) => !Number.isNaN(ms(t.started_at)));
-  const containing = (t: number) => started.filter((x) => ms(x.started_at) <= t).at(-1);
-  const command = started
-    .filter((x) => x.invokes_run_skill && ms(x.started_at) <= first && ms(x.started_at) > floor)
-    .at(-1);
-  const opening = command ?? containing(first);
-  const closing = containing(last);
-  const end = closing?.ended_at ?? null;
-  return {
-    start: opening?.started_at ?? new Date(first).toISOString(),
-    end,
-    start_anchor: command ? "command_turn" : opening ? "first_dispatch_turn" : "first_marker",
-    end_anchor: end ? "last_marker_turn" : "open",
-    exact: Boolean(command) && end !== null,
-    lower_bound: !command,
-    provisional: end === null,
-  };
+  return attributeMarkers(rollout, markers, otherRuns, ownRun)?.window ?? null;
 }
 
 function headlessWindow(invs: ExecInvocation[]): DriverWindow {
@@ -811,6 +984,7 @@ function combineWindows(windows: DriverWindow[]): DriverWindow | null {
   const earliest = windows.reduce((a, b) => (ms(b.start) < ms(a.start) ? b : a));
   const open = windows.some((w) => w.end === null);
   const latest = open ? null : windows.reduce((a, b) => (ms(b.end) > ms(a.end) ? b : a));
+  const leftOut = windows.reduce((n, w) => n + (w.left_out_turns ?? 0), 0);
   return {
     start: windows.some((w) => w.start === null) ? null : earliest.start,
     end: latest ? latest.end : null,
@@ -819,6 +993,7 @@ function combineWindows(windows: DriverWindow[]): DriverWindow | null {
     exact: windows.every((w) => w.exact),
     lower_bound: windows.some((w) => w.lower_bound),
     provisional: windows.some((w) => w.provisional),
+    ...(leftOut > 0 ? { left_out_turns: leftOut } : {}),
   };
 }
 
@@ -903,6 +1078,7 @@ function priceTurns(
   pin: DriverPin | null,
   priceFn: DriverPriceFn,
   invocationOf: (t: RolloutTurn) => number | null,
+  only?: Map<string, UsageRecord[]>,
 ): PricedTurns {
   const byTurn = new Map<string, UsageRecord[]>();
   for (const r of rollout.records) {
@@ -914,7 +1090,7 @@ function priceTurns(
   const out: PricedTurns = { turns: [], tokens: zeroUsage(), requests: 0, compaction_requests: 0, cost_usd: 0, unpriced: [] };
   const unpriced = new Map<string, UnpricedEntry>();
   for (const t of turns) {
-    const recs = byTurn.get(t.turn_id) ?? [];
+    const recs = only?.get(t.turn_id) ?? byTurn.get(t.turn_id) ?? [];
     const tokens = zeroUsage();
     let cost = 0;
     let priced = 0;
@@ -1651,14 +1827,21 @@ export function measureDriverUsage(opts: MeasureOptions): MeasureResult {
   const excluded: { thread_id: string; reason: string }[] = [];
   const workers = nestedDispatchThreads(opts.runDir);
   const conductors = route === "interactive" ? recordedConductorThreads(opts.runDir) : new Set<string>();
+  const ownRun = basename(resolve(opts.runDir));
+  const otherMarkers = route === "interactive" ? otherRunMarkers(opts.runDir) : [];
+  const ownOn = (id: string) => markers.filter((m) => m.thread_id === id);
+  const othersOn = (id: string) => otherMarkers.filter((m) => m.thread_id === id);
   const exclude = (id: string, reason: string) => {
     if (!excluded.some((e) => e.thread_id === id)) excluded.push({ thread_id: id, reason });
   };
   const addThread = (id: unknown, recorded: boolean) => {
     if (!isThreadId(id) || threadIds.includes(id)) return;
     if (workers.has(id)) return exclude(id, "a codex-cli dispatch of this run ran in it (telemetry.jsonl codex_thread_id)");
-    if (recorded && conductors.size > 0 && !conductors.has(id)) {
-      return exclude(id, "run.json records no start of this run in it");
+    if (recorded && route === "interactive") {
+      if (!claimsThread(ownOn(id), othersOn(id), ownRun)) {
+        return exclude(id, "it holds only an end-of-run collection for this run, after another run's marker or before any of this run's");
+      }
+      if (conductors.size > 0 && !conductors.has(id)) return exclude(id, "run.json records no start of this run in it");
     }
     threadIds.push(id);
   };
@@ -1680,7 +1863,6 @@ export function measureDriverUsage(opts: MeasureOptions): MeasureResult {
     };
   }
 
-  const otherMarkers = route === "interactive" ? otherRunMarkers(opts.runDir) : [];
   const results: ThreadResult[] = [];
   const unread: DriverThreadInfo[] = [];
   let byOrder = false;
@@ -1730,18 +1912,16 @@ export function measureDriverUsage(opts: MeasureOptions): MeasureResult {
     let window: DriverWindow;
     let windowTurns: RolloutTurn[];
     let spans: Span[] | null = null;
+    let shared: Map<string, UsageRecord[]> | undefined;
     if (route === "headless" && invs.length > 0 && !legacy) {
       spans = invocationSpans(invs, invocations, rollout);
       window = headlessWindow(invs);
       windowTurns = turnsInSpans(rollout, spans);
     } else {
-      const own = markers.filter((m) => m.thread_id === threadId);
-      const earlier = otherMarkers.filter((m) => m.thread_id === threadId);
-      window = (route === "interactive" ? windowFromMarkers(rollout, own, earlier) : null) ?? wholeThreadWindow(rollout);
-      windowTurns =
-        window.start_anchor === "whole_thread"
-          ? rollout.turns.filter((t) => t.started_at)
-          : turnsInSpans(rollout, [{ start: window.start, end: window.end }]);
+      const attributed = route === "interactive" ? attributeMarkers(rollout, ownOn(threadId), othersOn(threadId), ownRun) : null;
+      window = attributed?.window ?? wholeThreadWindow(rollout);
+      windowTurns = attributed ? attributed.turns : rollout.turns.filter((t) => t.started_at);
+      shared = attributed?.records;
       byOrder = byOrder || (route === "headless" && legacy);
     }
     info.window = window;
@@ -1762,7 +1942,7 @@ export function measureDriverUsage(opts: MeasureOptions): MeasureResult {
       const k = spans.findIndex((span) => inSpan(at, span));
       return k === -1 ? null : invs[k].invocation;
     };
-    const priced = priceTurns(threadId, rollout, windowTurns, pin, priceFn, invocationOf);
+    const priced = priceTurns(threadId, rollout, windowTurns, pin, priceFn, invocationOf, shared);
     let check: ThreadResult["check"] = null;
     let exec: ExecThreadTotals | null = null;
     let execRequests: Usage[][] | undefined;
