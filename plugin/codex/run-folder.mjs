@@ -141,6 +141,19 @@ export function firstInvocationStart(records) {
 }
 
 /**
+ * Whether a resumed session was first told a run folder other than `runDir`:
+ * `{from}`, where `from` is null for a thread this folder did not start (its
+ * first prompt is not on record), or null when the folder is the one it was told.
+ */
+export function movedRunFolder(records, runDir, { foreignThread = false } = {}) {
+  if (foreignThread) return { from: null };
+  const first = firstInvocationStart(records);
+  if (!first) return null;
+  if (first.mode === "resume") return { from: null };
+  return typeof first.output_dir === "string" && first.output_dir !== runDir ? { from: first.output_dir } : null;
+}
+
+/**
  * The settings a run started with (run_id, policy, run_mode, intent, gates,
  * code_dir, brief_path): its first invocation_start, else the run_end of a
  * driver that stopped before its first spawn.

@@ -33,6 +33,7 @@ import { configureSinks, log, redactText } from "../scripts/lib/log.mjs";
 import {
   assertRunDirApart,
   lastGateMode,
+  movedRunFolder,
   readRunRecords,
   resolveCodeDir,
   resolveRun,
@@ -364,14 +365,31 @@ export const RESUME_PROMPT =
   "gives is done, run that command again with --status=accepted or --status=auto-approved.";
 
 /**
+ * What a resumed session is told when its first prompt named another run
+ * folder: without it the conductor keeps writing there, and this run never
+ * sees its Gate 4.
+ */
+export function runFolderNote({ runDir, runId, from = null }) {
+  return (
+    `This run's folder is now '${runDir}' and its run id is ${runId}` +
+    (from ? `, not the folder '${from}' your first prompt named.` : "; your first prompt may have named another folder or run id.") +
+    " Use these wherever your prompt or playbooks name the run folder or the run id: gates.jsonl, stop.json, " +
+    `${QUESTION_FILE}, preflight.json, the dispatch --telemetry path, pass_id, and Phase 9's command. Your playbooks ` +
+    `for this folder are in '${join(runDir, "skills")}'; read them from there. What your earlier turns wrote stays ` +
+    "where they wrote it: read it there to see what is already done."
+  );
+}
+
+/**
  * RESUME_PROMPT plus this invocation's gate mode, which may differ from the
  * first invocation's. `after` is the run_end of the driver process before
  * this one: when that stop was deliberate, the person resuming has chosen to
  * go past it, so the conductor takes up the step again instead of repeating
- * the stop from its old record.
+ * the stop from its old record. `folder` ({runDir, runId, from}) leads with
+ * runFolderNote.
  */
-export function resumePrompt(gateMode, after = null) {
-  const parts = [RESUME_PROMPT];
+export function resumePrompt(gateMode, after = null, folder = null) {
+  const parts = folder ? [runFolderNote(folder), RESUME_PROMPT] : [RESUME_PROMPT];
   if (after?.outcome && isDeliberate(after.outcome)) {
     parts.push(
       `The run last stopped on purpose (${after.outcome}${after.reason ? `: ${after.reason}` : ""}). ` +
@@ -929,7 +947,9 @@ async function runDriver(args, deps) {
   };
   const promptText = threadId ? null : renderPrompt(readFileSync(promptPath, "utf-8"), renderValues);
   const previous = previousRunEnd(earlier);
-  let nextPrompt = threadId ? resumePrompt(gateMode, previous) : promptText;
+  const moved = movedRunFolder(earlier, runDir, { foreignThread: run.resume?.foreignThread === true });
+  const folder = moved ? { runDir, runId, from: moved.from } : null;
+  let nextPrompt = threadId ? resumePrompt(gateMode, previous, folder) : promptText;
   const argvFor = (prompt, resumeThreadId) =>
     buildCodexArgs({ pin, promptText: prompt, cwd: projectRoot, codexHome, resumeThreadId, skipGitRepoCheck });
   try {
@@ -976,8 +996,8 @@ async function runDriver(args, deps) {
   }
 
   mkdirSync(runDir, { recursive: true });
-  // A resumed run keeps the playbooks its session already read.
-  if (!run.resume || run.resume.foreignThread || !existsSync(join(runDir, "skills"))) renderSkills(runDir, renderValues);
+  // A resumed run keeps the playbooks its session already read, unless they were rendered for another folder.
+  if (!run.resume || moved || !existsSync(join(runDir, "skills"))) renderSkills(runDir, renderValues);
   if (run.resume?.foreignThread) {
     warn(
       `run ${runId}: no run folder under ${join(projectRoot, ".sdlc", "runs")} records thread ${threadId}; its earlier ` +
@@ -1140,6 +1160,7 @@ async function runDriver(args, deps) {
             max_turns: maxTurns,
             codex_bin: codexBin,
             cwd: projectRoot,
+            output_dir: runDir,
             pid,
             pgid: pid !== null && process.platform !== "win32" ? pid : null,
             driver_pid: process.pid,
@@ -1302,7 +1323,7 @@ async function runDriver(args, deps) {
         break;
       }
       say(`run ${runId}: invocation ${invocation} ended before the run finished — resuming ${threadId} (${turnsUsed}/${maxTurns})`);
-      nextPrompt = resumePrompt(gateMode);
+      nextPrompt = resumePrompt(gateMode, null, folder);
       gateAnswer = false;
     }
 
